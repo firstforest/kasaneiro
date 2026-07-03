@@ -3,7 +3,9 @@
 水彩シミュレーションペイントツールを個人開発するための技術基盤の調査まとめ。
 想定: Windows上の個人用ツール。リアルタイムの筆描画+水彩のにじみ(流体シミュレーション)+物理的な混色。調査日: 2026-07-03。
 
-関連ノート: [01-fluid-simulation.md](01-fluid-simulation.md) / [02-pigment-mixing.md](02-pigment-mixing.md) / [03-layering-glazing-lifting.md](03-layering-glazing-lifting.md)
+関連ノート: [01-fluid-simulation.md](01-fluid-simulation.md) / [02-pigment-mixing.md](02-pigment-mixing.md) / [03-layering-glazing-lifting.md](03-layering-glazing-lifting.md) / [05-rust-feasibility.md](05-rust-feasibility.md)
+
+> **決定(2026-07-03)**: 本ノートの調査時点では「第一候補: TypeScript + WebGPU」としていたが、その後 **Rust + wgpu を採用**することに決定した。Rust エコシステム側の再調査(winit 0.31 のペン対応、octotablet、egui、mixbox クレート)により本ノートの一部評価は古くなっている — 最新の評価と Rust 版推奨構成は [05-rust-feasibility.md](05-rust-feasibility.md) を参照。シミュレーション設計(§3)と性能目安(§4)は WGSL/WebGPU 共通のため、そのまま有効。
 
 ---
 
@@ -29,7 +31,7 @@
 
 ### 1-3. ネイティブ: wgpu (Rust) / Unity / Godot
 
-- **wgpu (Rust)**: WebGPU API準拠のクロスプラットフォームGPUライブラリ([wgpu.rs](https://wgpu.rs/)、[gfx-rs/wgpu](https://github.com/gfx-rs/wgpu))。流体実績として [Wumpf/blub](https://github.com/Wumpf/blub)(PIC/FLIP/APIC 3D流体)、[lisyarus/webgpu-shallow-water](https://github.com/lisyarus/webgpu-shallow-water)(浅水方程式を仮想パイプ法で解く、デフォルト256×256グリッド)。ブラウザ制約なしで最高性能だが、UI(カラーピッカー、レイヤーパネル等)を自作する負担が大きい(egui/iced等が必要)。
+- **wgpu (Rust)**: WebGPU API準拠のクロスプラットフォームGPUライブラリ([wgpu.rs](https://wgpu.rs/)、[gfx-rs/wgpu](https://github.com/gfx-rs/wgpu))。流体実績として [Wumpf/blub](https://github.com/Wumpf/blub)(PIC/FLIP/APIC 3D流体)、[lisyarus/webgpu-shallow-water](https://github.com/lisyarus/webgpu-shallow-water)(浅水方程式を仮想パイプ法で解く、デフォルト256×256グリッド)。ブラウザ制約なしで最高性能。UI は egui/iced 等の自作が必要で HTML/CSS より初速は落ちるが、ペイントツール程度のパネル UI なら egui で実用水準(詳細評価は [05](05-rust-feasibility.md) §3)。
 - **Unity compute shader**: [IRCSS/Compute-Shaders-Fluid-Dynamic-](https://github.com/IRCSS/Compute-Shaders-Fluid-Dynamic-)(2D流体実装、解説記事: [Gentle Introduction to Realtime Fluid Simulation](https://shahriyarshahrabi.medium.com/gentle-introduction-to-fluid-simulation-for-programmers-and-technical-artists-7c0045c40bac))。エディタとUIが最初からあるのが利点。
 - **Godot**: 4.xでcompute shader対応。ただし水彩ペイント用途の実績はスタイライズドシェーダー程度で、シミュレーション実績は薄い。
 
@@ -104,7 +106,7 @@ Web/Electron系なら **Pointer Events Level 3** で完結する:
 - `PointerEvent.pressure`(0–1正規化筆圧)、`tiltX/tiltY`、`tangentialPressure`、`twist` — [MDN PointerEvent](https://developer.mozilla.org/en-US/docs/Web/API/PointerEvent)
 - **`getCoalescedEvents()`**: ブラウザがフレーム間で間引いた中間サンプルを全て取得。滑らかなストローク補間に必須 — [MDN getCoalescedEvents](https://developer.mozilla.org/en-US/docs/Web/API/PointerEvent/getCoalescedEvents)
 - **`pointerrawupdate`**: rAFを待たずに高頻度で入力を受ける低遅延イベント — [MDN pointerrawupdate](https://developer.mozilla.org/en-US/docs/Web/API/Element/pointerrawupdate_event)、[W3C Pointer Events 3](https://www.w3.org/TR/pointerevents3/)
-- WindowsのWacom等はWindows Ink経由でpressure/tiltがPointer Eventsに乗る。ネイティブ(Rust/Unity)の場合はWinTab/Windows Ink対応を自前実装する必要があり(Kritaはこの二重対応をしている)、これはWeb系を選ぶ大きな理由になる。
+- WindowsのWacom等はWindows Ink経由でpressure/tiltがPointer Eventsに乗る。ネイティブの場合、調査当初は「WinTab/Windows Ink対応の自前実装が必要(Kritaは二重対応)でWeb系を選ぶ大きな理由になる」と評価していたが、**Rustでは winit 0.31 のPointer刷新(ペン対応マージ済み)と [octotablet](https://github.com/Fuzzyzilla/octotablet)(Windows Ink)でこの懸念はほぼ解消**した(→ [05](05-rust-feasibility.md) §2)。Unity等は引き続き自前対応が必要。
 - ストローク→シミュレーションへの入力は「ブラシスタンプ位置に水+顔料+速度インパルスをsplatする」方式(PavelDoGreatのsplat実装が参考)。
 
 ---
@@ -139,6 +141,6 @@ Web/Electron系なら **Pointer Events Level 3** で完結する:
   - ブラシ: splat方式から始め、パラメータ設計はlibmypaint/Kritaの`KisPaintOp`構造を参考に
 - フォールバック: WebGPU非対応環境向けにWebGL2 ping-pong版(PavelDoGreatの構造を流用)を用意するか、割り切って要求環境をChromium系に固定
 
-**第二候補: Rust + wgpu ネイティブ** — 最大性能と将来のポータビリティ(同じWGSLをWebにも持っていける)が欲しい場合。ただしUIとタブレット入力の自作コストが高く、個人開発の初速は落ちる。
+**第二候補: Rust + wgpu ネイティブ** — 最大性能と将来のポータビリティ(同じWGSLをWebにも持っていける)が欲しい場合。調査当初は「UIとタブレット入力の自作コストが高い」と評価したが、再調査の結果 winit 0.31 + octotablet + egui でコストは大幅に下がっており、**最終的にこちらを採用した**(評価の詳細・推奨構成・クレート一覧は [05-rust-feasibility.md](05-rust-feasibility.md))。
 
 **避けたほうがよい**: Tauri(Windows専用なら可だが、macOS/Linux展開を考えるとWebGPUサポートが不揃い)、Godot(水彩シミュレーション実績が乏しい)。

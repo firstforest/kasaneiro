@@ -2,6 +2,8 @@
 
 アナログ水彩の経験に基づく「欲しい機能」を実現するための要素技術調査のまとめ。調査日: 2026-07-03。最新の研究・論文・商用実装・OSSをWeb調査し、要素技術ごとにノートを分けている。
 
+**実装言語は Rust に決定**(2026-07-03)。実現可能性の評価と Rust 版の推奨構成は [05-rust-feasibility.md](05-rust-feasibility.md) を参照。シミュレーション核心(WGSL compute + KM混色)は言語選択と独立に成立するため、01〜03 のノートは変更なくそのまま適用できる。
+
 ## 欲しい機能と対応する要素技術
 
 ### 1. 先に置いた色の近くに別の色で描くと、馴染んで綺麗なグラデーションになる
@@ -36,13 +38,14 @@
 | [02-pigment-mixing.md](02-pigment-mixing.md) | 物理的に正しい混色(Kubelka-Munk / Mixbox / spectral.js / 2022年以降の動向) |
 | [03-layering-glazing-lifting.md](03-layering-glazing-lifting.md) | 重ね塗り(KM層合成・グレージング)と削り(リフティング・粒状感・ステイニング) |
 | [04-implementation-stack.md](04-implementation-stack.md) | 実装技術スタック(WebGPU/WebGL2/wgpu比較、参考OSS、入力処理、性能目安、推奨構成) |
+| [05-rust-feasibility.md](05-rust-feasibility.md) | Rustでの実現可能性評価(wgpu / winit 0.31ペン入力 / octotablet / egui / mixboxクレート、Rust版推奨構成) |
 
 ## 推奨アーキテクチャ(調査結果の結論)
 
 ```
-┌─ UI (HTML/CSS: カラーピッカー・レイヤーパネル) ─────────────┐
+┌─ UI (egui: カラーピッカー・レイヤーパネル・調整スライダー) ────┐
 │                                                              │
-│  入力: Pointer Events (pressure / getCoalescedEvents)        │
+│  入力: winit 0.31 Pointer + octotablet (筆圧・傾き)           │
 │    └→ ブラシスタンプ位置に水+顔料をsplat                     │
 │                                                              │
 │  シミュレーション (WGSL compute, 512²から開始, ping-pong):    │
@@ -55,17 +58,19 @@
 │    「乾かす」操作でRGBAレイヤーに焼き込み(=グレーズ確定)       │
 │    レイヤー合成は multiply → 後日KM合成へ                     │
 │                                                              │
-│  混色: Mixbox(非商用CC BY-NC) or spectral.js(MIT)           │
+│  混色: mixboxクレート(非商用CC BY-NC) or 自作スペクトラルWGM   │
 │  削り: リフティングツール(ステイン床あり) + 完全消去ツール      │
 └──────────────────────────────────────────────────────────────┘
-プラットフォーム: TypeScript + WebGPU、配布は Chrome/Edge or Electron
+プラットフォーム: Rust + wgpu + winit + egui、配布は単一exe
+(将来 wasm32 + WebGPU で Web 版の道あり → 05-rust-feasibility.md)
 ```
 
 顔料ごとのパラメータは **密度ρ(沈着速度)/ ステイニングω(剥がれにくさ)/ 粒状感γ(紙目への反応)+ K,S(色)** の組で、水彩絵具の個性(粒状化するウルトラマリン、ステイニングするフタロ等)がほぼ全て表現できる。Curtis 1997 論文に12種の顔料の実値表があり流用可能。
 
 ## 実装ロードマップ
 
-1. **Phase 1**: Curtis簡略版の流体シミュ(512²)+ Mixbox混色 + splatブラシ → wet-on-wetの「馴染むグラデーション」が体感できる最小構成
+0. **Phase 0**(Rust化で追加): winit + wgpu + egui の空アプリ(ウィンドウ+テクスチャ表示+スライダー+WGSLホットリロード)→ [05](05-rust-feasibility.md) §8
+1. **Phase 1**: Curtis簡略版の流体シミュ(512²)+ Mixbox混色 + splatブラシ → wet-on-wetの「馴染むグラデーション」が体感できる最小構成(ブラシはマウスで開始、筆圧は後半にoctotabletで追加)
 2. **Phase 2**: 「乾かす」ボタン+レイヤー焼き込み(グレージング)、アクティブタイル最適化
 3. **Phase 3**: リフティング(削り)ツール、粒状感・ステイニングの顔料パラメータ、KM層合成
 4. **Phase 4(任意)**: エッジダークニングの調整、紙テクスチャの差し替え、LBM換装や超解像などの高度化
