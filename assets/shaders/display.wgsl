@@ -6,6 +6,7 @@
 //   3 = 湿りオーバーレイ(Rebelle の Show Wet 相当: 通常表示に濡れ領域を青重ね)
 //   4 = 浮遊顔料ヒートマップ(4チャンネル合計)
 //   5 = 沈着顔料ヒートマップ(4チャンネル合計)
+//   6 = 紙ハイト(グレースケール。白=山 / 黒=谷)
 // 先頭に common.wgsl が連結される。
 //
 // 通常表示の混色(M1c): 4顔料の濃度(浮遊+沈着)と紙を mixbox の latent 空間で
@@ -34,6 +35,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 // mixbox latent(src/pigment.rs の latent_uniform と同レイアウト):
 //   [2i] = 顔料 i の (c0..c3) / [2i+1] = 顔料 i の RGB 残差 / [8],[9] = 紙色の latent
 @group(0) @binding(4) var<uniform> latents: array<vec4f, 10>;
+@group(0) @binding(5) var paper_tex: texture_2d<f32>;
 
 // 黒 → 青 → シアン → 白 のヒートマップ
 fn heatmap(x: f32) -> vec3f {
@@ -156,6 +158,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         case 5u: {
             // 沈着顔料ヒートマップ(紙に定着した分。4顔料の合計)
             color = heatmap(dot(dep, vec4f(1.0)) * params.display_gain);
+        }
+        case 6u: {
+            // 紙ハイト(M1d): 白=山 / 黒=谷
+            let h = load_bilinear(paper_tex, p).r;
+            color = vec3f(clamp(h * params.display_gain, 0.0, 1.0));
         }
         default: {
             // 通常

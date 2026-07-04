@@ -14,6 +14,7 @@ fn all_shaders_compile() {
         "splat.wgsl",
         "velocity.wgsl",
         "relax.wgsl",
+        "flowout.wgsl",
         "advect.wgsl",
         "diffuse.wgsl",
         "transfer.wgsl",

@@ -5,16 +5,9 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
-/// 実行時にロードするシェーダーディレクトリ。
-/// 開発中は cargo プロジェクト直下の assets/shaders を指す(どこから起動しても効くように
-/// CARGO_MANIFEST_DIR 基準)。存在しなければカレントディレクトリ相対にフォールバック。
+/// 実行時にロードするシェーダーディレクトリ(解決規則は assets.rs 参照)
 pub fn shader_dir() -> PathBuf {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/shaders");
-    if manifest.is_dir() {
-        manifest
-    } else {
-        PathBuf::from("assets/shaders")
-    }
+    crate::assets::asset_dir("shaders")
 }
 
 pub struct ShaderWatcher {

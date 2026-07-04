@@ -5,8 +5,10 @@
 //   水:       r = 水量 / g = 速度x / b = 速度y / a = 濡れマスク(0=乾いた紙 / 1=濡れた領域)
 //   浮遊顔料: rgba の各チャンネル = 顔料1種(M1c から4顔料 = src/pigment.rs の PIGMENTS。水の流れに乗って移流する)
 //   沈着顔料: 同上(紙に定着した分。移流しない)
+// これに加えて紙ハイト(M1d): r32float 1枚、r = 高さ 0..1(0=谷 / 1=山)。
+// CPU(src/paper.rs)が起動時に生成する静的テクスチャで、ping-pong しない。
 // compute パスの binding は全シェーダー共通:
-//   0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats
+//   0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats, 8 = 紙ハイト
 // dst は毎パス全テクセルを書くこと(変更しないテクスチャも素通しで write する。ping-pong のため)
 
 // src/sim/mod.rs の SimParams と同レイアウトにすること(H2)
@@ -31,6 +33,14 @@ struct SimParams {
     diffuse_iters: u32,
     brush_channel: u32,
     pigment_density: f32,
+    paper_amp: f32,
+    paper_gran: f32,
+    paper_wet: f32,
+    edge_eta: f32,
+    edge_radius: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 // src/sim/mod.rs の Splat と同レイアウト(32 バイト)

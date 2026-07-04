@@ -1,9 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod assets;
 mod brush;
 mod gpu;
+mod paper;
 mod pigment;
+mod preset;
+mod replay;
 mod sim;
 
 use eframe::egui;

@@ -1,6 +1,7 @@
 //! wgpu リソース管理: シミュレーションテクスチャ(水 / 浮遊顔料 / 沈着顔料、
-//! いずれも rgba32float の ping-pong ペア)、compute パス群
-//! (splat / 速度更新 / 発散緩和 / 移流 / 吸着・脱着+蒸発)、表示用パイプライン、
+//! いずれも rgba32float の ping-pong ペア。加えて紙ハイト r32float 1枚=静的)、
+//! compute パス群(splat / 速度更新 / 発散緩和 / FlowOutward / 移流 / 拡散 /
+//! 吸着・脱着+蒸発)、表示用パイプライン、PNG スナップショット用の読み戻し(H6)、
 //! WGSL の実行時ロードと再ビルド(H1)。
 //!
 //! ping-pong は 3 テクスチャまとめて単一の `current` で管理する。各 compute パスは
@@ -13,6 +14,7 @@
 
 pub mod hot_reload;
 
+use crate::paper;
 use crate::pigment;
 use crate::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
@@ -21,8 +23,12 @@ use std::path::PathBuf;
 /// シミュレーションテクスチャのフォーマット。レイアウトは common.wgsl のコメントと対応。
 const SIM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
-/// テクスチャの種類数(水 / 浮遊顔料 / 沈着顔料)。M1d で紙ハイトを足すとき +1
+/// ping-pong するテクスチャの種類数(水 / 浮遊顔料 / 沈着顔料)。
+/// 紙ハイト(M1d)は静的なので含まない(paper_texture として別持ち)
 const TEX_KINDS: usize = 3;
+
+/// 紙ハイト生成のシード。「紙を作り直す」UI を足すならここをフィールド化する
+const PAPER_SEED: u32 = 0x5EED;
 
 /// 発散緩和の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_RELAX_ITERS: u32 = 64;
@@ -34,10 +40,13 @@ struct Pipelines {
     splat: wgpu::ComputePipeline,
     velocity: wgpu::ComputePipeline,
     relax: wgpu::ComputePipeline,
+    flowout: wgpu::ComputePipeline,
     advect: wgpu::ComputePipeline,
     diffuse: wgpu::ComputePipeline,
     transfer: wgpu::ComputePipeline,
     display: wgpu::RenderPipeline,
+    /// display と同じシェーダーを PNG スナップショット用フォーマットで焼くパイプライン(H6)
+    snapshot: wgpu::RenderPipeline,
 }
 
 pub struct GpuCanvas {
@@ -55,6 +64,11 @@ pub struct GpuCanvas {
     pipelines: Option<Pipelines>,
     /// 表示中のテクスチャ番号。各 compute パスは current を読み 1-current へ書いてから反転する
     current: usize,
+    /// PNG スナップショット(H6)用: オフスクリーンターゲットと読み戻しバッファ
+    snapshot_format: wgpu::TextureFormat,
+    snapshot_texture: wgpu::Texture,
+    snapshot_view: wgpu::TextureView,
+    snapshot_buffer: wgpu::Buffer,
 }
 
 impl GpuCanvas {
@@ -96,6 +110,72 @@ impl GpuCanvas {
                 ]
             })
             .collect();
+
+        // 紙ハイト(M1d): CPU 生成の静的テクスチャ。ping-pong せず全パスから読み専用
+        let paper_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("paper_height"),
+            size: wgpu::Extent3d {
+                width: CANVAS_SIZE,
+                height: CANVAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let heights = paper::generate(CANVAS_SIZE, PAPER_SEED);
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &paper_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&heights),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(CANVAS_SIZE * 4),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: CANVAS_SIZE,
+                height: CANVAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+        );
+        let paper_view = paper_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // PNG スナップショット(H6): 画面と同じ見た目になるよう sRGB か否かを表示先に合わせる
+        let snapshot_format = if target_format.is_srgb() {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        };
+        let snapshot_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("snapshot"),
+            size: wgpu::Extent3d {
+                width: CANVAS_SIZE,
+                height: CANVAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: snapshot_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let snapshot_view = snapshot_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // rgba8 1 行 = CANVAS_SIZE×4 バイト。512 なら 2048 で copy の 256 バイト整列を満たす
+        let snapshot_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("snapshot_readback"),
+            size: (CANVAS_SIZE * CANVAS_SIZE * 4) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim_params"),
@@ -155,7 +235,8 @@ impl GpuCanvas {
         };
 
         // 全 compute パス共通のレイアウト。binding は common.wgsl のコメントと対応:
-        // 0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats
+        // 0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats,
+        // 8 = 紙ハイト(M1d、静的)
         let compute_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sim_bgl"),
             entries: &[
@@ -175,10 +256,12 @@ impl GpuCanvas {
                     wgpu::ShaderStages::COMPUTE,
                     wgpu::BufferBindingType::Storage { read_only: true },
                 ),
+                sampled_entry(8, wgpu::ShaderStages::COMPUTE),
             ],
         });
 
         // 表示は 3 テクスチャ + params(H4 の表示モード分岐)+ 顔料 latent(M1c の mixbox 混色)
+        // + 紙ハイト(M1d、表示モード 6)
         let display_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("display_bgl"),
             entries: &[
@@ -195,6 +278,7 @@ impl GpuCanvas {
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::BufferBindingType::Uniform,
                 ),
+                sampled_entry(5, wgpu::ShaderStages::FRAGMENT),
             ],
         });
 
@@ -219,6 +303,10 @@ impl GpuCanvas {
                 binding: 7,
                 resource: splat_buffer.as_entire_binding(),
             });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 8,
+                resource: wgpu::BindingResource::TextureView(&paper_view),
+            });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("sim_bg"),
                 layout: &compute_bgl,
@@ -242,6 +330,10 @@ impl GpuCanvas {
             entries.push(wgpu::BindGroupEntry {
                 binding: 4,
                 resource: pigment_buffer.as_entire_binding(),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(&paper_view),
             });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("display_bg"),
@@ -274,6 +366,10 @@ impl GpuCanvas {
             display_layout,
             pipelines: None,
             current: 0,
+            snapshot_format,
+            snapshot_texture,
+            snapshot_view,
+            snapshot_buffer,
         };
         canvas.clear(queue);
         canvas
@@ -323,6 +419,7 @@ impl GpuCanvas {
         let splat_src = load("splat.wgsl")?;
         let velocity_src = load("velocity.wgsl")?;
         let relax_src = load("relax.wgsl")?;
+        let flowout_src = load("flowout.wgsl")?;
         let advect_src = load("advect.wgsl")?;
         let diffuse_src = load("diffuse.wgsl")?;
         let transfer_src = load("transfer.wgsl")?;
@@ -354,6 +451,10 @@ impl GpuCanvas {
             &make_module("velocity.wgsl", velocity_src),
         );
         let relax = make_compute("relax_pipeline", &make_module("relax.wgsl", relax_src));
+        let flowout = make_compute(
+            "flowout_pipeline",
+            &make_module("flowout.wgsl", flowout_src),
+        );
         let advect = make_compute("advect_pipeline", &make_module("advect.wgsl", advect_src));
         let diffuse = make_compute(
             "diffuse_pipeline",
@@ -365,31 +466,36 @@ impl GpuCanvas {
         );
 
         let display_module = make_module("display.wgsl", display_src);
-        let display = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("display_pipeline"),
-            layout: Some(&self.display_layout),
-            vertex: wgpu::VertexState {
-                module: &display_module,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &display_module,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: self.target_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        // 同じ display シェーダーを、画面用とスナップショット用(H6)の2フォーマットで作る
+        let make_display = |label: &str, format: wgpu::TextureFormat| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&self.display_layout),
+                vertex: wgpu::VertexState {
+                    module: &display_module,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &display_module,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let display = make_display("display_pipeline", self.target_format);
+        let snapshot = make_display("snapshot_pipeline", self.snapshot_format);
 
         if let Some(error) = pollster::block_on(scope.pop()) {
             return Err(error.to_string());
@@ -398,12 +504,85 @@ impl GpuCanvas {
             splat,
             velocity,
             relax,
+            flowout,
             advect,
             diffuse,
             transfer,
             display,
+            snapshot,
         });
         Ok(())
+    }
+
+    /// 現在のキャンバス表示を RGBA8(行連続、CANVAS_SIZE²)で読み戻す(H6 PNG スナップショット)。
+    /// display と同じシェーダー・同じ表示モードで焼くため、画面に見えているものがそのまま残る。
+    /// GPU 完了を同期で待つ(手動ボタン操作なので 1 フレームの停止は許容)。
+    pub fn snapshot(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Vec<u8>, String> {
+        let pipelines = self
+            .pipelines
+            .as_ref()
+            .ok_or("シェーダーが未ビルドです")?;
+
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("snapshot_encoder"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("snapshot_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.snapshot_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&pipelines.snapshot);
+            pass.set_bind_group(0, &self.display_bind_groups[self.current], &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            self.snapshot_texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.snapshot_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(CANVAS_SIZE * 4),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: CANVAS_SIZE,
+                height: CANVAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+
+        let slice = self.snapshot_buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| format!("GPU の完了待ちに失敗: {e:?}"))?;
+        rx.recv()
+            .map_err(|e| format!("map コールバックが届きません: {e}"))?
+            .map_err(|e| format!("読み戻しバッファの map に失敗: {e:?}"))?;
+        let data = slice.get_mapped_range().to_vec();
+        self.snapshot_buffer.unmap();
+        Ok(data)
     }
 }
 
@@ -464,13 +643,18 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
             if splat_count > 0 {
                 run(&mut pass, &pipelines.splat);
             }
-            // 1 ステップ = 速度更新 → 発散緩和 × N → 移流 → 顔料拡散 × N → 吸着/脱着+蒸発
+            // 1 ステップ = 速度更新 → 発散緩和 × N → FlowOutward → 移流
+            //   → 顔料拡散 × N → 吸着/脱着+蒸発
             let relax_iters = self.params.relax_iters.clamp(1, MAX_RELAX_ITERS);
             let diffuse_iters = self.params.diffuse_iters.min(MAX_DIFFUSE_ITERS);
             for _ in 0..self.sim_steps {
                 run(&mut pass, &pipelines.velocity);
                 for _ in 0..relax_iters {
                     run(&mut pass, &pipelines.relax);
+                }
+                // エッジダークニング(M1d)。η=0 ならぼかしの読み出しごと省略
+                if self.params.edge_eta > 0.0 {
+                    run(&mut pass, &pipelines.flowout);
                 }
                 run(&mut pass, &pipelines.advect);
                 for _ in 0..diffuse_iters {

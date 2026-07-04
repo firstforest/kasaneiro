@@ -7,10 +7,12 @@
 //!
 //! 濡れマスクは筆が通ったセルで 1。水と顔料が動くのはマスク内だけで、
 //! 乾いた紙との境界は壁として扱う(にじみがストローク領域の外へ広がらない)。
+//! これに加えて紙ハイトテクスチャ(M1d、r32float 1枚。ping-pong しない静的な紙の凹凸。
+//! 生成は paper.rs)があり、速度勾配・にじみ拡張・吸着の3箇所を変調する。
 //! 1 シミュレーションステップのパス順序は gpu/mod.rs の prepare() 参照:
-//!   splat(水+初速+顔料の注入)→ 速度更新 → 発散緩和 × relax_iters → 移流(水+浮遊顔料)
+//!   splat(水+初速+顔料の注入)→ 速度更新 → 発散緩和 × relax_iters
+//!   → FlowOutward(エッジダークニング、edge_eta > 0 のとき)→ 移流(水+浮遊顔料)
 //!   → 顔料拡散 × diffuse_iters → 吸着/脱着+蒸発(transfer)
-//! M1d で紙ハイトテクスチャをここに足す。
 
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
@@ -24,8 +26,12 @@ pub const MAX_SPLATS: usize = 1024;
 /// 全シミュレーションパラメータの唯一の置き場(H2)。
 /// フィールドを足したら: ①ここに1行 ②app.rs のスライダー1行 ③common.wgsl の struct に1行。
 /// メモリレイアウトは WGSL の uniform 規則(16 バイト整列)に合わせること。
+/// 全体サイズは 16 の倍数を保つ(末尾の _pad を置き換えてからフィールドを増やす)。
+/// serde(default): プリセット(H3)にないフィールドは Default 値で埋める
+/// (パラメータを増やしても古い JSON が読めるように)。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SimParams {
     /// ブラシ半径(テクセル単位)
     pub brush_radius: f32,
@@ -68,6 +74,23 @@ pub struct SimParams {
     pub brush_channel: u32,
     /// 発色の濃さ: 顔料濃度 → 被覆率(1-exp(-density·濃度))の係数(display.wgsl)
     pub pigment_density: f32,
+    /// 紙ハイトの振幅: 水面勾配に足す紙の凹凸の強さ(水が紙の谷へ流れる → ストリーク)
+    pub paper_amp: f32,
+    /// 粒状化: 紙の凹部で吸着が強まる度合い(0=紙目の影響なし)
+    pub paper_gran: f32,
+    /// にじみ拡張の紙目変調: 濡れ前線が紙の谷を選んで進む度合い(0=一様に広がる)
+    pub paper_wet: f32,
+    /// FlowOutward の η: 濡れ領域の縁ほど水を除去する強さ(0=エッジダークニングなし)
+    pub edge_eta: f32,
+    /// FlowOutward の濡れマスクぼかし半径(テクセル。縁と判定する帯の幅。WGSL 側で 1..8 に制限)
+    pub edge_radius: u32,
+    /// uniform の 16 バイト境界合わせ。パラメータを増やすときはまずここを置き換える
+    #[serde(skip)]
+    pub _pad0: u32,
+    #[serde(skip)]
+    pub _pad1: u32,
+    #[serde(skip)]
+    pub _pad2: u32,
 }
 
 impl Default for SimParams {
@@ -93,6 +116,14 @@ impl Default for SimParams {
             diffuse_iters: 4,
             brush_channel: 0,
             pigment_density: 3.0,
+            paper_amp: 0.3,
+            paper_gran: 0.4,
+            paper_wet: 0.5,
+            edge_eta: 0.03,
+            edge_radius: 4,
+            _pad0: 0,
+            _pad1: 0,
+            _pad2: 0,
         }
     }
 }
