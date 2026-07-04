@@ -33,8 +33,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let coverage = 1.0 - smoothstep(radius * 0.6, radius, dist);
         water += coverage * params.brush_water;
         vel += coverage * params.brush_velocity * s.vel;
-        // 顔料は浮遊層(r チャンネル = 単顔料。M1c で4顔料化)へ注入する
-        susp.r += coverage * params.brush_pigment;
+        // 顔料は浮遊層の選択チャンネル(brush_channel = パレットの顔料スロット)へ注入する
+        susp[min(params.brush_channel, 3u)] += coverage * params.brush_pigment;
         // 筆が届いた範囲を濡らす(wet-area mask)。水が動けるのはこの領域だけ。
         // 水を置く範囲(coverage > 0)と一致させ、マスク外に水が取り残されないようにする
         if (dist < radius) {

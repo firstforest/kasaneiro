@@ -3,7 +3,7 @@
 //
 // シミュレーションテクスチャのレイアウト(いずれも rgba32float、ping-pong 2枚組):
 //   水:       r = 水量 / g = 速度x / b = 速度y / a = 濡れマスク(0=乾いた紙 / 1=濡れた領域)
-//   浮遊顔料: rgba の各チャンネル = 顔料1種(M1b は r のみ。水の流れに乗って移流する)
+//   浮遊顔料: rgba の各チャンネル = 顔料1種(M1c から4顔料 = src/pigment.rs の PIGMENTS。水の流れに乗って移流する)
 //   沈着顔料: 同上(紙に定着した分。移流しない)
 // compute パスの binding は全シェーダー共通:
 //   0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats
@@ -29,6 +29,8 @@ struct SimParams {
     evap_rate: f32,
     pigment_diffuse: f32,
     diffuse_iters: u32,
+    brush_channel: u32,
+    pigment_density: f32,
 };
 
 // src/sim/mod.rs の Splat と同レイアウト(32 バイト)

@@ -4,6 +4,7 @@
 use crate::brush::StrokeState;
 use crate::gpu::hot_reload::{ShaderWatcher, shader_dir};
 use crate::gpu::{CanvasCallback, GpuCanvas};
+use crate::pigment::PIGMENTS;
 use crate::sim::{CANVAS_SIZE, SimParams, Splat};
 use eframe::egui;
 use eframe::egui_wgpu;
@@ -119,6 +120,22 @@ impl PaintApp {
 
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("水ブラシ");
+        // 顔料セレクタ(M1c): ブラシが注入する顔料スロットを選ぶ
+        ui.horizontal(|ui| {
+            for (i, pigment) in PIGMENTS.iter().enumerate() {
+                let selected = self.params.brush_channel == i as u32;
+                let color =
+                    egui::Color32::from_rgb(pigment.rgb[0], pigment.rgb[1], pigment.rgb[2]);
+                let mut button = egui::Button::new("").fill(color).min_size(egui::vec2(28.0, 28.0));
+                if selected {
+                    button = button.stroke((2.0, ui.visuals().strong_text_color()));
+                }
+                if ui.add(button).on_hover_text(pigment.name).clicked() {
+                    self.params.brush_channel = i as u32;
+                }
+            }
+        });
+        ui.label(PIGMENTS[self.params.brush_channel.min(3) as usize].name);
         ui.add(
             egui::Slider::new(&mut self.params.brush_radius, 1.0..=64.0)
                 .text("半径")
@@ -148,6 +165,11 @@ impl PaintApp {
             egui::Slider::new(&mut self.params.evap_rate, 0.0..=0.05)
                 .logarithmic(true)
                 .text("蒸発率"),
+        );
+        ui.add(
+            egui::Slider::new(&mut self.params.pigment_density, 0.5..=10.0)
+                .logarithmic(true)
+                .text("発色の濃さ(濃度→被覆率)"),
         );
 
         ui.separator();

@@ -2,7 +2,7 @@
 //!
 //! テクスチャ構成(いずれも rgba32float、ping-pong 2枚組):
 //! - 水: r=水量 / g=速度x / b=速度y / a=濡れマスク(wet-area mask)
-//! - 浮遊顔料(M1b): rgba の各チャンネル = 顔料1種(M1b は r のみ、M1c で4顔料化)
+//! - 浮遊顔料(M1b): rgba の各チャンネル = 顔料1種(M1c から4顔料。pigment.rs の PIGMENTS と対応)
 //! - 沈着顔料(M1b): 同上。紙に定着した分で、移流しない
 //!
 //! 濡れマスクは筆が通ったセルで 1。水と顔料が動くのはマスク内だけで、
@@ -64,6 +64,10 @@ pub struct SimParams {
     /// 顔料拡散の反復回数(1ステップあたり)。実効的なにじみ速度 = 拡散率 × 反復回数。
     /// 水筆で描いた水路に顔料溜まりを接続したとき、色が水路へ広がる速さはここで稼ぐ
     pub diffuse_iters: u32,
+    /// ブラシで注入する顔料スロット(0..3 = pigment.rs の PIGMENTS と対応)
+    pub brush_channel: u32,
+    /// 発色の濃さ: 顔料濃度 → 被覆率(1-exp(-density·濃度))の係数(display.wgsl)
+    pub pigment_density: f32,
 }
 
 impl Default for SimParams {
@@ -87,6 +91,8 @@ impl Default for SimParams {
             evap_rate: 0.005,
             pigment_diffuse: 0.15,
             diffuse_iters: 4,
+            brush_channel: 0,
+            pigment_density: 3.0,
         }
     }
 }

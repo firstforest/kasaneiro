@@ -13,6 +13,7 @@
 
 pub mod hot_reload;
 
+use crate::pigment;
 use crate::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
 use std::path::PathBuf;
@@ -109,6 +110,15 @@ impl GpuCanvas {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // 顔料+紙色の mixbox latent(M1c)。パレットは固定なので起動時に1回書くだけ
+        let latents = pigment::latent_uniform();
+        let pigment_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pigment_latents"),
+            size: std::mem::size_of_val(&latents) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&pigment_buffer, 0, bytemuck::cast_slice(&latents));
 
         let sampled_entry = |binding: u32, visibility: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
             binding,
@@ -168,7 +178,7 @@ impl GpuCanvas {
             ],
         });
 
-        // 表示は 3 テクスチャ + params(H4 の表示モード分岐に使う)
+        // 表示は 3 テクスチャ + params(H4 の表示モード分岐)+ 顔料 latent(M1c の mixbox 混色)
         let display_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("display_bgl"),
             entries: &[
@@ -177,6 +187,11 @@ impl GpuCanvas {
                 sampled_entry(2, wgpu::ShaderStages::FRAGMENT),
                 buffer_entry(
                     3,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+                buffer_entry(
+                    4,
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::BufferBindingType::Uniform,
                 ),
@@ -223,6 +238,10 @@ impl GpuCanvas {
             entries.push(wgpu::BindGroupEntry {
                 binding: 3,
                 resource: params_buffer.as_entire_binding(),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 4,
+                resource: pigment_buffer.as_entire_binding(),
             });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("display_bg"),

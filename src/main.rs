@@ -3,6 +3,7 @@
 mod app;
 mod brush;
 mod gpu;
+mod pigment;
 mod sim;
 
 use eframe::egui;
