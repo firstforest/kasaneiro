@@ -59,6 +59,8 @@ pub struct SimParams {
     pub lift_rate: f32,
     /// 蒸発率: 濡れ領域の水が 1 ステップに減る量
     pub evap_rate: f32,
+    /// 顔料拡散率: 浮遊顔料が水の中をにじんで広がる速さ(水筆で色を伸ばしたときのグラデーション)
+    pub pigment_diffuse: f32,
 }
 
 impl Default for SimParams {
@@ -80,6 +82,7 @@ impl Default for SimParams {
             deposit_rate: 0.05,
             lift_rate: 0.02,
             evap_rate: 0.005,
+            pigment_diffuse: 0.15,
         }
     }
 }

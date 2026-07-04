@@ -1,5 +1,6 @@
-// transfer.wgsl — 吸着/脱着+蒸発パス(M1b)。Curtis 1997 の TransferPigment の簡略版。
-// 浮遊顔料 ⇄ 沈着顔料の交換と、濡れ領域の水の蒸発を 1 パスで行う。
+// transfer.wgsl — 顔料拡散+吸着/脱着+蒸発パス(M1b)。Curtis 1997 の TransferPigment の簡略版。
+// 浮遊顔料の拡散(水の中をにじんで広がる)、浮遊顔料 ⇄ 沈着顔料の交換、
+// 濡れ領域の水の蒸発を 1 パスで行う。
 // 紙ハイトによる変調(粒状化)は M1d、乾燥によるレイヤー焼き込みは M2 で足す。
 // 先頭に common.wgsl が連結される。
 
@@ -33,17 +34,46 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     let w = clamp(cell.r, 0.0, 1.0);
 
+    // 拡散: 浮遊顔料が水の中をにじんで広がる(フィックの法則の陽解法)。
+    // 水筆で置いた水の側へ顔料が伸びてグラデーションになる動きはここが作る。
+    // 濡れたセル同士だけで交換し(乾いた隣はフラックス 0 = Neumann 境界)、
+    // 対になるフラックスが対称なので顔料の総量は保存される。
+    // 水が少ない場所へはにじみにくいよう、双方の水量の平均で重み付けする。
+    let n_l = load_clamped(src_water, ip + vec2i(-1, 0));
+    let n_r = load_clamped(src_water, ip + vec2i(1, 0));
+    let n_u = load_clamped(src_water, ip + vec2i(0, -1));
+    let n_d = load_clamped(src_water, ip + vec2i(0, 1));
+    var flux = vec4f(0.0);
+    if (is_wet(n_l)) {
+        flux += clamp(0.5 * (cell.r + n_l.r), 0.0, 1.0)
+            * (load_clamped(src_susp, ip + vec2i(-1, 0)) - susp);
+    }
+    if (is_wet(n_r)) {
+        flux += clamp(0.5 * (cell.r + n_r.r), 0.0, 1.0)
+            * (load_clamped(src_susp, ip + vec2i(1, 0)) - susp);
+    }
+    if (is_wet(n_u)) {
+        flux += clamp(0.5 * (cell.r + n_u.r), 0.0, 1.0)
+            * (load_clamped(src_susp, ip + vec2i(0, -1)) - susp);
+    }
+    if (is_wet(n_d)) {
+        flux += clamp(0.5 * (cell.r + n_d.r), 0.0, 1.0)
+            * (load_clamped(src_susp, ip + vec2i(0, 1)) - susp);
+    }
+    // 陽解法の安定条件: 係数は 4 近傍合計で 1 を超えないよう 0.2 に制限
+    let diffused = max(susp + min(params.pigment_diffuse * params.dt, 0.2) * flux, vec4f(0.0));
+
     // 吸着(沈着): 水が少ないほど強く働く → 乾きかけの場所で色が定着する
     let down_rate = clamp(params.deposit_rate * params.dt * (2.0 - w), 0.0, 1.0);
     // 脱着(再浮遊): 水が多い場所ほど沈着顔料が浮き上がる
     let up_rate = clamp(params.lift_rate * params.dt * w, 0.0, 1.0);
-    let down = susp * down_rate;
+    let down = diffused * down_rate;
     let up = dep * up_rate;
 
     // 蒸発: 濡れ領域の水を一定量減らす(マスクは残す。乾燥処理は M2)
     let water = max(cell.r - params.evap_rate * params.dt, 0.0);
 
     textureStore(dst_water, ip, vec4f(water, cell.gb, cell.a));
-    textureStore(dst_susp, ip, max(susp - down + up, vec4f(0.0)));
+    textureStore(dst_susp, ip, max(diffused - down + up, vec4f(0.0)));
     textureStore(dst_dep, ip, max(dep + down - up, vec4f(0.0)));
 }
