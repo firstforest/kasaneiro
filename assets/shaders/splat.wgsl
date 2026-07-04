@@ -1,29 +1,8 @@
-// splat.wgsl — マウス/ペンのストローク点をキャンバスに描く compute パス。
-// このファイルは実行時ロード(H1)。保存するとアプリ再起動なしで反映される。
-
-struct SimParams {
-    brush_radius: f32,
-    brush_flow: f32,
-    _pad: vec2f,
-    brush_color: vec4f,
-};
-
-struct Splat {
-    pos: vec2f,      // テクセル座標
-    pressure: f32,   // 筆圧(マウスは 1.0)
-    _pad: f32,
-};
-
-struct SplatBuffer {
-    count: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
-    splats: array<Splat>,
-};
+// splat.wgsl — ブラシで「水を置く」compute パス(M1a: 水量+初速の注入)。
+// 先頭に common.wgsl が連結される(SimParams / Splat / ヘルパー関数はそちら)。
 
 @group(0) @binding(0) var src_tex: texture_2d<f32>;
-@group(0) @binding(1) var dst_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(1) var dst_tex: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(2) var<uniform> params: SimParams;
 @group(0) @binding(3) var<storage, read> splat_buf: SplatBuffer;
 
@@ -35,17 +14,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     let p = vec2f(f32(gid.x) + 0.5, f32(gid.y) + 0.5);
-    var color = textureLoad(src_tex, vec2i(gid.xy), 0);
+    let cell = textureLoad(src_tex, vec2i(gid.xy), 0);
+    var water = cell.r;
+    var vel = cell.gb;
 
     for (var i = 0u; i < splat_buf.count; i++) {
         let s = splat_buf.splats[i];
         let radius = max(params.brush_radius * s.pressure, 0.5);
-        let d = distance(p, s.pos);
-        // 中心は不透明、縁にかけて柔らかく減衰
-        let coverage = 1.0 - smoothstep(radius * 0.6, radius, d);
-        let amount = coverage * params.brush_flow;
-        color = vec4f(mix(color.rgb, params.brush_color.rgb, amount), 1.0);
+        // 中心は満量、縁にかけて柔らかく減衰
+        let coverage = 1.0 - smoothstep(radius * 0.6, radius, distance(p, s.pos));
+        water += coverage * params.brush_water;
+        vel += coverage * params.brush_velocity * s.vel;
     }
 
-    textureStore(dst_tex, vec2i(gid.xy), color);
+    // 安定性: 水量は非負、速度は CFL 的上限でクランプ
+    water = max(water, 0.0);
+    let speed = length(vel);
+    if (speed > params.vel_max) {
+        vel *= params.vel_max / speed;
+    }
+
+    textureStore(dst_tex, vec2i(gid.xy), vec4f(water, vel, cell.a));
 }

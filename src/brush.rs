@@ -19,11 +19,13 @@ impl StrokeState {
 
     /// ポインタ位置(テクセル座標)を受け取り、補間した splat 列を out に積む。
     /// spacing はサンプル間隔(テクセル)。ブラシ半径の 1/4 程度が目安。
+    /// 各 splat にはストローク方向の単位ベクトルを持たせる(水の初速の向きに使う)。
     pub fn add_motion(&mut self, pos: [f32; 2], pressure: f32, spacing: f32, out: &mut Vec<Splat>) {
         let spacing = spacing.max(0.5);
         match self.last {
             None => {
-                out.push(Splat::new(pos, pressure));
+                // 始点は方向が定まらないので初速なし
+                out.push(Splat::new(pos, [0.0, 0.0], pressure));
                 self.last = Some(pos);
             }
             Some(prev) => {
@@ -34,6 +36,7 @@ impl StrokeState {
                     // 間隔に満たない移動は溜めておき、次の点とまとめて補間する
                     return;
                 }
+                let dir = [dx / dist, dy / dist];
                 let steps = (dist / spacing).ceil() as usize;
                 for i in 1..=steps {
                     if out.len() >= MAX_SPLATS {
@@ -42,6 +45,7 @@ impl StrokeState {
                     let t = i as f32 / steps as f32;
                     out.push(Splat::new(
                         [prev[0] + dx * t, prev[1] + dy * t],
+                        dir,
                         pressure,
                     ));
                 }

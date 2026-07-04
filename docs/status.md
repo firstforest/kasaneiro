@@ -6,14 +6,14 @@
 
 ## 現在地
 
-**M0(実験ハーネス)実装済み。次は M1a(水の浅水層)。**
+**M1a(水の浅水層)実装済み・目視確認待ち。「置いた水たまりが広がり、流れが見える」を目で確認したら ✅ にして M1b(顔料層)へ。**
 
 ## マイルストーン
 
 | マイルストーン | 状態 | メモ |
 |---|---|---|
 | M0 実験ハーネス | ✅ 完了 | マウスで splat 描画、WGSL ホットリロード、スライダー即時反映まで確認 |
-| M1a 水の浅水層 | ⬜ 未着手 | 次はここ。デバッグ表示(H4)もこのステップで作る |
+| M1a 水の浅水層 | 🔶 実装済み・目視確認待ち | 水テクスチャ(rgba32float: 水量+速度)を splat → 速度更新 → 発散緩和(δ=−ξ·div)→ セミラグランジアン移流で ping-pong 更新。移流は差し替え用に [assets/shaders/advect.wgsl](../assets/shaders/advect.wgsl) に分離。完了条件「置いた水たまりが広がり、流れが見える」は目視判定 |
 | M1b 顔料層(単顔料) | ⬜ 未着手 | |
 | M1c Mixbox 混色 | ⬜ 未着手 | 完了条件: 黄+青を隣接させて緑に馴染む |
 | M1d FlowOutward + 紙ハイト | ⬜ 未着手 | H3・H5 もここで整備 |
@@ -29,9 +29,9 @@
 | H1 | WGSL ホットリロード | ✅ 完了 | [src/gpu/hot_reload.rs](../src/gpu/hot_reload.rs)、エラーオーバーレイは [src/app.rs](../src/app.rs) |
 | H2 | パラメータパネル | ✅ 完了 | [src/sim/mod.rs](../src/sim/mod.rs) の `SimParams` → uniform buffer → スライダー |
 | H3 | プリセット保存/読込 | ⬜ 未着手 | M1d で。`assets/presets/` も未作成 |
-| H4 | デバッグ表示切替 | ⬜ 未着手 | M1a で |
+| H4 | デバッグ表示切替 | ✅ 完了 | [assets/shaders/display.wgsl](../assets/shaders/display.wgsl) で分岐(通常 / 水量ヒートマップ / 速度場)、モード選択は [src/app.rs](../src/app.rs)。顔料・紙ハイトのモードは M1b/M1d で追加 |
 | H5 | ストローク記録・再生 | ⬜ 未着手 | M1d で。`src/replay.rs`・`assets/strokes/` も未作成 |
-| H6 | シミュレーション制御 | 🔶 一部 | キャンバスリセットのみ。一時停止 / 1ステップ / 速度倍率 / PNG スナップショットは M1 序盤で |
+| H6 | シミュレーション制御 | ✅ 完了 | 一時停止 / 1ステップ実行 / 速度倍率(ステップ/フレーム)/ キャンバスリセット([src/app.rs](../src/app.rs))。PNG スナップショットのみ未実装(H3/H5 と同時期に) |
 
 ## plan.md §2 構成との差分
 
@@ -45,3 +45,5 @@
 ## 計画外でやったこと
 
 - 日本語フォント対応: egui デフォルトフォントに日本語グリフがないため、Windows システムフォント(游ゴシック等)をフォールバック登録([src/app.rs](../src/app.rs) `install_japanese_font`)
+- WGSL 共通定義の連結ロード: SimParams / Splat の struct 定義を [assets/shaders/common.wgsl](../assets/shaders/common.wgsl) に1箇所化し、Rust 側で各シェーダーの先頭に連結してコンパイル。「パラメータ追加 = WGSL 1行」をシェーダーが増えても維持するため
+- WGSL コンパイル可能性テスト: 実行時ロードのため cargo build では壊れた WGSL を検出できない。naga(wgpu と同バージョン)でパース+検証する [tests/shader_compile.rs](../tests/shader_compile.rs) を追加(挙動はテストしない方針のまま、コンパイル可否だけ守る)
