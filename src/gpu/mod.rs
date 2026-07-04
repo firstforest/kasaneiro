@@ -1,6 +1,11 @@
-//! wgpu リソース管理: 水シミュレーションテクスチャ(rgba32float ping-pong)、
-//! compute パス群(splat / 速度更新 / 発散緩和 / 移流)、表示用パイプライン、
+//! wgpu リソース管理: シミュレーションテクスチャ(水 / 浮遊顔料 / 沈着顔料、
+//! いずれも rgba32float の ping-pong ペア)、compute パス群
+//! (splat / 速度更新 / 発散緩和 / 移流 / 吸着・脱着+蒸発)、表示用パイプライン、
 //! WGSL の実行時ロードと再ビルド(H1)。
+//!
+//! ping-pong は 3 テクスチャまとめて単一の `current` で管理する。各 compute パスは
+//! 3 枚の src を読み、3 枚の dst を必ず全テクセル書いて(変更しない分は素通し)反転する。
+//! パスごとに別の index を持つより素通しコストを払う方が単純で、512² では十分軽い。
 //!
 //! GpuCanvas は egui-wgpu の callback_resources に置かれ、次の2経路から触られる:
 //! - フレームごとの描画は CanvasCallback(prepare で compute、paint で表示)
@@ -12,9 +17,11 @@ use crate::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
 use std::path::PathBuf;
 
-/// シミュレーションテクスチャのフォーマット。
-/// r=水量 / g=速度x / b=速度y / a=濡れマスク(wet-area mask)。common.wgsl のコメントと対応。
+/// シミュレーションテクスチャのフォーマット。レイアウトは common.wgsl のコメントと対応。
 const SIM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+
+/// テクスチャの種類数(水 / 浮遊顔料 / 沈着顔料)。M1d で紙ハイトを足すとき +1
+const TEX_KINDS: usize = 3;
 
 /// 発散緩和の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_RELAX_ITERS: u32 = 64;
@@ -24,13 +31,15 @@ struct Pipelines {
     velocity: wgpu::ComputePipeline,
     relax: wgpu::ComputePipeline,
     advect: wgpu::ComputePipeline,
+    transfer: wgpu::ComputePipeline,
     display: wgpu::RenderPipeline,
 }
 
 pub struct GpuCanvas {
     shader_dir: PathBuf,
     target_format: wgpu::TextureFormat,
-    textures: [wgpu::Texture; 2],
+    /// [水, 浮遊顔料, 沈着顔料] × ping-pong 2枚
+    textures: [[wgpu::Texture; 2]; TEX_KINDS],
     compute_bind_groups: [wgpu::BindGroup; 2],
     display_bind_groups: [wgpu::BindGroup; 2],
     params_buffer: wgpu::Buffer,
@@ -68,11 +77,20 @@ impl GpuCanvas {
                 view_formats: &[],
             })
         };
-        let textures = [make_texture("water_a"), make_texture("water_b")];
-        let views = [
-            textures[0].create_view(&wgpu::TextureViewDescriptor::default()),
-            textures[1].create_view(&wgpu::TextureViewDescriptor::default()),
+        let textures = [
+            [make_texture("water_a"), make_texture("water_b")],
+            [make_texture("susp_a"), make_texture("susp_b")],
+            [make_texture("dep_a"), make_texture("dep_b")],
         ];
+        let views: Vec<[wgpu::TextureView; 2]> = textures
+            .iter()
+            .map(|pair| {
+                [
+                    pair[0].create_view(&wgpu::TextureViewDescriptor::default()),
+                    pair[1].create_view(&wgpu::TextureViewDescriptor::default()),
+                ]
+            })
+            .collect();
 
         let params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sim_params"),
@@ -88,122 +106,124 @@ impl GpuCanvas {
             mapped_at_creation: false,
         });
 
-        // 全 compute パス共通のレイアウト(src テクスチャ / dst テクスチャ / params / splats)
+        let sampled_entry = |binding: u32, visibility: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility,
+            ty: wgpu::BindingType::Texture {
+                // rgba32float はフィルタ不可(シェーダー側は textureLoad で読む)
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format: SIM_FORMAT,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        };
+        let buffer_entry = |binding: u32,
+                            visibility: wgpu::ShaderStages,
+                            ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility,
+            ty: wgpu::BindingType::Buffer {
+                ty,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+
+        // 全 compute パス共通のレイアウト。binding は common.wgsl のコメントと対応:
+        // 0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats
         let compute_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sim_bgl"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture {
-                        // rgba32float はフィルタ不可(シェーダー側は textureLoad で読む)
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: SIM_FORMAT,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                sampled_entry(0, wgpu::ShaderStages::COMPUTE),
+                storage_entry(1),
+                sampled_entry(2, wgpu::ShaderStages::COMPUTE),
+                storage_entry(3),
+                sampled_entry(4, wgpu::ShaderStages::COMPUTE),
+                storage_entry(5),
+                buffer_entry(
+                    6,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+                buffer_entry(
+                    7,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
             ],
         });
 
-        // 表示はテクスチャ + params(H4 の表示モード分岐に使う)
+        // 表示は 3 テクスチャ + params(H4 の表示モード分岐に使う)
         let display_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("display_bgl"),
             entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
+                sampled_entry(0, wgpu::ShaderStages::FRAGMENT),
+                sampled_entry(1, wgpu::ShaderStages::FRAGMENT),
+                sampled_entry(2, wgpu::ShaderStages::FRAGMENT),
+                buffer_entry(
+                    3,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BufferBindingType::Uniform,
+                ),
             ],
         });
 
         // src=current / dst=もう片方 の2方向分
         let make_compute_bg = |src: usize, dst: usize| {
+            let mut entries = Vec::new();
+            for (kind, pair) in views.iter().enumerate() {
+                entries.push(wgpu::BindGroupEntry {
+                    binding: (kind * 2) as u32,
+                    resource: wgpu::BindingResource::TextureView(&pair[src]),
+                });
+                entries.push(wgpu::BindGroupEntry {
+                    binding: (kind * 2 + 1) as u32,
+                    resource: wgpu::BindingResource::TextureView(&pair[dst]),
+                });
+            }
+            entries.push(wgpu::BindGroupEntry {
+                binding: 6,
+                resource: params_buffer.as_entire_binding(),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 7,
+                resource: splat_buffer.as_entire_binding(),
+            });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("sim_bg"),
                 layout: &compute_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&views[src]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&views[dst]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: params_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: splat_buffer.as_entire_binding(),
-                    },
-                ],
+                entries: &entries,
             })
         };
         let compute_bind_groups = [make_compute_bg(0, 1), make_compute_bg(1, 0)];
 
         let make_display_bg = |i: usize| {
+            let mut entries = Vec::new();
+            for (kind, pair) in views.iter().enumerate() {
+                entries.push(wgpu::BindGroupEntry {
+                    binding: kind as u32,
+                    resource: wgpu::BindingResource::TextureView(&pair[i]),
+                });
+            }
+            entries.push(wgpu::BindGroupEntry {
+                binding: 3,
+                resource: params_buffer.as_entire_binding(),
+            });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("display_bg"),
                 layout: &display_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&views[i]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: params_buffer.as_entire_binding(),
-                    },
-                ],
+                entries: &entries,
             })
         };
         let display_bind_groups = [make_display_bg(0), make_display_bg(1)];
@@ -236,11 +256,11 @@ impl GpuCanvas {
         canvas
     }
 
-    /// キャンバスをリセット(水量・速度・濡れマスクをゼロに = 乾いた紙)
+    /// キャンバスをリセット(水・速度・濡れマスク・顔料をゼロに = 乾いた白い紙)
     pub fn clear(&self, queue: &wgpu::Queue) {
-        // rgba32float 1 テクセル = 16 バイト。全ゼロ = 水なし・速度なし・全面乾燥
+        // rgba32float 1 テクセル = 16 バイト。全ゼロ = 水なし・顔料なし・全面乾燥
         let zeros = vec![0u8; (CANVAS_SIZE * CANVAS_SIZE * 16) as usize];
-        for texture in &self.textures {
+        for texture in self.textures.iter().flatten() {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture,
@@ -281,6 +301,7 @@ impl GpuCanvas {
         let velocity_src = load("velocity.wgsl")?;
         let relax_src = load("relax.wgsl")?;
         let advect_src = load("advect.wgsl")?;
+        let transfer_src = load("transfer.wgsl")?;
         let display_src = load("display.wgsl")?;
 
         // エラースコープで検証エラーを捕捉し、クラッシュさせない
@@ -310,6 +331,10 @@ impl GpuCanvas {
         );
         let relax = make_compute("relax_pipeline", &make_module("relax.wgsl", relax_src));
         let advect = make_compute("advect_pipeline", &make_module("advect.wgsl", advect_src));
+        let transfer = make_compute(
+            "transfer_pipeline",
+            &make_module("transfer.wgsl", transfer_src),
+        );
 
         let display_module = make_module("display.wgsl", display_src);
         let display = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -346,6 +371,7 @@ impl GpuCanvas {
             velocity,
             relax,
             advect,
+            transfer,
             display,
         });
         Ok(())
@@ -405,11 +431,11 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
                 current ^= 1;
             };
 
-            // ブラシ入力(水+初速の注入)は一時停止中でも反映する
+            // ブラシ入力(水+初速+顔料の注入)は一時停止中でも反映する
             if splat_count > 0 {
                 run(&mut pass, &pipelines.splat);
             }
-            // 1 ステップ = 速度更新 → 発散緩和 × N → 移流
+            // 1 ステップ = 速度更新 → 発散緩和 × N → 移流 → 吸着/脱着+蒸発
             let relax_iters = self.params.relax_iters.clamp(1, MAX_RELAX_ITERS);
             for _ in 0..self.sim_steps {
                 run(&mut pass, &pipelines.velocity);
@@ -417,6 +443,7 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
                     run(&mut pass, &pipelines.relax);
                 }
                 run(&mut pass, &pipelines.advect);
+                run(&mut pass, &pipelines.transfer);
             }
         }
         canvas.current = current;

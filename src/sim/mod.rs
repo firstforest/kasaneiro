@@ -1,11 +1,16 @@
 //! シミュレーション制御の型: SimParams(H2)と splat 入力。
 //!
-//! M1a: 水テクスチャ(rgba32float: r=水量 / g=速度x / b=速度y / a=濡れマスク)を ping-pong 更新。
-//! 濡れマスク(wet-area mask)は筆が通ったセルで 1。水が動くのはマスク内だけで、
+//! テクスチャ構成(いずれも rgba32float、ping-pong 2枚組):
+//! - 水: r=水量 / g=速度x / b=速度y / a=濡れマスク(wet-area mask)
+//! - 浮遊顔料(M1b): rgba の各チャンネル = 顔料1種(M1b は r のみ、M1c で4顔料化)
+//! - 沈着顔料(M1b): 同上。紙に定着した分で、移流しない
+//!
+//! 濡れマスクは筆が通ったセルで 1。水と顔料が動くのはマスク内だけで、
 //! 乾いた紙との境界は壁として扱う(にじみがストローク領域の外へ広がらない)。
 //! 1 シミュレーションステップのパス順序は gpu/mod.rs の prepare() 参照:
-//!   splat(水+初速の注入)→ 速度更新 → 発散緩和 × relax_iters → 移流
-//! M1b 以降で顔料テクスチャ(浮遊/沈着)と紙ハイトをここに足す。
+//!   splat(水+初速+顔料の注入)→ 速度更新 → 発散緩和 × relax_iters → 移流(水+浮遊顔料)
+//!   → 吸着/脱着+蒸発(transfer)
+//! M1d で紙ハイトテクスチャをここに足す。
 
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
@@ -46,6 +51,14 @@ pub struct SimParams {
     pub display_gain: f32,
     /// にじみ拡張率: 濡れた隣の水量に比例して乾いたセルのマスクが育つ速さ(0=固定マスク)
     pub wet_expand: f32,
+    /// 1 splat あたりに置く顔料量(0 = 水だけのブラシ)
+    pub brush_pigment: f32,
+    /// 吸着率: 浮遊顔料が紙へ沈着する速さ(水が少ないほど強く効く)
+    pub deposit_rate: f32,
+    /// 脱着率: 沈着顔料が水に浮き上がる速さ(水が多いほど強く効く)
+    pub lift_rate: f32,
+    /// 蒸発率: 濡れ領域の水が 1 ステップに減る量
+    pub evap_rate: f32,
 }
 
 impl Default for SimParams {
@@ -63,6 +76,10 @@ impl Default for SimParams {
             display_mode: 0,
             display_gain: 1.0,
             wet_expand: 0.0,
+            brush_pigment: 0.6,
+            deposit_rate: 0.05,
+            lift_rate: 0.02,
+            evap_rate: 0.005,
         }
     }
 }

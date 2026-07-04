@@ -1,20 +1,26 @@
-// splat.wgsl — ブラシで「水を置く」compute パス(M1a: 水量+初速の注入)。
+// splat.wgsl — ブラシで「水+顔料を置く」compute パス(M1a: 水量+初速 / M1b: 顔料)。
 // 先頭に common.wgsl が連結される(SimParams / Splat / ヘルパー関数はそちら)。
 
-@group(0) @binding(0) var src_tex: texture_2d<f32>;
-@group(0) @binding(1) var dst_tex: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(2) var<uniform> params: SimParams;
-@group(0) @binding(3) var<storage, read> splat_buf: SplatBuffer;
+@group(0) @binding(0) var src_water: texture_2d<f32>;
+@group(0) @binding(1) var dst_water: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(2) var src_susp: texture_2d<f32>;
+@group(0) @binding(3) var dst_susp: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(4) var src_dep: texture_2d<f32>;
+@group(0) @binding(5) var dst_dep: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(6) var<uniform> params: SimParams;
+@group(0) @binding(7) var<storage, read> splat_buf: SplatBuffer;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
-    let dims = textureDimensions(src_tex);
+    let dims = textureDimensions(src_water);
     if (gid.x >= dims.x || gid.y >= dims.y) {
         return;
     }
 
     let p = vec2f(f32(gid.x) + 0.5, f32(gid.y) + 0.5);
-    let cell = textureLoad(src_tex, vec2i(gid.xy), 0);
+    let ip = vec2i(gid.xy);
+    let cell = textureLoad(src_water, ip, 0);
+    var susp = textureLoad(src_susp, ip, 0);
     var water = cell.r;
     var vel = cell.gb;
     var wet = cell.a;
@@ -27,6 +33,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let coverage = 1.0 - smoothstep(radius * 0.6, radius, dist);
         water += coverage * params.brush_water;
         vel += coverage * params.brush_velocity * s.vel;
+        // 顔料は浮遊層(r チャンネル = 単顔料。M1c で4顔料化)へ注入する
+        susp.r += coverage * params.brush_pigment;
         // 筆が届いた範囲を濡らす(wet-area mask)。水が動けるのはこの領域だけ。
         // 水を置く範囲(coverage > 0)と一致させ、マスク外に水が取り残されないようにする
         if (dist < radius) {
@@ -41,5 +49,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         vel *= params.vel_max / speed;
     }
 
-    textureStore(dst_tex, vec2i(gid.xy), vec4f(water, vel, wet));
+    textureStore(dst_water, ip, vec4f(water, vel, wet));
+    textureStore(dst_susp, ip, susp);
+    // 沈着顔料は変更なし(素通し)
+    textureStore(dst_dep, ip, textureLoad(src_dep, ip, 0));
 }

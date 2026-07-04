@@ -9,11 +9,13 @@ use eframe::egui;
 use eframe::egui_wgpu;
 
 /// デバッグ表示モード(H4)。値は SimParams::display_mode / display.wgsl の分岐と対応。
-const DISPLAY_MODES: [(u32, &str); 4] = [
-    (0, "通常(水を色で表示)"),
+const DISPLAY_MODES: [(u32, &str); 6] = [
+    (0, "通常(顔料を表示)"),
     (1, "水量ヒートマップ"),
     (2, "速度場(色相=方向)"),
     (3, "湿りオーバーレイ(濡れ=青)"),
+    (4, "浮遊顔料ヒートマップ"),
+    (5, "沈着顔料ヒートマップ"),
 ];
 
 /// egui のデフォルトフォントは日本語グリフを含まないため、
@@ -124,6 +126,7 @@ impl PaintApp {
         );
         ui.add(egui::Slider::new(&mut self.params.brush_water, 0.0..=2.0).text("水量"));
         ui.add(egui::Slider::new(&mut self.params.brush_velocity, 0.0..=2.0).text("初速"));
+        ui.add(egui::Slider::new(&mut self.params.brush_pigment, 0.0..=2.0).text("顔料量(0=水筆)"));
 
         ui.separator();
         ui.heading("水シミュレーション (M1a)");
@@ -134,6 +137,16 @@ impl PaintApp {
         ui.add(egui::Slider::new(&mut self.params.relax_iters, 1..=50).text("緩和反復回数"));
         ui.add(egui::Slider::new(&mut self.params.vel_max, 0.1..=2.0).text("速度上限 (CFL)"));
         ui.add(egui::Slider::new(&mut self.params.wet_expand, 0.0..=0.5).text("にじみ拡張(0=固定マスク)"));
+
+        ui.separator();
+        ui.heading("顔料 (M1b)");
+        ui.add(egui::Slider::new(&mut self.params.deposit_rate, 0.0..=0.5).text("吸着率(沈着の速さ)"));
+        ui.add(egui::Slider::new(&mut self.params.lift_rate, 0.0..=0.5).text("脱着率(再浮遊の速さ)"));
+        ui.add(
+            egui::Slider::new(&mut self.params.evap_rate, 0.0..=0.05)
+                .logarithmic(true)
+                .text("蒸発率"),
+        );
 
         ui.separator();
         ui.heading("表示 (H4)");

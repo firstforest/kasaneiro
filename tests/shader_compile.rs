@@ -15,6 +15,7 @@ fn all_shaders_compile() {
         "velocity.wgsl",
         "relax.wgsl",
         "advect.wgsl",
+        "transfer.wgsl",
         "display.wgsl",
     ] {
         let src = std::fs::read_to_string(dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
