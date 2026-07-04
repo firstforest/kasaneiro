@@ -28,6 +28,7 @@ struct SimParams {
     lift_rate: f32,
     evap_rate: f32,
     pigment_diffuse: f32,
+    diffuse_iters: u32,
 };
 
 // src/sim/mod.rs の Splat と同レイアウト(32 バイト)

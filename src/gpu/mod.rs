@@ -26,11 +26,15 @@ const TEX_KINDS: usize = 3;
 /// 発散緩和の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_RELAX_ITERS: u32 = 64;
 
+/// 顔料拡散の反復回数の上限(スライダー範囲より広めの安全弁)
+const MAX_DIFFUSE_ITERS: u32 = 32;
+
 struct Pipelines {
     splat: wgpu::ComputePipeline,
     velocity: wgpu::ComputePipeline,
     relax: wgpu::ComputePipeline,
     advect: wgpu::ComputePipeline,
+    diffuse: wgpu::ComputePipeline,
     transfer: wgpu::ComputePipeline,
     display: wgpu::RenderPipeline,
 }
@@ -301,6 +305,7 @@ impl GpuCanvas {
         let velocity_src = load("velocity.wgsl")?;
         let relax_src = load("relax.wgsl")?;
         let advect_src = load("advect.wgsl")?;
+        let diffuse_src = load("diffuse.wgsl")?;
         let transfer_src = load("transfer.wgsl")?;
         let display_src = load("display.wgsl")?;
 
@@ -331,6 +336,10 @@ impl GpuCanvas {
         );
         let relax = make_compute("relax_pipeline", &make_module("relax.wgsl", relax_src));
         let advect = make_compute("advect_pipeline", &make_module("advect.wgsl", advect_src));
+        let diffuse = make_compute(
+            "diffuse_pipeline",
+            &make_module("diffuse.wgsl", diffuse_src),
+        );
         let transfer = make_compute(
             "transfer_pipeline",
             &make_module("transfer.wgsl", transfer_src),
@@ -371,6 +380,7 @@ impl GpuCanvas {
             velocity,
             relax,
             advect,
+            diffuse,
             transfer,
             display,
         });
@@ -435,14 +445,18 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
             if splat_count > 0 {
                 run(&mut pass, &pipelines.splat);
             }
-            // 1 ステップ = 速度更新 → 発散緩和 × N → 移流 → 吸着/脱着+蒸発
+            // 1 ステップ = 速度更新 → 発散緩和 × N → 移流 → 顔料拡散 × N → 吸着/脱着+蒸発
             let relax_iters = self.params.relax_iters.clamp(1, MAX_RELAX_ITERS);
+            let diffuse_iters = self.params.diffuse_iters.min(MAX_DIFFUSE_ITERS);
             for _ in 0..self.sim_steps {
                 run(&mut pass, &pipelines.velocity);
                 for _ in 0..relax_iters {
                     run(&mut pass, &pipelines.relax);
                 }
                 run(&mut pass, &pipelines.advect);
+                for _ in 0..diffuse_iters {
+                    run(&mut pass, &pipelines.diffuse);
+                }
                 run(&mut pass, &pipelines.transfer);
             }
         }

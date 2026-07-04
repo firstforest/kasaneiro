@@ -141,6 +141,7 @@ impl PaintApp {
         ui.separator();
         ui.heading("顔料 (M1b)");
         ui.add(egui::Slider::new(&mut self.params.pigment_diffuse, 0.0..=1.0).text("拡散率(にじみの速さ)"));
+        ui.add(egui::Slider::new(&mut self.params.diffuse_iters, 0..=32).text("拡散反復回数(速いにじみはこちらで)"));
         ui.add(egui::Slider::new(&mut self.params.deposit_rate, 0.0..=0.5).text("吸着率(沈着の速さ)"));
         ui.add(egui::Slider::new(&mut self.params.lift_rate, 0.0..=0.5).text("脱着率(再浮遊の速さ)"));
         ui.add(
