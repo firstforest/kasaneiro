@@ -53,14 +53,13 @@ impl ShaderWatcher {
         };
         let mut dirty = false;
         while let Ok(event) = rx.try_recv() {
-            if let Ok(event) = event {
-                if event
+            if let Ok(event) = event
+                && event
                     .paths
                     .iter()
                     .any(|p| p.extension().is_some_and(|ext| ext == "wgsl"))
-                {
-                    dirty = true;
-                }
+            {
+                dirty = true;
             }
         }
         dirty
