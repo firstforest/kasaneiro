@@ -1,6 +1,6 @@
 {
   "brush_radius": 16.0,
-  "brush_water": 0.5,
+  "brush_water": 0.7,
   "brush_velocity": 0.5,
   "dt": 0.5,
   "accel": 1.0,
@@ -10,7 +10,7 @@
   "vel_max": 1.0,
   "display_mode": 0,
   "display_gain": 1.0,
-  "wet_expand": 0.0,
+  "wet_expand": 0.3,
   "brush_pigment": 0.6,
   "deposit_rate": 0.05,
   "lift_rate": 0.02,
@@ -19,9 +19,9 @@
   "diffuse_iters": 4,
   "brush_channel": 0,
   "pigment_density": 3.0,
-  "paper_amp": 0.3,
-  "paper_gran": 0.4,
-  "paper_wet": 0.5,
+  "paper_amp": 0.8,
+  "paper_gran": 0.7,
+  "paper_wet": 0.8,
   "edge_eta": 0.0,
   "edge_radius": 4
 }

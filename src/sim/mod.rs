@@ -80,7 +80,9 @@ pub struct SimParams {
     pub paper_gran: f32,
     /// にじみ拡張の紙目変調: 濡れ前線が紙の谷を選んで進む度合い(0=一様に広がる)
     pub paper_wet: f32,
-    /// FlowOutward の η: 濡れ領域の縁ほど水を除去する強さ(0=エッジダークニングなし)
+    /// FlowOutward の η: 濡れ領域の縁ほど水を除去する強さ(0=エッジダークニングなし)。
+    /// 既定 0 で先送り(status.md 参照): 今の弱い定式化では顔料が縁でなく中心へ寄るため、
+    /// ちゃんとした乾燥が入る M2 で再検討する。パス・スライダーは残してある(オフならゼロコスト)
     pub edge_eta: f32,
     /// FlowOutward の濡れマスクぼかし半径(テクセル。縁と判定する帯の幅。WGSL 側で 1..8 に制限)
     pub edge_radius: u32,
@@ -119,7 +121,7 @@ impl Default for SimParams {
             paper_amp: 0.3,
             paper_gran: 0.4,
             paper_wet: 0.5,
-            edge_eta: 0.03,
+            edge_eta: 0.0,
             edge_radius: 4,
             _pad0: 0,
             _pad1: 0,
