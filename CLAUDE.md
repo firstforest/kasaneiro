@@ -10,11 +10,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 2. **グレージング**: 乾いた色の上に描くと綺麗に重なる(レイヤー構造、乾燥 = レイヤー焼き込み)
 3. **削り**: リフティングツール(ステイン床あり)+ 完全消去ツールの2ツール構成
 
-**現状はドキュメントのみでコード未着手。** 実装計画は [docs/plan.md](docs/plan.md)、技術調査は [docs/note/00-overview.md](docs/note/00-overview.md) 起点の5ノートが正典。設計判断に迷ったらまずこれらを参照すること。ドキュメント・コミットメッセージは日本語。
+実装計画は [docs/plan.md](docs/plan.md)、**現在の実装状況は [docs/status.md](docs/status.md) が正典**(作業開始時にまず確認する)。技術調査は [docs/note/00-overview.md](docs/note/00-overview.md) 起点の5ノート。設計判断に迷ったらまずこれらを参照すること。ドキュメント・コミットメッセージは日本語。
+
+**マイルストーン・装備(H1〜H6)を進めたら docs/status.md を同じコミットで更新する。**
 
 ## コマンド
 
-Rust は mise で管理(`mise.toml`、rust 1.96.0)。Cargo プロジェクトは未作成 — 最初の一歩は plan.md §5(`cargo init` + eframe テンプレート)。コード作成後は通常の `cargo run` / `cargo test` / `cargo clippy`。
+Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise exec -- cargo run` / `cargo test` / `cargo clippy`。
 
 - コンパイル時間対策として `[profile.dev.package."*"] opt-level = 2` + 自前コード opt-level 1 を設定する方針(plan.md §2)
 - `km.rs`(Kubelka-Munk 純関数)は CPU 参照実装 + `cargo test` の対象。流体シェーダー本体はテストせずデバッグ表示で診断する方針
