@@ -1,0 +1,21 @@
+[package]
+name = "my-paint"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+eframe = { version = "0.35.0", default-features = false, features = ["wgpu", "default_fonts", "persistence"] }
+env_logger = "0.11.11"
+log = "0.4.33"
+notify = "8.2.0"
+pollster = "0.4.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+
+# コンパイル時間対策(plan.md §2): 依存クレートだけ最適化し、自前コードは軽い最適化に留める
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
