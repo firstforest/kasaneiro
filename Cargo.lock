@@ -1539,6 +1539,7 @@ dependencies = [
  "eframe",
  "env_logger",
  "log",
+ "naga",
  "notify",
  "pollster",
  "serde",
