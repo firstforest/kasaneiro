@@ -1,6 +1,8 @@
 //! シミュレーション制御の型: SimParams(H2)と splat 入力。
 //!
-//! M1a: 水テクスチャ(rgba32float: r=水量 / g=速度x / b=速度y / a=予備)を ping-pong 更新。
+//! M1a: 水テクスチャ(rgba32float: r=水量 / g=速度x / b=速度y / a=濡れマスク)を ping-pong 更新。
+//! 濡れマスク(wet-area mask)は筆が通ったセルで 1。水が動くのはマスク内だけで、
+//! 乾いた紙との境界は壁として扱う(にじみがストローク領域の外へ広がらない)。
 //! 1 シミュレーションステップのパス順序は gpu/mod.rs の prepare() 参照:
 //!   splat(水+初速の注入)→ 速度更新 → 発散緩和 × relax_iters → 移流
 //! M1b 以降で顔料テクスチャ(浮遊/沈着)と紙ハイトをここに足す。
@@ -38,12 +40,12 @@ pub struct SimParams {
     pub relax_iters: u32,
     /// 速度上限(セル/ステップ)。CFL 的制約として 1.0 以下を推奨
     pub vel_max: f32,
-    /// デバッグ表示モード(H4): 0=通常 / 1=水量ヒートマップ / 2=速度場
+    /// デバッグ表示モード(H4): 0=通常 / 1=水量ヒートマップ / 2=速度場 / 3=湿りオーバーレイ
     pub display_mode: u32,
     /// デバッグ表示の輝度スケール
     pub display_gain: f32,
-    #[serde(skip)]
-    pub _pad: f32,
+    /// にじみ拡張率: 濡れた隣の水量に比例して乾いたセルのマスクが育つ速さ(0=固定マスク)
+    pub wet_expand: f32,
 }
 
 impl Default for SimParams {
@@ -60,7 +62,7 @@ impl Default for SimParams {
             vel_max: 1.0,
             display_mode: 0,
             display_gain: 1.0,
-            _pad: 0.0,
+            wet_expand: 0.0,
         }
     }
 }

@@ -3,6 +3,7 @@
 //   0 = 通常(紙の上の水を色で可視化)
 //   1 = 水量ヒートマップ
 //   2 = 速度場(色相=方向、明度=大きさ)
+//   3 = 湿りオーバーレイ(Rebelle の Show Wet 相当: 通常表示に濡れ領域を青重ね)
 // 先頭に common.wgsl が連結される。
 
 struct VsOut {
@@ -62,6 +63,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         case 1u: {
             // 水量ヒートマップ
             color = heatmap(water);
+        }
+        case 3u: {
+            // 湿りオーバーレイ: 通常表示の上に濡れ領域(wet-area mask)を青く重ねる
+            let paper = vec3f(0.96, 0.95, 0.91);
+            let tint = vec3f(0.35, 0.55, 0.80);
+            color = mix(paper, tint, clamp(water, 0.0, 0.85));
+            if (is_wet(cell)) {
+                color = mix(color, vec3f(0.15, 0.35, 0.95), 0.3);
+            }
         }
         default: {
             // 速度場: 方向を色相、大きさを明度に

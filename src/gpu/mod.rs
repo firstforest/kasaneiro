@@ -13,7 +13,7 @@ use eframe::egui_wgpu::{self, wgpu};
 use std::path::PathBuf;
 
 /// シミュレーションテクスチャのフォーマット。
-/// r=水量 / g=速度x / b=速度y / a=予備(M1d で紙ハイト等)。common.wgsl のコメントと対応。
+/// r=水量 / g=速度x / b=速度y / a=濡れマスク(wet-area mask)。common.wgsl のコメントと対応。
 const SIM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
 /// 発散緩和の反復回数の上限(スライダー範囲より広めの安全弁)
@@ -236,9 +236,9 @@ impl GpuCanvas {
         canvas
     }
 
-    /// キャンバスをリセット(水量・速度をゼロに = 乾いた紙)
+    /// キャンバスをリセット(水量・速度・濡れマスクをゼロに = 乾いた紙)
     pub fn clear(&self, queue: &wgpu::Queue) {
-        // rgba32float 1 テクセル = 16 バイト。全ゼロ = 水なし・速度なし
+        // rgba32float 1 テクセル = 16 バイト。全ゼロ = 水なし・速度なし・全面乾燥
         let zeros = vec![0u8; (CANVAS_SIZE * CANVAS_SIZE * 16) as usize];
         for texture in &self.textures {
             queue.write_texture(

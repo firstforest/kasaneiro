@@ -17,11 +17,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let ip = vec2i(gid.xy);
     let cell = textureLoad(src_tex, ip, 0);
 
+    // 乾いたセルは素通し(wet-area mask)。splat が水と同時にマスクを立てるため
+    // 乾いたセルの水量は常に 0 で、濡れたセルのバックトレースが乾いた領域を
+    // サンプルしても水は湧かない(薄まるだけ)
+    if (!is_wet(cell)) {
+        textureStore(dst_tex, ip, cell);
+        return;
+    }
+
     // 自セルの速度で遡って(backtrace)水量と速度を取り直す
     let pos = vec2f(f32(gid.x) + 0.5, f32(gid.y) + 0.5);
     let back = pos - params.dt * cell.gb;
     let s = load_bilinear(src_tex, back);
 
-    // 水量は非負クランプ。a(予備)は移流させず自セルの値を保持(紙ハイト等は場に固定のため)
+    // 水量は非負クランプ。a(濡れマスク)は移流させず自セルの値を保持(場に固定のため)
     textureStore(dst_tex, ip, vec4f(max(s.r, 0.0), s.gb, cell.a));
 }

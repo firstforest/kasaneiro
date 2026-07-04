@@ -19,6 +19,10 @@ fn divergence(p: vec2i) -> f32 {
 }
 
 fn delta(p: vec2i) -> f32 {
+    // 乾いたセルは緩和に参加しない(δ=0)。マスク境界は壁として振る舞う
+    if (!is_wet(load_clamped(src_tex, p))) {
+        return 0.0;
+    }
     return -params.xi * divergence(p);
 }
 
@@ -30,6 +34,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
     let ip = vec2i(gid.xy);
     let cell = textureLoad(src_tex, ip, 0);
+
+    // 乾いたセルは素通し(wet-area mask)
+    if (!is_wet(cell)) {
+        textureStore(dst_tex, ip, cell);
+        return;
+    }
 
     // 水量: 発散している(流出超過の)セルから水を減らし、収束セルに足す(非負クランプ)
     let water = max(cell.r + delta(ip), 0.0);

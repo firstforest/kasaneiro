@@ -13,7 +13,7 @@
 | マイルストーン | 状態 | メモ |
 |---|---|---|
 | M0 実験ハーネス | ✅ 完了 | マウスで splat 描画、WGSL ホットリロード、スライダー即時反映まで確認 |
-| M1a 水の浅水層 | 🔶 実装済み・目視確認待ち | 水テクスチャ(rgba32float: 水量+速度)を splat → 速度更新 → 発散緩和(δ=−ξ·div)→ セミラグランジアン移流で ping-pong 更新。移流は差し替え用に [assets/shaders/advect.wgsl](../assets/shaders/advect.wgsl) に分離。完了条件「置いた水たまりが広がり、流れが見える」は目視判定 |
+| M1a 水の浅水層 | 🔶 実装済み・目視確認待ち | 水テクスチャ(rgba32float: 水量+速度+濡れマスク)を splat → 速度更新 → 発散緩和(δ=−ξ·div)→ セミラグランジアン移流で ping-pong 更新。移流は差し替え用に [assets/shaders/advect.wgsl](../assets/shaders/advect.wgsl) に分離。**濡れ領域マスク**(Curtis の wet-area mask、a チャンネル)で水の移動を筆が通った領域内に制限: 乾いたセルは速度ゼロ・全パス素通し、濡れたセルの水深勾配は乾いた隣を自セル値で代用(Neumann 境界)、緩和の δ も乾いたセルでは 0(壁扱い)。にじみ拡張スライダー(`wet_expand`): 乾いたセルが濡れた隣の水量に比例してマスク値を蓄積し 0.5 超で濡れに昇格、0 で固定マスク。紙ハイトは M1d で別テクスチャに置く(a は使わない)。完了条件「置いた水たまりが広がり、流れが見える。ストローク領域の外へはにじまない」は目視判定 |
 | M1b 顔料層(単顔料) | ⬜ 未着手 | |
 | M1c Mixbox 混色 | ⬜ 未着手 | 完了条件: 黄+青を隣接させて緑に馴染む |
 | M1d FlowOutward + 紙ハイト | ⬜ 未着手 | H3・H5 もここで整備 |
@@ -29,7 +29,7 @@
 | H1 | WGSL ホットリロード | ✅ 完了 | [src/gpu/hot_reload.rs](../src/gpu/hot_reload.rs)、エラーオーバーレイは [src/app.rs](../src/app.rs) |
 | H2 | パラメータパネル | ✅ 完了 | [src/sim/mod.rs](../src/sim/mod.rs) の `SimParams` → uniform buffer → スライダー |
 | H3 | プリセット保存/読込 | ⬜ 未着手 | M1d で。`assets/presets/` も未作成 |
-| H4 | デバッグ表示切替 | ✅ 完了 | [assets/shaders/display.wgsl](../assets/shaders/display.wgsl) で分岐(通常 / 水量ヒートマップ / 速度場)、モード選択は [src/app.rs](../src/app.rs)。顔料・紙ハイトのモードは M1b/M1d で追加 |
+| H4 | デバッグ表示切替 | ✅ 完了 | [assets/shaders/display.wgsl](../assets/shaders/display.wgsl) で分岐(通常 / 水量ヒートマップ / 速度場 / 湿りオーバーレイ=濡れ領域を青重ね)、モード選択は [src/app.rs](../src/app.rs)。顔料・紙ハイトのモードは M1b/M1d で追加 |
 | H5 | ストローク記録・再生 | ⬜ 未着手 | M1d で。`src/replay.rs`・`assets/strokes/` も未作成 |
 | H6 | シミュレーション制御 | ✅ 完了 | 一時停止 / 1ステップ実行 / 速度倍率(ステップ/フレーム)/ キャンバスリセット([src/app.rs](../src/app.rs))。PNG スナップショットのみ未実装(H3/H5 と同時期に) |
 

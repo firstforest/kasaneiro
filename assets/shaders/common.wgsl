@@ -2,7 +2,7 @@
 // このファイルは実行時ロード(H1)。保存するとアプリ再起動なしで反映される。
 //
 // シミュレーションテクスチャのレイアウト(rgba32float):
-//   r = 水量 / g = 速度x / b = 速度y / a = 予備(M1d で紙ハイト等に使う)
+//   r = 水量 / g = 速度x / b = 速度y / a = 濡れマスク(0=乾いた紙 / 1=筆が通って濡れた領域)
 
 // src/sim/mod.rs の SimParams と同レイアウトにすること(H2)
 struct SimParams {
@@ -17,7 +17,7 @@ struct SimParams {
     vel_max: f32,
     display_mode: u32,
     display_gain: f32,
-    _pad: f32,
+    wet_expand: f32,
 };
 
 // src/sim/mod.rs の Splat と同レイアウト(32 バイト)
@@ -37,6 +37,12 @@ struct SplatBuffer {
     _pad2: u32,
     splats: array<Splat>,
 };
+
+// 濡れ判定(a チャンネル = Curtis 1997 の wet-area mask)。
+// 水が動くのは濡れたセルだけ。乾いた紙との境界はキャンバス端と同じ「壁」として扱う。
+fn is_wet(cell: vec4f) -> bool {
+    return cell.a > 0.5;
+}
 
 // 境界をはみ出さない textureLoad(端のセルをそのまま延長)
 fn load_clamped(t: texture_2d<f32>, p: vec2i) -> vec4f {

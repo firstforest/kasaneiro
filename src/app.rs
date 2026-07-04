@@ -9,10 +9,11 @@ use eframe::egui;
 use eframe::egui_wgpu;
 
 /// デバッグ表示モード(H4)。値は SimParams::display_mode / display.wgsl の分岐と対応。
-const DISPLAY_MODES: [(u32, &str); 3] = [
+const DISPLAY_MODES: [(u32, &str); 4] = [
     (0, "通常(水を色で表示)"),
     (1, "水量ヒートマップ"),
     (2, "速度場(色相=方向)"),
+    (3, "湿りオーバーレイ(濡れ=青)"),
 ];
 
 /// egui のデフォルトフォントは日本語グリフを含まないため、
@@ -132,6 +133,7 @@ impl PaintApp {
         ui.add(egui::Slider::new(&mut self.params.xi, 0.0..=0.5).text("発散緩和 ξ"));
         ui.add(egui::Slider::new(&mut self.params.relax_iters, 1..=50).text("緩和反復回数"));
         ui.add(egui::Slider::new(&mut self.params.vel_max, 0.1..=2.0).text("速度上限 (CFL)"));
+        ui.add(egui::Slider::new(&mut self.params.wet_expand, 0.0..=0.5).text("にじみ拡張(0=固定マスク)"));
 
         ui.separator();
         ui.heading("表示 (H4)");
