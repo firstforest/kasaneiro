@@ -23,7 +23,7 @@ Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise
 
 ## アーキテクチャ(決定事項)
 
-- **スタック**: wgpu(WGSL compute)+ winit 0.31+ + egui/eframe/egui-wgpu + mixbox + octotablet(筆圧、M1.5から)+ notify(ホットリロード)。**egui の対応バージョンを起点に wgpu/winit をロックステップで固定**する
+- **スタック**: wgpu(WGSL compute)+ winit + egui/eframe/egui-wgpu + mixbox + notify(ホットリロード)。**egui の対応バージョンを起点に wgpu/winit をロックステップで固定**する。筆圧は egui 標準の Touch イベントで取得(winit が WM_POINTER から筆圧付きで届ける。計画にあった octotablet は Windows のデッドロックバグで不採用 — status.md M1.5 参照)
 - **シミュレーション**: Curtis 1997 簡略版。テクスチャ4枚(水量+速度 / 浮遊顔料 / 沈着顔料 / 紙ハイト)、512²、ping-pong。毎フレーム: 移流 → 発散緩和 → FlowOutward → 顔料移流 → 吸着/脱着 → 蒸発
 - **レイヤー**: 湿レイヤーは常に1枚。「乾かす」ボタンで RGBA レイヤーに焼き込み。合成は multiply で開始し M3 で KM 合成へ
 - **単一クレート**で開始。プロジェクト構成(src/gpu, src/sim, brush.rs, input.rs, replay.rs, km.rs)は plan.md §2 参照

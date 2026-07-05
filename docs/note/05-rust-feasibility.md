@@ -48,6 +48,8 @@ Rust ネイティブの弱点とされてきた領域だが、2024〜2025 年に
 - より低レベルには [wintab_lite](https://github.com/thehappycheese/wintab_lite)(WinTab の薄いバインディング)もある
 - WinTab と Windows Ink の使い分けは Krita と同じ議論([Krita Manual](https://docs.krita.org/en/user_manual/drawing_tablets.html)、[解説](https://docs.thesevenpens.com/drawtab/developers/wintab-vs-windows-ink)): 現代の Wacom/XP-Pen ドライバは Windows Ink をサポートしており、**個人ツールなら Windows Ink(= octotablet / winit)一本で開始してよい**。WinTab 対応は「古いドライバ設定のユーザーも救う」段階になってから検討で十分
 
+> **追記(2026-07-05、M1.5 実装時)**: octotablet は**不採用**になった。Manager を作成すると RTS コールバックスレッド(COM マーシャリングで UI スレッドのメッセージポンプ待ち)と UI スレッド(`pump()` の mutex でコールバック待ち)が相互待ちし、アプリが「応答なし」になる既知バグを実機で確認(crates.io 0.1.0 / git master とも再現。[issue #18](https://github.com/Fuzzyzilla/octotablet/issues/18))。実際には eframe 0.35(winit 0.30 系)の時点で winit が WM_POINTER を処理し `GetPointerPenInfo` の筆圧を `Touch{force}` として届けており、egui-winit がそれを `egui::Event::Touch{force}` に変換するため、**筆圧だけなら追加クレートなしで取れた**(winit 0.31 の Pointer 刷新を待つ必要もなかった)。傾き・ホバー距離・消しゴム検出が必要になったら octotablet を再評価する(ハングバグの修正確認が前提。plan.md §4)。
+
 ### Web 版 Pointer Events との対応関係
 
 | Web ([04](04-implementation-stack.md) §3-3) | Rust での対応物 |
