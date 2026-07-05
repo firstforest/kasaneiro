@@ -2,6 +2,8 @@
 //! デバッグ表示切替(H4)、ストローク記録・再生(H5)、シミュレーション制御・
 //! PNG スナップショット(H6)、キャンバス、シェーダーエラーのオーバーレイ(H1)。
 
+mod ui;
+
 use crate::gpu::hot_reload::{ShaderWatcher, shader_dir};
 use crate::gpu::{CanvasCallback, GpuCanvas, MAX_LAYERS};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase, PointerSource};
@@ -11,6 +13,7 @@ use paint_core::brush::StrokeState;
 use paint_core::sim::{CANVAS_SIZE, SimParams, Splat};
 use paint_core::tool::{Tool, ToolInfo, WetTool};
 use pigment::PIGMENTS;
+use ui::{NamedStore, PresetUi, ReplayUi};
 use eframe::egui;
 use eframe::egui_wgpu;
 use std::path::{Path, PathBuf};
@@ -36,34 +39,43 @@ const DISPLAY_MODES: [(u32, &str); 7] = [
     (6, "紙ハイト(白=山)"),
 ];
 
-/// egui のデフォルトフォントは日本語グリフを含まないため、
-/// Windows のシステムフォントをフォールバックとして追加する(バンドル不要)。
+/// UI フォントを M PLUS 1p(Google Fonts / OFL、`assets/fonts/`)に差し替える。
+/// egui のデフォルトフォントは日本語グリフを含まないため、実行ファイルに埋め込んだ
+/// M PLUS 1p を最優先に据える。M PLUS 1p が持たないグリフ用に、あれば Windows の
+/// システム日本語フォントをフォールバックとして後ろに足す。
 fn install_japanese_font(ctx: &egui::Context) {
     const CANDIDATES: &[&str] = &[
         r"C:\Windows\Fonts\YuGothM.ttc",
         r"C:\Windows\Fonts\meiryo.ttc",
         r"C:\Windows\Fonts\msgothic.ttc",
     ];
-    for path in CANDIDATES {
-        let Ok(bytes) = std::fs::read(path) else {
-            continue;
-        };
-        let mut fonts = egui::FontDefinitions::default();
+    let mut fonts = egui::FontDefinitions::default();
+    // include_bytes! のパスはこのソースファイル基準(src/app/mod.rs → リポジトリルート)。
+    fonts.font_data.insert(
+        "mplus1p".to_owned(),
+        egui::FontData::from_static(include_bytes!("../../assets/fonts/MPLUS1p-Regular.ttf"))
+            .into(),
+    );
+
+    // 欠落グリフ用フォールバック(見つからなければスキップ。M PLUS 1p だけで動く)。
+    let system_fallback = CANDIDATES.iter().find_map(|path| {
+        let bytes = std::fs::read(path).ok()?;
         fonts.font_data.insert(
-            "japanese".to_owned(),
+            "japanese_fallback".to_owned(),
             egui::FontData::from_owned(bytes).into(),
         );
-        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-            fonts
-                .families
-                .entry(family)
-                .or_default()
-                .push("japanese".to_owned());
+        Some(())
+    });
+
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        let list = fonts.families.entry(family).or_default();
+        // M PLUS 1p を最優先(先頭)。既存のデフォルトフォントはその後ろに残す。
+        list.insert(0, "mplus1p".to_owned());
+        if system_fallback.is_some() {
+            list.push("japanese_fallback".to_owned());
         }
-        ctx.set_fonts(fonts);
-        return;
     }
-    log::warn!("日本語フォントが見つかりませんでした。UI の日本語は豆腐表示になります");
+    ctx.set_fonts(fonts);
 }
 
 pub struct PaintApp {
@@ -88,18 +100,10 @@ pub struct PaintApp {
     step_once: bool,
     /// H6: 速度倍率(1フレームあたりのシミュレーションステップ数)
     steps_per_frame: u32,
-    /// H3: プリセットの保存名入力と一覧(一覧はキャッシュ。保存時と ↻ で更新)
-    preset_name: String,
-    preset_list: Vec<String>,
-    /// H5: ストロークの保存名入力と一覧
-    stroke_name: String,
-    stroke_list: Vec<String>,
-    /// H5: 記録中の状態(Some の間はポインタ入力を記録)
-    recorder: Option<Recorder>,
-    /// H5: 記録停止後、保存/試し再生できる直近の記録
-    pending_recording: Option<Recording>,
-    /// H5: 再生中の状態(Some の間は記録済み入力を毎フレーム流し込む)
-    player: Option<Player>,
+    /// H3: プリセットの UI 状態(名前入力+一覧。R4 で集約)
+    preset_ui: PresetUi,
+    /// H5: ストローク記録・再生の UI 状態(名前+一覧+recorder/pending/player。R4 で集約)
+    replay_ui: ReplayUi,
     /// H3/H5/H6 の操作結果の表示(保存先パスやエラー)
     status_msg: Option<String>,
 }
@@ -143,13 +147,15 @@ impl PaintApp {
             paused: false,
             step_once: false,
             steps_per_frame: 1,
-            preset_name: String::new(),
-            preset_list: preset::list(),
-            stroke_name: String::new(),
-            stroke_list: replay::list(),
-            recorder: None,
-            pending_recording: None,
-            player: None,
+            preset_ui: PresetUi {
+                store: NamedStore::new(preset::list()),
+            },
+            replay_ui: ReplayUi {
+                store: NamedStore::new(replay::list()),
+                recorder: None,
+                pending_recording: None,
+                player: None,
+            },
             status_msg: None,
         }
     }
@@ -278,7 +284,7 @@ impl PaintApp {
         self.clear_canvas();
         self.stroke.end();
         self.painting = false;
-        self.player = Some(Player::new(recording));
+        self.replay_ui.player = Some(Player::new(recording));
     }
 
     /// 正規化ポインタイベント(input.rs)をストローク・記録(H5)・splat 列へ反映する。
@@ -300,7 +306,7 @@ impl PaintApp {
                     self.painting = true;
                     self.stroke.begin();
                     // H5: 記録はストローク単位。そのとき選ばれていた顔料スロットとツールも残す
-                    if let Some(recorder) = &mut self.recorder {
+                    if let Some(recorder) = &mut self.replay_ui.recorder {
                         recorder.begin_stroke(self.params.brush_channel, self.params.tool);
                     }
                 }
@@ -309,7 +315,7 @@ impl PaintApp {
                     if self.painting {
                         self.painting = false;
                         self.stroke.end();
-                        if let Some(recorder) = &mut self.recorder {
+                        if let Some(recorder) = &mut self.replay_ui.recorder {
                             recorder.end_stroke();
                         }
                     }
@@ -326,7 +332,7 @@ impl PaintApp {
                 .add_motion([px.x, px.y], ev.pressure, spacing, splats);
             // H5: 補間前の生ポインタ位置+筆圧を記録する(再生時に補間し直すため
             // ブラシ半径や筆圧マッピングを変えても同じストロークを引ける)
-            if let Some(recorder) = &mut self.recorder {
+            if let Some(recorder) = &mut self.replay_ui.recorder {
                 recorder.add_point([px.x, px.y], ev.pressure);
             }
         }
@@ -348,7 +354,7 @@ impl PaintApp {
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("{} を作れません: {e}", dir.display()))?;
             let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-            let preset = self.preset_name.trim();
+            let preset = self.preset_ui.store.name.trim();
             let name = if preset.is_empty() {
                 format!("{stamp}.png")
             } else {
@@ -371,7 +377,19 @@ impl PaintApp {
         });
     }
 
+    /// 左パネルのスクロール内容。セクションごとのメソッドへ振り分けるだけ(R4)。
+    /// M4.5/M5 でセクションが増えてもこのディスパッチャに1行足すだけで済む
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
+        self.brush_panel(ui);
+        self.layers_panel(ui);
+        self.tuning_panel(ui);
+        self.preset_panel(ui);
+        self.replay_panel(ui);
+        self.shader_status(ui);
+    }
+
+    /// 水ブラシ(M1〜M4): ツール選択・顔料スロット・ブラシスライダー
+    fn brush_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("水ブラシ");
         // ツール選択(R2): WetTool を回してボタン化する。ラベル・文言・GPU 値は
         // enum の impl に一元化されている(TOOLS 定数表は廃止)。選択したら
@@ -435,7 +453,10 @@ impl PaintApp {
             egui::Slider::new(&mut self.params.smear_rate, 0.0..=1.0)
                 .text("ならし強度(濃い山を伸ばす)"),
         );
+    }
 
+    /// レイヤー(M2): 乾燥レイヤーの可視性・並べ替え + 合成方式(M3)
+    fn layers_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         self.layer_panel(ui);
         // レイヤー合成方式(M3): multiply(M2)⇔ KM の R/T 合成を切替。H5 再生で A/B 比較
@@ -446,7 +467,10 @@ impl PaintApp {
                     .on_hover_text(hover);
             }
         });
+    }
 
+    /// 乾燥・筆圧・味付けスライダー・診断表示・シミュ制御(H6)をまとめた調整セクション
+    fn tuning_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.heading("乾燥 (M2)");
         ui.add(
@@ -586,117 +610,78 @@ impl PaintApp {
                 self.save_snapshot();
             }
         });
+    }
 
+    /// プリセット(H3): 名前保存+一覧読込。共通 UI は NamedStore に集約(R4)
+    fn preset_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.heading("プリセット (H3)");
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.preset_name)
-                    .hint_text("プリセット名")
-                    .desired_width(140.0),
-            );
-            let name = self.preset_name.trim().to_owned();
-            if ui
-                .add_enabled(!name.is_empty(), egui::Button::new("保存"))
-                .clicked()
-            {
-                self.status_msg = Some(match preset::save(&name, &self.params) {
-                    Ok(path) => {
-                        self.preset_list = preset::list();
-                        format!("保存: {}", path.display())
-                    }
-                    Err(e) => e,
-                });
-            }
-            if ui.button("↻").on_hover_text("一覧を再読込").clicked() {
-                self.preset_list = preset::list();
-            }
-        });
-        let mut load_preset: Option<String> = None;
-        for name in &self.preset_list {
-            ui.horizontal(|ui| {
-                if ui.button("読込").clicked() {
-                    load_preset = Some(name.clone());
-                }
-                ui.label(name);
-            });
+        let params = self.params;
+        if let Some(status) =
+            self.preset_ui
+                .store
+                .save_controls(ui, "プリセット名", |name| preset::save(name, &params), preset::list)
+        {
+            self.status_msg = Some(status);
         }
-        if let Some(name) = load_preset {
+        if let Some(name) = self.preset_ui.store.list_rows(ui, "読込") {
             match preset::load(&name) {
                 Ok(params) => {
                     self.params = params;
-                    self.preset_name = name;
+                    self.preset_ui.store.name = name;
                 }
                 Err(e) => self.status_msg = Some(e),
             }
         }
+    }
 
+    /// ストローク記録・再生(H5): 記録操作・保存・一覧再生。名前保存+一覧は NamedStore(R4)
+    fn replay_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.heading("ストローク記録・再生 (H5)");
         ui.horizontal(|ui| {
-            match &self.recorder {
+            match &self.replay_ui.recorder {
                 None => {
                     if ui.button("⏺ 記録開始").clicked() {
-                        self.recorder = Some(Recorder::new());
-                        self.pending_recording = None;
+                        self.replay_ui.recorder = Some(Recorder::new());
+                        self.replay_ui.pending_recording = None;
                     }
                 }
                 Some(_) => {
                     if ui.button("⏹ 記録停止").clicked() {
-                        let recording = self.recorder.take().unwrap().finish();
+                        let recording = self.replay_ui.recorder.take().unwrap().finish();
                         if recording.is_empty() {
                             self.status_msg = Some("ストロークが記録されていません".to_owned());
                         } else {
-                            self.pending_recording = Some(recording);
+                            self.replay_ui.pending_recording = Some(recording);
                         }
                     }
                     ui.colored_label(egui::Color32::from_rgb(220, 80, 80), "記録中…");
                 }
             }
-            if self.player.is_some() {
+            if self.replay_ui.player.is_some() {
                 if ui.button("■ 再生停止").clicked() {
-                    self.player = None;
+                    self.replay_ui.player = None;
                 }
                 ui.colored_label(egui::Color32::from_rgb(64, 160, 64), "再生中…");
             }
         });
-        // 記録直後: 名前を付けて保存 or そのまま試し再生
+        // 記録直後: 名前を付けて保存(共通 NamedStore)+ そのまま試し再生
         let mut replay_now: Option<Recording> = None;
-        if let Some(recording) = &self.pending_recording {
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.stroke_name)
-                        .hint_text("ストローク名")
-                        .desired_width(140.0),
-                );
-                let name = self.stroke_name.trim().to_owned();
-                if ui
-                    .add_enabled(!name.is_empty(), egui::Button::new("保存"))
-                    .clicked()
-                {
-                    self.status_msg = Some(match replay::save(&name, recording) {
-                        Ok(path) => {
-                            self.stroke_list = replay::list();
-                            format!("保存: {}", path.display())
-                        }
-                        Err(e) => e,
-                    });
-                }
-                if ui.button("試し再生").clicked() {
-                    replay_now = Some(recording.clone());
-                }
-            });
+        if let Some(recording) = self.replay_ui.pending_recording.clone() {
+            if let Some(status) = self.replay_ui.store.save_controls(
+                ui,
+                "ストローク名",
+                |name| replay::save(name, &recording),
+                replay::list,
+            ) {
+                self.status_msg = Some(status);
+            }
+            if ui.button("試し再生").clicked() {
+                replay_now = Some(recording);
+            }
         }
-        let mut load_stroke: Option<String> = None;
-        for name in &self.stroke_list {
-            ui.horizontal(|ui| {
-                if ui.button("▶ 再生").clicked() {
-                    load_stroke = Some(name.clone());
-                }
-                ui.label(name);
-            });
-        }
-        if let Some(name) = load_stroke {
+        if let Some(name) = self.replay_ui.store.list_rows(ui, "▶ 再生") {
             match replay::load(&name) {
                 Ok(recording) => replay_now = Some(recording),
                 Err(e) => self.status_msg = Some(e),
@@ -710,7 +695,10 @@ impl PaintApp {
             ui.separator();
             ui.label(msg.clone());
         }
+    }
 
+    /// シェーダー(H1): 監視ディレクトリとコンパイル状態の表示
+    fn shader_status(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.heading("シェーダー (H1)");
         ui.label(format!("{} を監視中", shader_dir().display()));
@@ -747,15 +735,15 @@ impl PaintApp {
         self.apply_pointer_events(&events, rect, &mut splats);
 
         // H5: 記録はフレーム基準(ストローク間の待ちも再現される)
-        if let Some(recorder) = &mut self.recorder {
+        if let Some(recorder) = &mut self.replay_ui.recorder {
             recorder.tick();
         }
 
         // H5: 再生中は記録済みポインタ入力を同じテンポで流し込む(手描きと合流可)
-        if let Some(player) = &mut self.player
+        if let Some(player) = &mut self.replay_ui.player
             && !player.advance(&mut self.params, &mut splats)
         {
-            self.player = None;
+            self.replay_ui.player = None;
         }
 
         // H6: 一時停止中は 0 ステップ(1ステップボタンが押されていれば 1)

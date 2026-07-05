@@ -21,7 +21,7 @@ R1 は挙動不変のファイル移動が主なので**最初**にやる(後に
 | R1 | workspace 化(km / pigment / paint-core の切り出し) | 全体。mixbox 隔離の構造化・テスト反復の高速化 | 中 | ✅ 完了(2026-07-05) |
 | R2 | Tool の階層 enum 化(`Tool::Wet` / `Tool::Raster`) | M4.5 全般 | 小 | ✅ 完了(2026-07-05) |
 | R3 | パイプラインのテーブル駆動化+エラー行番号補正 | M4.5、日々のシェーダー反復 | 小〜中 | ✅ 完了(2026-07-05) |
-| R4 | app.rs の UI 分割と状態のグループ化 | M4.5 / M5 | 中 | ⬜ 未着手 |
+| R4 | app.rs の UI 分割と状態のグループ化 | M4.5 / M5 | 中 | ✅ 完了(2026-07-05) |
 | R5 | 顔料バッファのフィールド化+ Palette 状態化の準備 | M5b | 極小 | ⬜ 未着手 |
 | R6 | LayerStack の抽出 | M4.5a / M5c | 小 | ⬜ 未着手 |
 | R7 | ストロークモデルの統一(replay と Undo 履歴) | M4.5d | 小 | ⬜ 未着手 |
@@ -132,6 +132,12 @@ pub trait ToolInfo {
 - `src/ui/` サブモジュールへ分割: `tools.rs` / `layers.rs` / `presets.rs` / `tuning.rs`(畳んである味付けスライダー群)など
 - **名前入力+保存+一覧のパターンがプリセット(H3)とストローク(H5)で完全に重複**しているので共通化する
 - `PaintApp` のフィールドも束ねる: `recorder`/`pending_recording`/`player`/`stroke_name`/`stroke_list` → `ReplayUi`、`preset_name`/`preset_list` → `PresetUi`
+
+**実施メモ(2026-07-05 完了)**:
+
+- `src/app.rs` を `src/app/mod.rs` に変え、UI 状態を `src/app/ui/mod.rs` に切り出した。**セクション描画は PaintApp の impl メソッドとして分解**(`tool_panel` は各セクションを呼ぶだけのディスパッチャに: `brush_panel` / `layers_panel` / `tuning_panel` / `preset_panel` / `replay_panel` / `shader_status`)。約 340 行の一枚岩を解消し、M4.5/M5 でセクションが増えてもディスパッチャに1行足すだけにした。**当面はメソッドを app/mod.rs に置き、per-file 分割(tools.rs 等)は app/mod.rs 自体が窮屈になったら行う**(privacy 上は app/ui/ 配下なら非公開フィールドに触れる)。
+- フィールド束ね: `PresetUi { store }` と `ReplayUi { store, recorder, pending_recording, player }`(`store: NamedStore { name, list }`)。PaintApp の 7 フィールドが 2 フィールド + status_msg に減った。
+- 重複していた「名前入力+保存+一覧」は `NamedStore::save_controls`(名前欄+保存+↻)/ `list_rows`(一覧行)に一本化。副作用としてストローク保存行にも ↻(一覧再読込)が付き、「試し再生」は保存行の次の行に移った(機能は不変。プリセット行と UI が揃った)。
 
 ## 6. R5 — 顔料バッファのフィールド化+ Palette 準備(M5b の前提)
 

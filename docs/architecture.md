@@ -37,7 +37,9 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │        └─ tool.rs       ツールの階層 enum(R2。Tool = Wet/Raster、gpu_id、ToolInfo)
 ├─ src/                   バイナリ crate(egui / wgpu / naga はここだけ)
 │  ├─ main.rs             eframe 起動
-│  ├─ app.rs              egui UI(スライダー・ツール選択・レイヤーパネル・デバッグ表示・日本語フォント)
+│  ├─ app/                egui UI
+│  │  ├─ mod.rs           PaintApp・セクション描画メソッド(brush/layers/tuning/preset/replay/shader。R4)
+│  │  └─ ui/mod.rs        UI 状態(PresetUi / ReplayUi)+ 名前保存・一覧の共通部品 NamedStore(R4)
 │  ├─ gpu/
 │  │  ├─ mod.rs           GpuCanvas: テクスチャ・パイプライン・ping-pong・bake/snapshot・パス発行
 │  │  └─ hot_reload.rs    WGSL ファイル監視と再ビルド(H1)
