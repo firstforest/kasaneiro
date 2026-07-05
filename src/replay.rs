@@ -21,10 +21,14 @@ pub struct TimedPoint {
     pub pressure: f32,
 }
 
-/// 1 ストローク = ドラッグ開始〜終了。channel はそのとき選ばれていた顔料スロット
+/// 1 ストローク = ドラッグ開始〜終了。channel はそのとき選ばれていた顔料スロット、
+/// tool はツール(0=描画/1=リフト/2=消去。M3)。tool は後から足したので serde default で
+/// 古いストローク JSON(tool 無し)も 0=描画として読める
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordedStroke {
     pub channel: u32,
+    #[serde(default)]
+    pub tool: u32,
     pub points: Vec<TimedPoint>,
 }
 
@@ -60,9 +64,10 @@ impl Recorder {
         self.frame += 1;
     }
 
-    pub fn begin_stroke(&mut self, channel: u32) {
+    pub fn begin_stroke(&mut self, channel: u32, tool: u32) {
         self.recording.strokes.push(RecordedStroke {
             channel,
+            tool,
             points: Vec::new(),
         });
         self.in_stroke = true;
@@ -71,7 +76,7 @@ impl Recorder {
     pub fn add_point(&mut self, pos: [f32; 2], pressure: f32) {
         if !self.in_stroke {
             // ドラッグ開始イベントを取りこぼした場合の保険
-            self.begin_stroke(0);
+            self.begin_stroke(0, 0);
         }
         if let Some(stroke) = self.recording.strokes.last_mut() {
             stroke.points.push(TimedPoint {
@@ -138,6 +143,8 @@ impl Player {
                 self.stroke_state.begin();
                 self.in_stroke = true;
                 params.brush_channel = stroke.channel;
+                // ツールも記録値で上書き(リフト/消去ストロークを正しく再現する。M3)
+                params.tool = stroke.tool;
             }
             // サンプル間隔は筆圧を反映した実効半径から(ライブ描画 app.rs と同じ式)
             let spacing = (params.radius_at(point.pressure) * 0.25).max(1.0);
@@ -183,7 +190,7 @@ mod tests {
     #[test]
     fn record_then_replay() {
         let mut recorder = Recorder::new();
-        recorder.begin_stroke(2);
+        recorder.begin_stroke(2, 1);
         recorder.add_point([10.0, 10.0], 1.0);
         recorder.tick();
         recorder.add_point([20.0, 10.0], 1.0);
@@ -194,9 +201,10 @@ mod tests {
         let mut params = SimParams::default();
         let mut out = Vec::new();
 
-        // フレーム0: 始点の splat + 顔料スロットの上書き
+        // フレーム0: 始点の splat + 顔料スロット・ツールの上書き
         assert!(player.advance(&mut params, &mut out));
         assert_eq!(params.brush_channel, 2);
+        assert_eq!(params.tool, 1);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].pos, [10.0, 10.0]);
 

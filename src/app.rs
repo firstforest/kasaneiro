@@ -14,6 +14,21 @@ use eframe::egui;
 use eframe::egui_wgpu;
 use std::path::{Path, PathBuf};
 
+/// ブラシツール(M3)。値は SimParams::tool / splat.wgsl の分岐と対応。
+const TOOLS: [(u32, &str, &str); 3] = [
+    (0, "描画", "水+顔料を置く(M1)"),
+    (
+        1,
+        "リフト(削り)",
+        "再湿潤して沈着顔料を浮遊層へ戻す。ステイニング顔料(ω)は残り、紙の凸部から先に剥がれる(M3)",
+    ),
+    (
+        2,
+        "消去",
+        "湿レイヤーの水・顔料を機械的にゼロへ(紙の白まで戻す完全消去。M3)",
+    ),
+];
+
 /// デバッグ表示モード(H4)。値は SimParams::display_mode / display.wgsl の分岐と対応。
 const DISPLAY_MODES: [(u32, &str); 7] = [
     (0, "通常(顔料を表示)"),
@@ -283,9 +298,9 @@ impl PaintApp {
                     }
                     self.painting = true;
                     self.stroke.begin();
-                    // H5: 記録はストローク単位。そのとき選ばれていた顔料スロットも残す
+                    // H5: 記録はストローク単位。そのとき選ばれていた顔料スロットとツールも残す
                     if let Some(recorder) = &mut self.recorder {
-                        recorder.begin_stroke(self.params.brush_channel);
+                        recorder.begin_stroke(self.params.brush_channel, self.params.tool);
                     }
                 }
                 PointerPhase::Move => {}
@@ -357,7 +372,14 @@ impl PaintApp {
 
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("水ブラシ");
-        // 顔料セレクタ(M1c): ブラシが注入する顔料スロットを選ぶ
+        // ツール選択(M3): 描画 / リフト(削り) / 消去。splat.wgsl が params.tool で分岐する
+        ui.horizontal(|ui| {
+            for (value, label, hover) in TOOLS {
+                ui.selectable_value(&mut self.params.tool, value, label)
+                    .on_hover_text(hover);
+            }
+        });
+        // 顔料セレクタ(M1c): ブラシが注入する顔料スロットを選ぶ。ホバーで顔料個性(M3)を表示
         ui.horizontal(|ui| {
             for (i, pigment) in PIGMENTS.iter().enumerate() {
                 let selected = self.params.brush_channel == i as u32;
@@ -367,12 +389,20 @@ impl PaintApp {
                 if selected {
                     button = button.stroke((2.0, ui.visuals().strong_text_color()));
                 }
-                if ui.add(button).on_hover_text(pigment.name).clicked() {
+                let hover = format!(
+                    "{}\n密度 ρ={:.2} / ステイニング ω={:.2} / 粒状感 γ={:.2}",
+                    pigment.name, pigment.density, pigment.staining, pigment.granulation
+                );
+                if ui.add(button).on_hover_text(hover).clicked() {
                     self.params.brush_channel = i as u32;
                 }
             }
         });
-        ui.label(PIGMENTS[self.params.brush_channel.min(3) as usize].name);
+        let pg = &PIGMENTS[self.params.brush_channel.min(3) as usize];
+        ui.label(format!(
+            "{}(ω={:.2} γ={:.2})",
+            pg.name, pg.staining, pg.granulation
+        ));
         ui.add(
             egui::Slider::new(&mut self.params.brush_radius, 1.0..=64.0)
                 .text("半径")
@@ -381,6 +411,10 @@ impl PaintApp {
         ui.add(egui::Slider::new(&mut self.params.brush_water, 0.0..=2.0).text("水量"));
         ui.add(egui::Slider::new(&mut self.params.brush_velocity, 0.0..=2.0).text("初速"));
         ui.add(egui::Slider::new(&mut self.params.brush_pigment, 0.0..=2.0).text("顔料量(0=水筆)"));
+        ui.add(
+            egui::Slider::new(&mut self.params.lift_strength, 0.0..=1.0)
+                .text("リフト強度(削りツール)"),
+        );
 
         ui.separator();
         self.layer_panel(ui);

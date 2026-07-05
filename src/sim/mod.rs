@@ -107,11 +107,14 @@ pub struct SimParams {
     pub dry_edge: f32,
     /// Wet the Layer(M2): 再湿潤で全面に足す水量
     pub rewet_water: f32,
+    /// ブラシツール(M3): 0=描画 / 1=リフト(削り) / 2=消去。splat.wgsl が分岐する。
+    /// リフト = 沈着顔料を浮遊層へ戻して縁へ流す(ステイニング顔料は ω で残る)。
+    /// 消去 = 湿レイヤーの水・顔料・濡れマスクを機械的にゼロへ(紙の白まで戻す完全消去)
+    pub tool: u32,
+    /// リフトの強さ(M3): 1 ストロークで沈着顔料を浮遊層へ戻す割合の基準値。
+    /// 実効値は顔料の ω(剥がれにくさ)と紙ハイト(凸部ほど剥がれる)で変調される
+    pub lift_strength: f32,
     /// uniform の 16 バイト境界合わせ。パラメータを増やすときはまずここを置き換える
-    #[serde(skip)]
-    pub _pad0: u32,
-    #[serde(skip)]
-    pub _pad1: u32,
     #[serde(skip)]
     pub _pad2: u32,
 }
@@ -164,8 +167,8 @@ impl Default for SimParams {
             dry_gran: 0.0,
             dry_edge: 0.4,
             rewet_water: 0.5,
-            _pad0: 0,
-            _pad1: 0,
+            tool: 0,
+            lift_strength: 0.3,
             _pad2: 0,
         }
     }

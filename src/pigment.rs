@@ -26,14 +26,28 @@ pub struct Pigment {
     pub name: &'static str,
     /// 基本色(sRGB 0..255)。mixbox 推奨の顔料色(mixbox lib.rs の PIGMENT COLORS 表)
     pub rgb: [u8; 3],
+    /// 密度 ρ(M3): 沈着(吸着)の速さ。重い顔料ほど早く沈む。transfer.wgsl の deposit を倍率変調
+    pub density: f32,
+    /// ステイニング力 ω ∈ [0,1](M3): 剥がれにくさ。高いほど脱着・リフトが (1−ω) で抑えられ
+    /// 紙に色が残る(ステイン床)。フタロ・キナクリドンは高く、アース系は低い
+    pub staining: f32,
+    /// 粒状感 γ ∈ [0,1](M3): 紙ハイトへの反応。高いほど凹部(谷)に沈着し凸部で剥がれる
+    /// = 粒状化。粗い重い粒子(バーントシェンナ等)で高く、微細粒子(フタロ)で低い
+    pub granulation: f32,
 }
 
-/// パレット(4スロット固定)。黄+青=緑の完了条件チェックは 0 と 1 で行う
+/// パレット(4スロット固定)。黄+青=緑の完了条件チェックは 0 と 1 で行う。
+/// ρ/ω/γ は Curtis 論文の顔料表と実際の水彩の性質(handprint 等)を参照した代表値。
+/// 顔料ごとの個性が「リフトで残る/紙目に溜まる」の違いとして見えることを狙う
 pub const PIGMENTS: [Pigment; PIGMENT_COUNT] = [
-    Pigment { name: "ハンザイエロー", rgb: [252, 211, 0] },
-    Pigment { name: "フタロブルー", rgb: [13, 27, 68] },
-    Pigment { name: "キナクリドンマゼンタ", rgb: [128, 2, 46] },
-    Pigment { name: "バーントシェンナ", rgb: [123, 72, 0] },
+    // 半透明・中程度のステイニング・ほぼ非粒状
+    Pigment { name: "ハンザイエロー", rgb: [252, 211, 0], density: 1.0, staining: 0.5, granulation: 0.1 },
+    // 微細粒子: 強ステイニング(剥がれない)・非粒状・軽い
+    Pigment { name: "フタロブルー", rgb: [13, 27, 68], density: 0.8, staining: 0.9, granulation: 0.05 },
+    // 透明・強ステイニング・非粒状
+    Pigment { name: "キナクリドンマゼンタ", rgb: [128, 2, 46], density: 0.9, staining: 0.85, granulation: 0.05 },
+    // アース系: 重く早く沈着・低ステイニング(よく剥がれる)・強粒状(紙目に溜まる)
+    Pigment { name: "バーントシェンナ", rgb: [123, 72, 0], density: 1.3, staining: 0.2, granulation: 0.8 },
 ];
 
 /// 全顔料+紙色の mixbox latent を uniform buffer 用に固める。
@@ -58,6 +72,18 @@ pub fn latent_uniform() -> [[f32; 4]; LATENT_VEC4S] {
     out
 }
 
+/// 顔料個性(ρ/ω/γ)を compute uniform 用に固める(M3)。
+/// レイアウト(common.wgsl の binding 9 = `array<vec4f, 4>` と対応):
+///   [i] = 顔料 i の (密度 ρ, ステイニング ω, 粒状感 γ, 予備 0)
+/// パレットは固定なので起動時に1回書くだけ(latent_uniform と同じ扱い)。
+pub fn physics_uniform() -> [[f32; 4]; PIGMENT_COUNT] {
+    let mut out = [[0.0; 4]; PIGMENT_COUNT];
+    for (i, p) in PIGMENTS.iter().enumerate() {
+        out[i] = [p.density, p.staining, p.granulation, 0.0];
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +98,24 @@ mod tests {
         assert!(
             g > r && g > b,
             "黄+青の混色が緑になっていません: rgb = {mix:?}"
+        );
+    }
+
+    /// 顔料個性(M3)の値が妥当な範囲か。ステイニング/粒状感は [0,1]、密度は正。
+    /// physics_uniform のレイアウト(vec4 の xyz に ρ/ω/γ)も合わせて検証する
+    #[test]
+    fn physics_in_range() {
+        let phys = physics_uniform();
+        for (i, p) in PIGMENTS.iter().enumerate() {
+            assert!(p.density > 0.0, "{} の密度が非正です", p.name);
+            assert!((0.0..=1.0).contains(&p.staining), "{} の ω が範囲外です", p.name);
+            assert!((0.0..=1.0).contains(&p.granulation), "{} の γ が範囲外です", p.name);
+            assert_eq!(phys[i], [p.density, p.staining, p.granulation, 0.0]);
+        }
+        // ステイニングの対比が付いていること(リフトで残る/残らないの見た目差の前提)
+        assert!(
+            PIGMENTS[1].staining > PIGMENTS[3].staining,
+            "フタロブルーはバーントシェンナよりステイニングが強いはず"
         );
     }
 

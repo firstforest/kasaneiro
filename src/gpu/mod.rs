@@ -282,6 +282,16 @@ impl GpuCanvas {
         });
         queue.write_buffer(&pigment_buffer, 0, bytemuck::cast_slice(&latents));
 
+        // 顔料個性(M3): ρ/ω/γ。compute の binding 9 に渡す。パレット固定なので起動時に1回
+        let physics = pigment::physics_uniform();
+        let physics_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pigment_physics"),
+            size: std::mem::size_of_val(&physics) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&physics_buffer, 0, bytemuck::cast_slice(&physics));
+
         let sampled_entry = |binding: u32, visibility: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
             binding,
             visibility,
@@ -318,7 +328,7 @@ impl GpuCanvas {
 
         // 全 compute パス共通のレイアウト。binding は common.wgsl のコメントと対応:
         // 0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats,
-        // 8 = 紙ハイト(M1d、静的)
+        // 8 = 紙ハイト(M1d、静的), 9 = 顔料個性 ρ/ω/γ(M3、静的)
         let compute_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sim_bgl"),
             entries: &[
@@ -339,6 +349,11 @@ impl GpuCanvas {
                     wgpu::BufferBindingType::Storage { read_only: true },
                 ),
                 sampled_entry(8, wgpu::ShaderStages::COMPUTE),
+                buffer_entry(
+                    9,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Uniform,
+                ),
             ],
         });
 
@@ -424,6 +439,10 @@ impl GpuCanvas {
             entries.push(wgpu::BindGroupEntry {
                 binding: 8,
                 resource: wgpu::BindingResource::TextureView(&paper_view),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 9,
+                resource: physics_buffer.as_entire_binding(),
             });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("sim_bg"),

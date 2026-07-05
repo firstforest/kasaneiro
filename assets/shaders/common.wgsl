@@ -9,6 +9,8 @@
 // CPU(src/paper.rs)が起動時に生成する静的テクスチャで、ping-pong しない。
 // compute パスの binding は全シェーダー共通:
 //   0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats, 8 = 紙ハイト
+//   9 = 顔料個性(M3): array<vec4f, 4>、各 vec4 = (密度 ρ, ステイニング ω, 粒状感 γ, 予備)。
+//       起動時に1回だけ書く静的 uniform(src/pigment.rs の physics_uniform)。splat/transfer が読む
 // dst は毎パス全テクセルを書くこと(変更しないテクスチャも素通しで write する。ping-pong のため)
 // 乾燥レイヤー(M2): rgba32float の texture array(1 スライス = 1 乾燥レイヤー、rgba = 4顔料濃度)。
 // bake.wgsl だけが binding 9 に書き込みスライスを持つ(splats は持たない)。表示側の合成は display.wgsl 参照
@@ -48,8 +50,8 @@ struct SimParams {
     dry_gran: f32,
     dry_edge: f32,
     rewet_water: f32,
-    _pad0: u32,
-    _pad1: u32,
+    tool: u32,          // M3: 0=描画 / 1=リフト(削り) / 2=消去
+    lift_strength: f32, // M3: リフトの基準強度
     _pad2: u32,
 };
 
