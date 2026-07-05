@@ -5,6 +5,7 @@
 //! `impl PaintApp` メソッドとして以下のサブモジュールに分割してある(app/mod.rs 側は
 //! 状態・ライフサイクルとディスパッチャ `tool_panel` だけを持つ):
 //! - [`tools`] — 乾燥ボタン・水ブラシ(`dry_controls` / `brush_panel`)
+//! - [`palette`] — 顔料パレット編集(`palette_panel`。M5)
 //! - [`layers`] — レイヤー可視性・並べ替え・合成方式(`layer_panel` / `layers_panel`)
 //! - [`tuning`] — 乾燥・筆圧・味付けスライダー・診断・シミュ制御(`tuning_panel`)
 //! - [`panels`] — プリセット / 記録再生 / シェーダー状態(`preset_panel` / `replay_panel` / `shader_status`)
@@ -15,6 +16,7 @@
 
 mod canvas;
 mod layers;
+mod palette;
 mod panels;
 mod tools;
 mod tuning;

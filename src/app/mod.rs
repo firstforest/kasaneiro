@@ -96,6 +96,9 @@ pub struct PaintApp {
     /// M4.5d: 線画(鉛筆・ペン・ハイライト)の多段 Undo/Redo 履歴。
     /// 流体を通らないラスタ線画をストローク単位で決定論的に引き直す(湿レイヤーは対象外)
     line_history: LineHistory,
+    /// M5: ランタイムパレット(4スロットの色・ρ/ω/γ)。編集したら apply_palette() で GPU へ。
+    /// 乾かすと現行パレットの色がそのレイヤー専用スロットへ記録される(M5c、遡って変色しない)
+    palette: pigment::Palette,
 }
 
 impl PaintApp {
@@ -148,6 +151,17 @@ impl PaintApp {
             },
             status_msg: None,
             line_history: LineHistory::default(),
+            // GpuCanvas::new が既定パレットを両バッファへ書き込み済み(同じ値で開始)
+            palette: pigment::Palette::default_palette(),
+        }
+    }
+
+    /// M5: 現行パレット(self.palette)を GPU へ反映する。色・ρ/ω/γ を編集したあとに呼ぶ。
+    /// physics は即時に湿シミュへ効き、色は live パレット枠だけ更新される(乾燥済みは不変=M5c)
+    fn apply_palette(&mut self) {
+        let mut renderer = self.render_state.renderer.write();
+        if let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() {
+            canvas.set_palette(&self.render_state.queue, &self.palette);
         }
     }
 
@@ -405,6 +419,7 @@ impl PaintApp {
     /// このディスパッチャに1行足すだけで済む
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
         self.brush_panel(ui);
+        self.palette_panel(ui);
         self.linework_panel(ui);
         self.layers_panel(ui);
         self.tuning_panel(ui);

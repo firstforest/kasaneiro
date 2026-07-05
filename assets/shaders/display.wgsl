@@ -40,10 +40,17 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 @group(0) @binding(1) var susp_tex: texture_2d<f32>;
 @group(0) @binding(2) var dep_tex: texture_2d<f32>;
 @group(0) @binding(3) var<uniform> params: SimParams;
-// mixbox latent(src/pigment.rs の latent_uniform と同レイアウト):
-//   [2i] = 顔料 i の (c0..c3) / [2i+1] = 顔料 i の RGB 残差
-//   [8],[9] = 紙色 / [10],[11] = 白 / [12],[13] = 黒(KM 合成の R_b 用)
-@group(0) @binding(4) var<uniform> latents: array<vec4f, 14>;
+// mixbox latent(crates/pigment の global_latents / Palette::pigment_latents と同レイアウト。M5c):
+//   グローバル光学(先頭 GLOBAL_LATENTS=6): [0],[1]=紙色 / [2],[3]=白(R_w)/ [4],[5]=黒(R_b, KM)
+//   パレット枠(pal ごとに PIGMENT_LATENTS=8): 顔料 i は [PAL_BASE(pal)+2i]=(c0..c3), [+2i+1]=RGB 残差
+//   pal = 0..MAX_LAYERS-1 は乾燥レイヤーのスロット別(乾かした瞬間に記録=色が遡って変わらない)、
+//   pal = LIVE_PALETTE(=MAX_LAYERS) は現行(湿レイヤー)のパレット。総数 LATENT_TOTAL=6+9×8=78
+@group(0) @binding(4) var<uniform> latents: array<vec4f, 78>;
+const GLOBAL_LATENTS: u32 = 6u;
+const PIGMENT_LATENTS: u32 = 8u;
+const LIVE_PALETTE: u32 = 8u;
+// パレット pal の顔料ブロック先頭(latents 内の vec4 インデックス)
+fn pal_base(pal: u32) -> u32 { return GLOBAL_LATENTS + pal * PIGMENT_LATENTS; }
 @group(0) @binding(5) var paper_tex: texture_2d<f32>;
 // 乾燥レイヤー(M2): スライス = レイヤースロット、rgba = 4顔料濃度
 @group(0) @binding(6) var dried_tex: texture_2d_array<f32>;
@@ -127,7 +134,8 @@ fn mixbox_eval(z: vec4f) -> vec3f {
 // 濃度 → 発色の共通部(M1c/M2): 4顔料の濃度を被覆率に変換し、
 // 下地(base = 紙 or 白の latent ペア)と latent 空間で混合してから RGB へ戻す。
 // 「黄+青の境界が濁らず緑に馴染む」のはこの latent 混合が作る。
-fn render_conc(conc_in: vec4f, z_base: vec4f, z_base_res: vec4f) -> vec3f {
+// pal = 使う顔料パレット枠(乾燥レイヤーはスロット別に記録した色、湿レイヤーは LIVE_PALETTE)
+fn render_conc(conc_in: vec4f, z_base: vec4f, z_base_res: vec4f, pal: u32) -> vec3f {
     let conc = max(conc_in, vec4f(0.0));
     let total = conc.x + conc.y + conc.z + conc.w;
     // 被覆率: 濃度が上がるほど下地が見えなくなる(Beer-Lambert 風の飽和)
@@ -138,9 +146,10 @@ fn render_conc(conc_in: vec4f, z_base: vec4f, z_base_res: vec4f) -> vec3f {
     var z_res = (1.0 - cover) * z_base_res;
     if (total > 1e-6) {
         let w = conc * (cover / total);
+        let pb = pal_base(pal);
         for (var i = 0u; i < 4u; i++) {
-            z_mix += w[i] * latents[2u * i];
-            z_res += w[i] * latents[2u * i + 1u];
+            z_mix += w[i] * latents[pb + 2u * i];
+            z_res += w[i] * latents[pb + 2u * i + 1u];
         }
     }
     return clamp(mixbox_eval(z_mix) + z_res.xyz, vec3f(0.0), vec3f(1.0));
@@ -148,7 +157,7 @@ fn render_conc(conc_in: vec4f, z_base: vec4f, z_base_res: vec4f) -> vec3f {
 
 // 湿レイヤーの通常レンダリング: 紙の上に発色させる
 fn render_paper(water: f32, susp: vec4f, dep: vec4f) -> vec3f {
-    var color = render_conc(susp + dep, latents[8], latents[9]);
+    var color = render_conc(susp + dep, latents[0], latents[1], LIVE_PALETTE);
     // 濡れている場所をわずかに暗く(水だけのストロークも通常表示で見えるように)
     color *= 1.0 - 0.12 * clamp(water, 0.0, 1.0);
     return color;
@@ -182,7 +191,8 @@ fn dried_factor(p: vec2f) -> vec3f {
         }
         let slot = layers.order[k >> 2u][k & 3u];
         let conc = load_bilinear_layer(dried_tex, p, slot);
-        factor *= render_conc(conc, latents[10], latents[11]);
+        // 白地(latents[2],[3])に置いた透過率。色はこのレイヤーの記録スロット(slot)の顔料で
+        factor *= render_conc(conc, latents[2], latents[3], slot);
     }
     return factor;
 }
@@ -204,9 +214,9 @@ fn linear_to_srgb(c: vec3f) -> vec3f {
 // 濃度 conc の1層を、リニア反射率 r_below の下地の上に KM で重ねた反射率(リニア)。
 // 層の反射率 R=R_b(黒地発色)・透過率² T²=(R_w−R_b)(1−R_b)(km.rs の簡約)を
 // 白地/黒地の mixbox 発色から求め、合成式 R = R_top + T²·R_below/(1−R_top·R_below) を畳む。
-fn km_over_conc(conc: vec4f, r_below: vec3f) -> vec3f {
-    let rw = srgb_to_linear(render_conc(conc, latents[10], latents[11]));
-    let rb = srgb_to_linear(render_conc(conc, latents[12], latents[13]));
+fn km_over_conc(conc: vec4f, r_below: vec3f, pal: u32) -> vec3f {
+    let rw = srgb_to_linear(render_conc(conc, latents[2], latents[3], pal));
+    let rb = srgb_to_linear(render_conc(conc, latents[4], latents[5], pal));
     let r_top = rb;
     let t2 = max(rw - rb, vec3f(0.0)) * (vec3f(1.0) - rb);
     let denom = max(vec3f(1.0) - r_top * r_below, vec3f(1e-4));
@@ -215,18 +225,18 @@ fn km_over_conc(conc: vec4f, r_below: vec3f) -> vec3f {
 
 // 紙(最下層)→ 乾燥レイヤー(下から)→ 湿レイヤー(最上)を KM で光学合成した最終色(sRGB)。
 fn km_composite(water: f32, susp: vec4f, dep: vec4f, p: vec2f) -> vec3f {
-    // 下地 = 紙の反射率(リニア)。render_conc(0,紙) は紙色そのもの
-    var r = srgb_to_linear(render_conc(vec4f(0.0), latents[8], latents[9]));
+    // 下地 = 紙の反射率(リニア)。render_conc(0,紙) は紙色そのもの(pal は濃度0なので不問)
+    var r = srgb_to_linear(render_conc(vec4f(0.0), latents[0], latents[1], LIVE_PALETTE));
     for (var k = 0u; k < min(layers.count, 8u); k++) {
         if ((layers.visible_mask & (1u << k)) == 0u) {
             continue;
         }
         let slot = layers.order[k >> 2u][k & 3u];
         let conc = load_bilinear_layer(dried_tex, p, slot);
-        r = km_over_conc(conc, r);
+        r = km_over_conc(conc, r, slot);
     }
-    // 湿レイヤーを最上に重ねる
-    r = km_over_conc(susp + dep, r);
+    // 湿レイヤーを最上に重ねる(現行パレット)
+    r = km_over_conc(susp + dep, r, LIVE_PALETTE);
     var color = linear_to_srgb(r);
     // 濡れている場所をわずかに暗く(render_paper と同じ演出。水だけのストロークも見えるように)
     color *= 1.0 - 0.12 * clamp(water, 0.0, 1.0);

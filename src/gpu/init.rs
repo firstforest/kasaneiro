@@ -194,18 +194,29 @@ impl GpuCanvas {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // 顔料+紙色の mixbox latent(M1c)。パレットは固定なので起動時に1回書くだけ
-        let latents = pigment::latent_uniform();
-        let pigment_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        // 顔料+紙色の mixbox latent(M1c/M5c)。レイアウト = グローバル光学(紙/白/黒)+
+        // パレット数 × 顔料ブロック。パレット枠は「乾燥レイヤー MAX_LAYERS 個 + 現行(live)1個」。
+        // 乾かすたびに現行パレットの顔料ブロックを対応スロットへ焼き込む(M5c: レイヤーごとパレット
+        // 記録)ため、顔料を後から編集しても乾燥済みレイヤーの色は変わらない。起動時は既定パレットで
+        // 全スロットを埋める(display.wgsl の array<vec4f, LATENT_TOTAL> と対応)
+        let palette = pigment::Palette::default_palette();
+        let live_pigment_latents = palette.pigment_latents();
+        let mut latents = [[0.0f32; 4]; super::LATENT_TOTAL];
+        latents[..pigment::GLOBAL_LATENTS].copy_from_slice(&pigment::global_latents());
+        for pal in 0..super::PALETTE_SLOTS {
+            let base = pigment::GLOBAL_LATENTS + pal * pigment::PIGMENT_LATENTS;
+            latents[base..base + pigment::PIGMENT_LATENTS].copy_from_slice(&live_pigment_latents);
+        }
+        let latents_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pigment_latents"),
             size: std::mem::size_of_val(&latents) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        queue.write_buffer(&pigment_buffer, 0, bytemuck::cast_slice(&latents));
+        queue.write_buffer(&latents_buffer, 0, bytemuck::cast_slice(&latents));
 
-        // 顔料個性(M3): ρ/ω/γ。compute の binding 9 に渡す。パレット固定なので起動時に1回
-        let physics = pigment::physics_uniform();
+        // 顔料個性(M3): ρ/ω/γ。compute の binding 9 に渡す。M5 でランタイム編集可能(全レイヤー共通)
+        let physics = palette.physics_uniform();
         let physics_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pigment_physics"),
             size: std::mem::size_of_val(&physics) as u64,
@@ -430,7 +441,7 @@ impl GpuCanvas {
             });
             entries.push(wgpu::BindGroupEntry {
                 binding: 4,
-                resource: pigment_buffer.as_entire_binding(),
+                resource: latents_buffer.as_entire_binding(),
             });
             entries.push(wgpu::BindGroupEntry {
                 binding: 5,
@@ -528,6 +539,9 @@ impl GpuCanvas {
             display_bind_groups,
             params_buffer,
             splat_buffer,
+            latents_buffer,
+            physics_buffer,
+            live_pigment_latents,
             compute_layout,
             display_layout,
             dried_slice_views,

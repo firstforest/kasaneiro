@@ -2,7 +2,6 @@
 
 use crate::app::PaintApp;
 use paint_core::tool::{RasterTool, Tool, ToolInfo, WetTool};
-use pigment::PIGMENTS;
 use eframe::egui;
 
 impl PaintApp {
@@ -57,26 +56,36 @@ impl PaintApp {
         if let Some(wt) = self.tool.wet() {
             self.params.tool = wt.gpu_id();
         }
-        // 顔料セレクタ(M1c): ブラシが注入する顔料スロットを選ぶ。ホバーで顔料個性(M3)を表示
+        // 顔料セレクタ(M1c/M5): ブラシが注入する顔料スロット。色・名前・個性はランタイム
+        // パレット(self.palette)から。編集はパレットパネル(palette_panel)で行う。
+        // スロット情報を先にスナップショットしておく(ループ内で self.params を触るための借用回避)
+        let swatches: Vec<(egui::Color32, String)> = self
+            .palette
+            .pigments
+            .iter()
+            .map(|p| {
+                (
+                    egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]),
+                    format!(
+                        "{}\n密度 ρ={:.2} / ステイニング ω={:.2} / 粒状感 γ={:.2}",
+                        p.name, p.density, p.staining, p.granulation
+                    ),
+                )
+            })
+            .collect();
         ui.horizontal(|ui| {
-            for (i, pigment) in PIGMENTS.iter().enumerate() {
+            for (i, (color, hover)) in swatches.iter().enumerate() {
                 let selected = self.params.brush_channel == i as u32;
-                let color =
-                    egui::Color32::from_rgb(pigment.rgb[0], pigment.rgb[1], pigment.rgb[2]);
-                let mut button = egui::Button::new("").fill(color).min_size(egui::vec2(28.0, 28.0));
+                let mut button = egui::Button::new("").fill(*color).min_size(egui::vec2(28.0, 28.0));
                 if selected {
                     button = button.stroke((2.0, ui.visuals().strong_text_color()));
                 }
-                let hover = format!(
-                    "{}\n密度 ρ={:.2} / ステイニング ω={:.2} / 粒状感 γ={:.2}",
-                    pigment.name, pigment.density, pigment.staining, pigment.granulation
-                );
-                if ui.add(button).on_hover_text(hover).clicked() {
+                if ui.add(button).on_hover_text(hover.clone()).clicked() {
                     self.params.brush_channel = i as u32;
                 }
             }
         });
-        let pg = &PIGMENTS[self.params.brush_channel.min(3) as usize];
+        let pg = &self.palette.pigments[self.params.brush_channel.min(3) as usize];
         ui.label(format!(
             "{}(ω={:.2} γ={:.2})",
             pg.name, pg.staining, pg.granulation

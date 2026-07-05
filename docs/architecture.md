@@ -26,7 +26,7 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 ├─ Cargo.toml             [workspace] + [package] my-paint(GPU / UI / 入力)
 ├─ crates/
 │  ├─ km/src/lib.rs       Kubelka-Munk 純関数の CPU 参照実装(依存ゼロ、cargo test 対象)
-│  ├─ pigment/src/lib.rs  顔料パレット定義・mixbox latent / 物性 uniform(mixbox 隔離点)
+│  ├─ pigment/src/lib.rs  Palette(ランタイム4スロット、M5)・mixbox latent / 物性 uniform(mixbox 隔離点)
 │  └─ paint-core/         CPU 純粋部(依存は bytemuck + serde のみ)
 │     └─ src/
 │        ├─ lib.rs        crate ルート(sim / brush / paper / replay / tool を公開)
@@ -43,6 +43,7 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │  │  └─ ui/              UI 状態 + パネル描画を per-file 分割(R4。impl PaintApp を分散)
 │  │     ├─ mod.rs        UI 状態(PresetUi / ReplayUi)+ 共通部品 NamedStore
 │  │     ├─ tools.rs      乾燥ボタン・水ブラシ・線画・線画 Undo/Redo(dry_controls / brush_panel / linework_panel / line_history_controls)
+│  │     ├─ palette.rs    顔料パレット編集(palette_panel。M5。色・ρ/ω/γ を編集し apply_palette で反映)
 │  │     ├─ layers.rs     レイヤー可視性・並べ替え・合成方式(layer_panel / layers_panel)
 │  │     ├─ tuning.rs     乾燥・筆圧・味付け・診断・シミュ制御(tuning_panel)
 │  │     ├─ panels.rs     プリセット/記録再生/シェーダー状態(preset/replay/shader_status)
@@ -90,6 +91,8 @@ compute の binding は種別ごとに3レイアウト(R3 の `ComputeLayout`):
 
 display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 latent、`5` 紙ハイト、`6` 乾燥レイヤー array、`7` LayerUniform、`8/9` 線画(鉛筆/ペン、M4.5a)、`10` ハイライト(M4.5c)。
 
+**顔料 latent(binding 4)のレイアウト(M5c、`array<vec4f, LATENT_TOTAL=78>`)**: 先頭 `GLOBAL_LATENTS=6` vec4 = パレット非依存のグローバル光学(`[0,1]`紙 / `[2,3]`白 R_w / `[4,5]`黒 R_b)。以降は**パレット枠**を `PALETTE_SLOTS = MAX_LAYERS+1 = 9` 個並べ、各枠 `PIGMENT_LATENTS=8` vec4(顔料4種 × c0..c3/RGB残差)。枠 `0..MAX_LAYERS-1` は乾燥レイヤーのスロット別、枠 `LIVE_PALETTE=MAX_LAYERS` は現行(湿レイヤー)のパレット。**乾かすと現行パレットの色を対応スロット枠へ焼き込む**(`GpuCanvas::record_layer_palette`)ため、顔料を後から編集しても乾燥済みレイヤーの色は変わらない。編集時は `set_palette` が physics(ρ/ω/γ、全レイヤー共通)と live 枠だけを `write_buffer`(パイプライン再構築不要)。定数は [crates/pigment](../crates/pigment/src/lib.rs) と [src/gpu/mod.rs](../src/gpu/mod.rs)、WGSL の `pal_base()` が対応。
+
 ## 4. フレームの流れ
 
 egui-wgpu の `CallbackTrait` で駆動する(`gpu/callback.rs` の `CanvasCallback`):
@@ -133,7 +136,7 @@ paint:
 
 **層「内」の混色 = mixbox、層「間」の合成 = Kubelka-Munk** と役割を分ける(RGB 3ch の K,S で層内を混ぜると黄+青が濁り、mixbox を使う意味が消えるため)。
 
-- **CPU 側**([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs)): 顔料基本色+紙色+白+黒の mixbox latent を起動時に1回計算して uniform で渡す。**mixbox 呼び出しの隔離点**(CC BY-NC 対策、plan.md §4)
+- **CPU 側**([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs)): グローバル光学(紙+白+黒)の latent と、`Palette` の顔料 latent を計算して uniform で渡す。パレットは起動時=既定値、以降 UI 編集のたびに再計算(M5)。**mixbox 呼び出しの隔離点**(CC BY-NC 対策、plan.md §4)
 - **GPU 側**(display.wgsl): 画素ごとに4顔料の濃度比で latent を線形混合 → latent→RGB 多項式(mixbox eval_polynomial の WGSL 移植)で発色。紙とは被覆率 `1−exp(−pigment_density·総濃度)` で混合
 - **KM 合成**: 各層(紙 → 乾燥レイヤー下から → 湿レイヤー)を白地・黒地に置いた mixbox 発色 R_w, R_b から `R = R_b`、`T² = (R_w−R_b)(1−R_b)` の閉じた形で反射率・透過率を導き、リニア色空間で下から光学合成(sinh/cosh 不要 = オーバーフロー対策不要)。この簡約が Curtis 一般式と一致することは [crates/km/src/lib.rs](../crates/km/src/lib.rs) のテストで担保。「顔料ごとの K,S プリセット」は不採用(混色モデルを二重化しないため)
 

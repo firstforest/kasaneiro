@@ -52,6 +52,18 @@ pub const MAX_LAYERS: usize = 8;
 /// 紙ハイト生成のシード。「紙を作り直す」UI を足すならここをフィールド化する
 const PAPER_SEED: u32 = 0x5EED;
 
+/// latents uniform が持つパレット枠数(M5c)。乾燥レイヤー MAX_LAYERS 個 + 現行(live)1 個。
+/// dried スロット s(0..MAX_LAYERS)は乾かした瞬間に現行パレットを焼き込んで固定し、
+/// 現行(live)パレット枠 = 末尾(`LIVE_PALETTE`)は編集のたびに書き替える
+pub const PALETTE_SLOTS: usize = MAX_LAYERS + 1;
+
+/// 現行(live)パレットの枠番号(dried スロットの後ろ)。湿レイヤーの発色はここを使う
+const LIVE_PALETTE: usize = MAX_LAYERS;
+
+/// latents uniform の総 vec4 数 = グローバル光学 + パレット数 × 顔料ブロック。
+/// display.wgsl の `array<vec4f, LATENT_TOTAL>` と一致させること(78 = 6 + 9×8)
+pub const LATENT_TOTAL: usize = pigment::GLOBAL_LATENTS + PALETTE_SLOTS * pigment::PIGMENT_LATENTS;
+
 /// 発散緩和の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_RELAX_ITERS: u32 = 64;
 
@@ -158,6 +170,13 @@ pub struct GpuCanvas {
     display_bind_groups: [wgpu::BindGroup; 2],
     params_buffer: wgpu::Buffer,
     splat_buffer: wgpu::Buffer,
+    /// 顔料+光学 latent(M1c/M5c)。display の binding 4。set_palette / bake_dry が書き替える。
+    /// レイアウト = グローバル光学 6 vec4 + パレット PALETTE_SLOTS 個 × PIGMENT_LATENTS vec4
+    latents_buffer: wgpu::Buffer,
+    /// 顔料個性 ρ/ω/γ(M3)。compute の binding 9。M5 で set_palette がランタイム書き替え
+    physics_buffer: wgpu::Buffer,
+    /// 現行(live)パレットの顔料 latent ブロック。乾かすとき dried スロットへ焼き込む(M5c)
+    live_pigment_latents: [[f32; 4]; pigment::PIGMENT_LATENTS],
     compute_layout: wgpu::PipelineLayout,
     display_layout: wgpu::PipelineLayout,
     /// 乾燥レイヤー(M2): スライス = レイヤースロット、rgba = 4顔料濃度
@@ -332,6 +351,36 @@ impl GpuCanvas {
         queue.write_buffer(&self.layers_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
+    /// 現行(live)パレットを GPU へ反映する(M5b)。編集のたびに app から呼ぶ。
+    /// - 顔料個性 ρ/ω/γ(physics)は全レイヤー共通=湿シミュ専用なので丸ごと書き替え
+    /// - 顔料 latent(色)は live パレット枠だけ書き替える。乾燥済みレイヤーは記録済み
+    ///   スロットを参照するため色が遡って変わらない(M5c)
+    ///
+    /// バッファは COPY_DST 済みなのでパイプライン再構築は不要
+    pub fn set_palette(&mut self, queue: &wgpu::Queue, palette: &pigment::Palette) {
+        let physics = palette.physics_uniform();
+        queue.write_buffer(&self.physics_buffer, 0, bytemuck::cast_slice(&physics));
+
+        self.live_pigment_latents = palette.pigment_latents();
+        let base = pigment::GLOBAL_LATENTS + LIVE_PALETTE * pigment::PIGMENT_LATENTS;
+        queue.write_buffer(
+            &self.latents_buffer,
+            (base * std::mem::size_of::<[f32; 4]>()) as u64,
+            bytemuck::cast_slice(&self.live_pigment_latents),
+        );
+    }
+
+    /// 乾かすとき、現行(live)パレットの顔料 latent を dried スロット `slot` の枠へ焼き込む(M5c)。
+    /// これ以降に顔料を編集しても、このレイヤーは記録時の色のまま表示される
+    fn record_layer_palette(&self, queue: &wgpu::Queue, slot: usize) {
+        let base = pigment::GLOBAL_LATENTS + slot * pigment::PIGMENT_LATENTS;
+        queue.write_buffer(
+            &self.latents_buffer,
+            (base * std::mem::size_of::<[f32; 4]>()) as u64,
+            bytemuck::cast_slice(&self.live_pigment_latents),
+        );
+    }
+
     /// 「乾かす」(M2): 定着パスを1回走らせ、湿レイヤーの顔料を新しい乾燥レイヤーへ
     /// 焼き込んで湿レイヤーを解放する。手動ボタンから呼ばれる(フレーム外の即時 submit)
     pub fn bake_dry(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), String> {
@@ -343,6 +392,8 @@ impl GpuCanvas {
         }
         // スロットは焼き込み順に採番(解放は全消去のみなので len がそのまま次の空き)
         let slot = self.layers.len();
+        // M5c: 現行パレットの色をこのレイヤー専用スロットへ焼き込む(以降の顔料編集で不変)
+        self.record_layer_palette(queue, slot);
 
         let src = self.current;
         let dst = 1 - src;
