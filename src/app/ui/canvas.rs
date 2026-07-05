@@ -29,7 +29,19 @@ impl PaintApp {
         };
 
         let mut splats: Vec<Splat> = Vec::new();
-        self.apply_pointer_events(&events, rect, &mut splats);
+        // M5e: スポイト待機中はクリックで色を拾うだけで、描画・記録はしない
+        if self.palette_ui.eyedropper {
+            let pressed = ui.input(|i| i.pointer.primary_pressed());
+            if pressed
+                && let Some(pos) = response.hover_pos()
+                && rect.contains(pos)
+            {
+                self.pick_color(pos, rect);
+                self.palette_ui.eyedropper = false;
+            }
+        } else {
+            self.apply_pointer_events(&events, rect, &mut splats);
+        }
 
         // H5: 記録はフレーム基準(ストローク間の待ちも再現される)
         if let Some(recorder) = &mut self.replay_ui.recorder {

@@ -6,6 +6,7 @@ mod app;
 mod assets;
 mod gpu;
 mod input;
+mod palette_store;
 mod preset;
 mod replay;
 

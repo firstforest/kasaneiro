@@ -16,12 +16,13 @@ use crate::gpu::LineTarget;
 use linehist::{LineHistory, stroke_splats};
 use crate::gpu::hot_reload::{ShaderWatcher, shader_dir};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase};
+use crate::palette_store;
 use crate::preset;
 use crate::replay::{self, Player, Recording};
 use paint_core::brush::StrokeState;
 use paint_core::sim::{CANVAS_SIZE, SimParams, Splat};
 use paint_core::tool::{RasterTool, Tool, WetTool};
-use ui::{NamedStore, PresetUi, ReplayUi};
+use ui::{NamedStore, PaletteUi, PresetUi, ReplayUi};
 use eframe::egui;
 use eframe::egui_wgpu;
 use std::path::{Path, PathBuf};
@@ -99,6 +100,8 @@ pub struct PaintApp {
     /// M5: ランタイムパレット(4スロットの色・ρ/ω/γ)。編集したら apply_palette() で GPU へ。
     /// 乾かすと現行パレットの色がそのレイヤー専用スロットへ記録される(M5c、遡って変色しない)
     palette: pigment::Palette,
+    /// M5d/e: パレット・ライブラリ(保存/読込一覧)とスポイト待機の UI 状態
+    palette_ui: PaletteUi,
 }
 
 impl PaintApp {
@@ -153,6 +156,10 @@ impl PaintApp {
             line_history: LineHistory::default(),
             // GpuCanvas::new が既定パレットを両バッファへ書き込み済み(同じ値で開始)
             palette: pigment::Palette::default_palette(),
+            palette_ui: PaletteUi {
+                store: NamedStore::new(palette_store::list()),
+                eyedropper: false,
+            },
         }
     }
 
@@ -270,11 +277,17 @@ impl PaintApp {
     }
 
     /// H5: キャンバスをリセットして記録済みストロークの再生を始める
-    /// (同一入力での A/B 比較のため、必ず白紙から)
-    fn start_replay(&mut self, recording: Recording) {
+    /// (同一入力での A/B 比較のため、必ず白紙から)。
+    /// M5d: 記録にパレットがあれば現行パレットをそれへ切り替える(顔料を編集済みでも
+    /// 「当時の色」で再生される)。無い旧記録は現行パレットのまま再生する
+    fn start_replay(&mut self, recording: Recording, palette: Option<pigment::Palette>) {
         self.clear_canvas();
         self.stroke.end();
         self.painting = false;
+        if let Some(palette) = palette {
+            self.palette = palette;
+            self.apply_palette();
+        }
         self.replay_ui.player = Some(Player::new(recording));
     }
 
@@ -373,6 +386,44 @@ impl PaintApp {
             Tool::Raster { kind: RasterTool::Highlight, .. } => Some(LineTarget::Highlight),
             _ => None,
         }
+    }
+
+    /// M5e スポイト: カーソル下1px の表示色を拾い、選択中の顔料スロット(brush_channel)へ入れる。
+    /// snapshot() の読み戻し(display と同じ発色)から該当テクセルの RGB を取り出す。
+    /// 表示色版なので「混ざってできた見た目の色」がそのまま顔料の基本色になる(§4 の先送り表)
+    fn pick_color(&mut self, pos: egui::Pos2, rect: egui::Rect) {
+        let scale = CANVAS_SIZE as f32 / rect.width();
+        let x = (((pos.x - rect.min.x) * scale) as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
+        let y = (((pos.y - rect.min.y) * scale) as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
+        let data = {
+            let renderer = self.render_state.renderer.read();
+            match renderer.callback_resources.get::<GpuCanvas>() {
+                Some(canvas) => {
+                    canvas.snapshot(&self.render_state.device, &self.render_state.queue)
+                }
+                None => Err("キャンバスが初期化されていません".to_owned()),
+            }
+        };
+        let data = match data {
+            Ok(d) => d,
+            Err(e) => {
+                self.status_msg = Some(e);
+                return;
+            }
+        };
+        // snapshot は RGBA8 の行連続(bytes_per_row = CANVAS_SIZE*4、パディングなし)
+        let idx = ((y * CANVAS_SIZE + x) * 4) as usize;
+        let rgb = [data[idx], data[idx + 1], data[idx + 2]];
+        let slot = self.params.brush_channel.min(3) as usize;
+        self.palette.pigments[slot].rgb = rgb;
+        self.apply_palette();
+        self.status_msg = Some(format!(
+            "スポイト: スロット #{} ← #{:02X}{:02X}{:02X}",
+            slot + 1,
+            rgb[0],
+            rgb[1],
+            rgb[2]
+        ));
     }
 
     /// H6: 現在のキャンバス表示を snapshots/ に PNG 保存する。

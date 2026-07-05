@@ -97,6 +97,13 @@ pub struct PresetUi {
     pub store: NamedStore,
 }
 
+/// パレット(M5)の UI 状態。ライブラリ保存/読込(M5d)+ スポイト待機(M5e)。
+pub struct PaletteUi {
+    pub store: NamedStore,
+    /// M5e: スポイト待機中。次のキャンバスクリックで色を拾い、選択スロットへ入れて解除する
+    pub eyedropper: bool,
+}
+
 /// ストローク記録・再生(H5)の UI 状態をまとめる(R4 で PaintApp の 5 フィールドを集約)。
 pub struct ReplayUi {
     pub store: NamedStore,

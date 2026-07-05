@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 # mixbox(CC BY-NC)の隔離点: この crate だけが依存する(plan.md §4 / refactoring.md R1)
 mixbox = "2.0.0"
+# パレット・ライブラリ(M5d): Palette を JSON 保存/読込するため。バージョンはルートとロックステップ
+serde = { version = "1.0.228", features = ["derive"] }

@@ -2115,6 +2115,7 @@ name = "pigment"
 version = "0.1.0"
 dependencies = [
  "mixbox",
+ "serde",
 ]
 
 [[package]]

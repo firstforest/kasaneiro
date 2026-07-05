@@ -58,13 +58,15 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │  │  └─ hot_reload.rs    WGSL ファイル監視と再ビルド(H1)
 │  ├─ input.rs            PointerSource trait(MouseSource / PenSource = egui Touch)
 │  ├─ preset.rs           SimParams ⇄ JSON(H3)
-│  ├─ replay.rs           ストローク記録の永続化(assets 依存の保存/読込。モデルは paint-core を再エクスポート)
+│  ├─ replay.rs           ストローク記録の永続化(assets 依存の保存/読込。モデルは paint-core を再エクスポート。M5d でパレット同梱の StoredRecording に拡張)
+│  ├─ palette_store.rs    パレット(pigment::Palette)⇄ JSON(M5d。preset/replay と同じ流儀)
 │  └─ assets.rs           assets/ ディレクトリ解決(CARGO_MANIFEST_DIR 基準なのでバイナリ crate に残す)
 ├─ tests/shader_compile.rs  WGSL コンパイル可能性テスト(naga)
 └─ assets/
    ├─ shaders/*.wgsl      実行時ロード(ビルドに埋め込まない)
    ├─ presets/*.json      SimParams プリセット(git 管理)
-   └─ strokes/*.json      テストストローク(git 管理)
+   ├─ strokes/*.json      テストストローク(git 管理。M5d でパレット同梱=StoredRecording)
+   └─ palettes/*.json     顔料パレット・ライブラリ(git 管理。M5d)
 ```
 
 `replay` の**モデル**(Recorder / Player / Recording)は paint-core、**永続化**(strokes の save/load、assets ディレクトリ解決に依存)はバイナリ crate、と分けてある。`asset_dir` が `env!("CARGO_MANIFEST_DIR")` でワークスペースルート基準の `assets/` を指すため、これを使うコードはバイナリ crate に置く必要がある。

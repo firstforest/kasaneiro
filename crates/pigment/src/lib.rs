@@ -35,7 +35,8 @@ pub const GLOBAL_LATENTS: usize = 6;
 pub const PAPER_RGB: [f32; 3] = [0.96, 0.95, 0.91];
 
 /// 顔料1種。M5 でランタイム編集可能にしたため所有型(`String` / 可変フィールド)にした。
-#[derive(Clone, Debug, PartialEq)]
+/// M5d でパレット・ライブラリ保存のため serde 化(欠落フィールドは default で埋める)。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Pigment {
     pub name: String,
     /// 基本色(sRGB 0..255)。mixbox 推奨の顔料色(mixbox lib.rs の PIGMENT COLORS 表)
@@ -59,7 +60,8 @@ impl Pigment {
 
 /// パレット(4スロット)。M5 でランタイム編集可能な状態にした。
 /// スロットは浮遊/沈着テクスチャの rgba チャンネルと 1:1(色数はライブラリ+レイヤー記録で増やす)。
-#[derive(Clone, Debug, PartialEq)]
+/// M5d でパレット・ライブラリ(assets/palettes/*.json)とストローク記録への保存のため serde 化。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Palette {
     pub pigments: [Pigment; PIGMENT_COUNT],
 }

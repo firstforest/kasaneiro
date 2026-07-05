@@ -62,29 +62,31 @@ impl PaintApp {
                 ui.colored_label(egui::Color32::from_rgb(64, 160, 64), "再生中…");
             }
         });
-        // 記録直後: 名前を付けて保存(共通 NamedStore)+ そのまま試し再生
-        let mut replay_now: Option<Recording> = None;
+        // 記録直後: 名前を付けて保存(共通 NamedStore)+ そのまま試し再生。
+        // M5d: 保存には記録時のパレット(現行パレット)を添える。試し再生は現行パレットのまま
+        let mut replay_now: Option<(Recording, Option<pigment::Palette>)> = None;
         if let Some(recording) = self.replay_ui.pending_recording.clone() {
+            let palette = self.palette.clone();
             if let Some(status) = self.replay_ui.store.save_controls(
                 ui,
                 "ストローク名",
-                |name| replay::save(name, &recording),
+                |name| replay::save(name, &recording, Some(&palette)),
                 replay::list,
             ) {
                 self.status_msg = Some(status);
             }
             if ui.button("試し再生").clicked() {
-                replay_now = Some(recording);
+                replay_now = Some((recording, None));
             }
         }
         if let Some(name) = self.replay_ui.store.list_rows(ui, "▶ 再生") {
             match replay::load(&name) {
-                Ok(recording) => replay_now = Some(recording),
+                Ok(stored) => replay_now = Some((stored.recording, stored.palette)),
                 Err(e) => self.status_msg = Some(e),
             }
         }
-        if let Some(recording) = replay_now {
-            self.start_replay(recording);
+        if let Some((recording, palette)) = replay_now {
+            self.start_replay(recording, palette);
         }
 
         if let Some(msg) = &self.status_msg {
