@@ -5,6 +5,7 @@
 use crate::brush::StrokeState;
 use crate::gpu::hot_reload::{ShaderWatcher, shader_dir};
 use crate::gpu::{CanvasCallback, GpuCanvas};
+use crate::input::{MouseSource, PointerEvent, PointerPhase, PointerSource, TabletSource};
 use crate::pigment::PIGMENTS;
 use crate::preset;
 use crate::replay::{self, Player, Recorder, Recording};
@@ -58,6 +59,11 @@ pub struct PaintApp {
     render_state: egui_wgpu::RenderState,
     params: SimParams,
     stroke: StrokeState,
+    /// M1.5: ペン入力(octotablet、筆圧)。接続失敗時はマウスのみで動く
+    tablet: TabletSource,
+    mouse: MouseSource,
+    /// ストローク中(Down〜Up の間)。キャンバス外で Down したときは立たない
+    painting: bool,
     watcher: ShaderWatcher,
     /// 直近のシェーダービルドエラー(H1: 落とさずオーバーレイ表示)
     shader_error: Option<String>,
@@ -113,6 +119,9 @@ impl PaintApp {
             render_state,
             params: SimParams::default(),
             stroke: StrokeState::default(),
+            tablet: TabletSource::new(cc),
+            mouse: MouseSource,
+            painting: false,
             watcher: ShaderWatcher::new(&dir),
             shader_error,
             paused: false,
@@ -150,7 +159,59 @@ impl PaintApp {
     fn start_replay(&mut self, recording: Recording) {
         self.clear_canvas();
         self.stroke.end();
+        self.painting = false;
         self.player = Some(Player::new(recording));
+    }
+
+    /// 正規化ポインタイベント(input.rs)をストローク・記録(H5)・splat 列へ反映する。
+    /// マウスとペンの共通経路。座標はウィンドウ論理ピクセル → キャンバステクセルに変換
+    fn apply_pointer_events(
+        &mut self,
+        events: &[PointerEvent],
+        rect: egui::Rect,
+        splats: &mut Vec<Splat>,
+    ) {
+        let scale = CANVAS_SIZE as f32 / rect.width();
+        for ev in events {
+            match ev.phase {
+                PointerPhase::Down => {
+                    // キャンバス外での筆下ろしは無視(UI パネル上のペン操作など)
+                    if !rect.contains(ev.pos) {
+                        continue;
+                    }
+                    self.painting = true;
+                    self.stroke.begin();
+                    // H5: 記録はストローク単位。そのとき選ばれていた顔料スロットも残す
+                    if let Some(recorder) = &mut self.recorder {
+                        recorder.begin_stroke(self.params.brush_channel);
+                    }
+                }
+                PointerPhase::Move => {}
+                PointerPhase::Up => {
+                    if self.painting {
+                        self.painting = false;
+                        self.stroke.end();
+                        if let Some(recorder) = &mut self.recorder {
+                            recorder.end_stroke();
+                        }
+                    }
+                    continue;
+                }
+            }
+            if !self.painting {
+                continue;
+            }
+            let px = (ev.pos - rect.min) * scale;
+            // サンプル間隔は筆圧を反映した実効半径から(細い筆入れでも隙間を作らない)
+            let spacing = (self.params.radius_at(ev.pressure) * 0.25).max(1.0);
+            self.stroke
+                .add_motion([px.x, px.y], ev.pressure, spacing, splats);
+            // H5: 補間前の生ポインタ位置+筆圧を記録する(再生時に補間し直すため
+            // ブラシ半径や筆圧マッピングを変えても同じストロークを引ける)
+            if let Some(recorder) = &mut self.recorder {
+                recorder.add_point([px.x, px.y], ev.pressure);
+            }
+        }
     }
 
     /// H6: 現在のキャンバス表示を snapshots/ に PNG 保存する。
@@ -218,6 +279,33 @@ impl PaintApp {
         ui.add(egui::Slider::new(&mut self.params.brush_water, 0.0..=2.0).text("水量"));
         ui.add(egui::Slider::new(&mut self.params.brush_velocity, 0.0..=2.0).text("初速"));
         ui.add(egui::Slider::new(&mut self.params.brush_pigment, 0.0..=2.0).text("顔料量(0=水筆)"));
+
+        ui.separator();
+        ui.heading("筆圧 (M1.5)");
+        match self.tablet.error() {
+            None => match self.tablet.last_pressure() {
+                Some(p) => {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(64, 160, 64),
+                        format!("ペン検知中(筆圧 {p:.2})"),
+                    );
+                }
+                None => {
+                    ui.label("ペン接続 OK(検知範囲外)");
+                }
+            },
+            Some(e) => {
+                ui.label("ペン未接続(マウスのみ)").on_hover_text(e);
+            }
+        }
+        ui.add(egui::Slider::new(&mut self.params.pressure_radius, 0.0..=1.0).text("筆圧→半径の効き"));
+        ui.add(egui::Slider::new(&mut self.params.pressure_water, 0.0..=1.0).text("筆圧→水量の効き"));
+        ui.add(egui::Slider::new(&mut self.params.pressure_pigment, 0.0..=1.0).text("筆圧→顔料量の効き"));
+        ui.add(
+            egui::Slider::new(&mut self.params.pressure_gamma, 0.25..=4.0)
+                .logarithmic(true)
+                .text("応答カーブ γ(>1で軽いタッチが細く)"),
+        );
 
         ui.separator();
         ui.heading("水シミュレーション (M1a)");
@@ -452,35 +540,19 @@ impl PaintApp {
             egui::Sense::drag(),
         );
 
-        if response.drag_started() {
-            self.stroke.begin();
-            // H5: 記録はストローク単位。そのとき選ばれていた顔料スロットも残す
-            if let Some(recorder) = &mut self.recorder {
-                recorder.begin_stroke(self.params.brush_channel);
-            }
-        }
+        // M1.5: ペン(octotablet)は毎フレーム pump する。ペンが検知範囲内にいる間は
+        // ペンを採用しマウスは無視する(Windows Ink のペンは OS がカーソルも動かすため、
+        // 両方を処理すると二重ストロークになる)
+        let tablet_events = self.tablet.poll(&response);
+        let events = if self.tablet.is_active() || !tablet_events.is_empty() {
+            tablet_events
+        } else {
+            self.mouse.poll(&response)
+        };
 
         let mut splats: Vec<Splat> = Vec::new();
-        if (response.drag_started() || response.dragged())
-            && let Some(pos) = response.interact_pointer_pos()
-        {
-            let scale = CANVAS_SIZE as f32 / rect.width();
-            let px = (pos - rect.min) * scale;
-            let spacing = (self.params.brush_radius * 0.25).max(1.0);
-            self.stroke
-                .add_motion([px.x, px.y], 1.0, spacing, &mut splats);
-            // H5: 補間前の生ポインタ位置を記録する(再生時に補間し直すため
-            // ブラシ半径を変えても同じストロークを引ける)
-            if let Some(recorder) = &mut self.recorder {
-                recorder.add_point([px.x, px.y], 1.0);
-            }
-        }
-        if response.drag_stopped() {
-            self.stroke.end();
-            if let Some(recorder) = &mut self.recorder {
-                recorder.end_stroke();
-            }
-        }
+        self.apply_pointer_events(&events, rect, &mut splats);
+
         // H5: 記録はフレーム基準(ストローク間の待ちも再現される)
         if let Some(recorder) = &mut self.recorder {
             recorder.tick();
@@ -544,6 +616,11 @@ impl PaintApp {
 }
 
 impl eframe::App for PaintApp {
+    /// ウィンドウ破棄前にタブレット接続を切る(TabletSource::new の安全条件)
+    fn on_exit(&mut self) {
+        self.tablet.disconnect();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // H1: .wgsl が保存されたら再ビルド(失敗しても落とさない)
         if self.watcher.take_dirty() {

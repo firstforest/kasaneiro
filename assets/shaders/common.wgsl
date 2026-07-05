@@ -38,10 +38,20 @@ struct SimParams {
     paper_wet: f32,
     edge_eta: f32,
     edge_radius: u32,
+    pressure_radius: f32,
+    pressure_water: f32,
+    pressure_pigment: f32,
+    pressure_gamma: f32,
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
 };
+
+// 筆圧 0..1 → 応答カーブ γ を通した補間係数(M1.5)。
+// 実効値 = 基準値 × mix(1, 筆圧^γ, 効き)。マウス(筆圧 1.0)は常に 1
+fn pressure_curve(pressure: f32) -> f32 {
+    return pow(clamp(pressure, 0.0, 1.0), max(params.pressure_gamma, 0.01));
+}
 
 // src/sim/mod.rs の Splat と同レイアウト(32 バイト)
 struct Splat {

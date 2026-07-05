@@ -27,14 +27,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     for (var i = 0u; i < splat_buf.count; i++) {
         let s = splat_buf.splats[i];
-        let radius = max(params.brush_radius * s.pressure, 0.5);
+        // 筆圧マッピング(M1.5): 半径・水量・顔料量それぞれに「効き」スライダーで反映。
+        // CPU 側の SimParams::radius_at と同じ式(サンプル間隔の算出に使う)
+        let press = pressure_curve(s.pressure);
+        let radius = max(params.brush_radius * mix(1.0, press, params.pressure_radius), 0.5);
         let dist = distance(p, s.pos);
         // 中心は満量、縁にかけて柔らかく減衰
         let coverage = 1.0 - smoothstep(radius * 0.6, radius, dist);
-        water += coverage * params.brush_water;
+        water += coverage * params.brush_water * mix(1.0, press, params.pressure_water);
         vel += coverage * params.brush_velocity * s.vel;
         // 顔料は浮遊層の選択チャンネル(brush_channel = パレットの顔料スロット)へ注入する
-        susp[min(params.brush_channel, 3u)] += coverage * params.brush_pigment;
+        susp[min(params.brush_channel, 3u)] += coverage * params.brush_pigment * mix(1.0, press, params.pressure_pigment);
         // 筆が届いた範囲を濡らす(wet-area mask)。水が動けるのはこの領域だけ。
         // 水を置く範囲(coverage > 0)と一致させ、マスク外に水が取り残されないようにする
         if (dist < radius) {

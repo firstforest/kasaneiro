@@ -139,7 +139,8 @@ impl Player {
                 self.in_stroke = true;
                 params.brush_channel = stroke.channel;
             }
-            let spacing = (params.brush_radius * 0.25).max(1.0);
+            // サンプル間隔は筆圧を反映した実効半径から(ライブ描画 app.rs と同じ式)
+            let spacing = (params.radius_at(point.pressure) * 0.25).max(1.0);
             self.stroke_state
                 .add_motion(point.pos, point.pressure, spacing, out);
             self.point_idx += 1;

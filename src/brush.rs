@@ -5,7 +5,8 @@ use crate::sim::{MAX_SPLATS, Splat};
 
 #[derive(Default)]
 pub struct StrokeState {
-    last: Option<[f32; 2]>,
+    /// 直前のサンプル(位置, 筆圧)。筆圧も補間する(M1.5)
+    last: Option<([f32; 2], f32)>,
 }
 
 impl StrokeState {
@@ -26,9 +27,9 @@ impl StrokeState {
             None => {
                 // 始点は方向が定まらないので初速なし
                 out.push(Splat::new(pos, [0.0, 0.0], pressure));
-                self.last = Some(pos);
+                self.last = Some((pos, pressure));
             }
-            Some(prev) => {
+            Some((prev, prev_pressure)) => {
                 let dx = pos[0] - prev[0];
                 let dy = pos[1] - prev[1];
                 let dist = (dx * dx + dy * dy).sqrt();
@@ -46,11 +47,32 @@ impl StrokeState {
                     out.push(Splat::new(
                         [prev[0] + dx * t, prev[1] + dy * t],
                         dir,
-                        pressure,
+                        // 筆圧も位置と同様に線形補間(M1.5: 筆入れ・筆抜きを滑らかに)
+                        prev_pressure + (pressure - prev_pressure) * t,
                     ));
                 }
-                self.last = Some(pos);
+                self.last = Some((pos, pressure));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 筆圧が始点→終点で線形に補間されること(M1.5)
+    #[test]
+    fn pressure_interpolates() {
+        let mut stroke = StrokeState::default();
+        let mut out = Vec::new();
+        stroke.add_motion([0.0, 0.0], 0.0, 1.0, &mut out);
+        stroke.add_motion([4.0, 0.0], 1.0, 1.0, &mut out);
+        assert_eq!(out.len(), 5); // 始点 + 補間4点
+        assert_eq!(out[0].pressure, 0.0);
+        assert_eq!(out.last().unwrap().pressure, 1.0);
+        for pair in out.windows(2) {
+            assert!(pair[0].pressure <= pair[1].pressure, "単調増加でない");
         }
     }
 }

@@ -4,6 +4,7 @@ mod app;
 mod assets;
 mod brush;
 mod gpu;
+mod input;
 mod paper;
 mod pigment;
 mod preset;
