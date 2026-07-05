@@ -1,16 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// CPU 純粋部(sim / brush / paper / replay モデル)は paint-core crate、
+// 顔料・混色は pigment crate、Kubelka-Munk 参照実装は km crate へ切り出した(refactoring.md R1)。
 mod app;
 mod assets;
-mod brush;
 mod gpu;
 mod input;
-mod km;
-mod paper;
-mod pigment;
 mod preset;
 mod replay;
-mod sim;
 
 use eframe::egui;
 

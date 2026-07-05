@@ -1,0 +1,8 @@
+[package]
+name = "pigment"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# mixbox(CC BY-NC)の隔離点: この crate だけが依存する(plan.md §4 / refactoring.md R1)
+mixbox = "2.0.0"

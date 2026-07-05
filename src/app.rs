@@ -2,14 +2,14 @@
 //! デバッグ表示切替(H4)、ストローク記録・再生(H5)、シミュレーション制御・
 //! PNG スナップショット(H6)、キャンバス、シェーダーエラーのオーバーレイ(H1)。
 
-use crate::brush::StrokeState;
 use crate::gpu::hot_reload::{ShaderWatcher, shader_dir};
 use crate::gpu::{CanvasCallback, GpuCanvas, MAX_LAYERS};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase, PointerSource};
-use crate::pigment::PIGMENTS;
 use crate::preset;
 use crate::replay::{self, Player, Recorder, Recording};
-use crate::sim::{CANVAS_SIZE, SimParams, Splat};
+use paint_core::brush::StrokeState;
+use paint_core::sim::{CANVAS_SIZE, SimParams, Splat};
+use pigment::PIGMENTS;
 use eframe::egui;
 use eframe::egui_wgpu;
 use std::path::{Path, PathBuf};

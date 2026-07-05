@@ -1,9 +1,17 @@
+[workspace]
+members = ["crates/km", "crates/pigment", "crates/paint-core"]
+resolver = "3"
+
 [package]
 name = "my-paint"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# CPU 純粋部の切り出し(refactoring.md R1)。mixbox は pigment crate だけが依存する
+paint-core = { path = "crates/paint-core" }
+pigment = { path = "crates/pigment" }
+
 bytemuck = { version = "1.25.0", features = ["derive"] }
 # PNG スナップショット(H6)のファイル名タイムスタンプ用
 chrono = "0.4.42"
@@ -12,7 +20,6 @@ env_logger = "0.11.11"
 # PNG スナップショット(H6)の書き出し用
 image = { version = "0.25", default-features = false, features = ["png"] }
 log = "0.4.33"
-mixbox = "2.0.0"
 notify = "8.2.0"
 pollster = "0.4.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -22,7 +29,8 @@ serde_json = "1.0.150"
 # WGSL のコンパイル可能性テスト用(wgpu と同じバージョンの naga を使う)
 naga = { version = "29.0", features = ["wgsl-in"] }
 
-# コンパイル時間対策(plan.md §2): 依存クレートだけ最適化し、自前コードは軽い最適化に留める
+# コンパイル時間対策(plan.md §2): 依存クレートだけ最適化し、自前コードは軽い最適化に留める。
+# workspace 全体に効く(profile はワークスペースルートでのみ有効)
 [profile.dev]
 opt-level = 1
 

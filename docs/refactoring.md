@@ -18,7 +18,7 @@ R1 は挙動不変のファイル移動が主なので**最初**にやる(後に
 
 | # | 項目 | 効く先 | 規模 | 状態 |
 |---|---|---|---|---|
-| R1 | workspace 化(km / pigment / paint-core の切り出し) | 全体。mixbox 隔離の構造化・テスト反復の高速化 | 中 | ⬜ 未着手 |
+| R1 | workspace 化(km / pigment / paint-core の切り出し) | 全体。mixbox 隔離の構造化・テスト反復の高速化 | 中 | ✅ 完了(2026-07-05) |
 | R2 | Tool の階層 enum 化(`Tool::Wet` / `Tool::Raster`) | M4.5 全般 | 小 | ⬜ 未着手 |
 | R3 | パイプラインのテーブル駆動化+エラー行番号補正 | M4.5、日々のシェーダー反復 | 小〜中 | ⬜ 未着手 |
 | R4 | app.rs の UI 分割と状態のグループ化 | M4.5 / M5 | 中 | ⬜ 未着手 |
@@ -56,6 +56,13 @@ my-paint/                  (workspace)
 **やり過ぎ防止**: これ以上細かく割らない(`paper` 単独 crate 等)。crate 境界は「依存の隔離(pigment)」「純粋性の保証(km, paint-core)」という明確な理由があるものだけ。
 
 **同時に更新するドキュメント**: [plan.md](plan.md) §2(更新済み)・[architecture.md](architecture.md) §2 モジュール構成・CLAUDE.md のコマンド/構成記述。
+
+**実施メモ(2026-07-05 完了)**:
+
+- ルート `Cargo.toml` を `[workspace]`(members = 3 crate)+ `[package] my-paint`(バイナリ)の二役にした。`[profile.dev]` はワークスペースルートでのみ有効なのでルートに残す。
+- **replay はモデルと永続化を分けた**: モデル(Recorder / Player / Recording)を paint-core へ、ファイル保存/読込(assets ディレクトリ解決に依存)はバイナリ crate `src/replay.rs` に残し、そこで `pub use paint_core::replay::*;` して再エクスポート。`asset_dir` が `env!("CARGO_MANIFEST_DIR")` でワークスペースルート基準の `assets/` を指すため、これを使うコード(replay 永続化・preset・assets)はバイナリ crate に置く必要がある。呼び出し側の `crate::replay::*` はそのまま動く(paint-core のモデルは serde だけに依存 = 目標どおり)。
+- ルートが同時にバイナリ package なので、`cargo test` だけだと下位 crate のテストが回らない。**`cargo test --workspace` / `cargo clippy --workspace` に変更**(CLAUDE.md 更新済み)。
+- km crate はどこからも依存されない純粋な参照/テスト crate(workspace メンバーなので `--workspace` でテストは回る)。
 
 ## 3. R2 — Tool の階層 enum 化
 

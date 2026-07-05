@@ -4,7 +4,7 @@
 //! 不足分を既定値で埋めて読める。
 
 use crate::assets::{asset_dir, list_json_names};
-use crate::sim::SimParams;
+use paint_core::sim::SimParams;
 use std::path::PathBuf;
 
 pub fn presets_dir() -> PathBuf {

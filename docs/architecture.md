@@ -2,7 +2,7 @@
 
 実装の構造と設計判断をまとめる。要件は [requirements.md](requirements.md)、パラメータの意味は [parameters.md](parameters.md)、現在地は [status.md](status.md) が正典。
 
-最終更新: 2026-07-05(M3 完了・M4 進行中の時点)
+最終更新: 2026-07-05(M3 完了・M4 進行中。R1 workspace 化を適用)
 
 ## 1. 技術スタック
 
@@ -11,35 +11,47 @@
 | GPU | wgpu(WGSL compute + render) |
 | ウィンドウ / 入力 | winit(egui 経由) |
 | UI | egui / eframe / egui-wgpu(`PaintCallback` でキャンバス描画) |
-| 混色 | mixbox(呼び出しは [src/pigment.rs](../src/pigment.rs) に隔離) |
+| 混色 | mixbox(依存は `crates/pigment` だけ = 依存グラフで隔離) |
 | ホットリロード | notify(ファイル監視) |
 | シリアライズ | serde + serde_json(プリセット・ストローク記録) |
 
-依存バージョンは **egui の対応バージョンを起点に wgpu / winit をロックステップで固定**する。Rust は mise 管理(`mise exec -- cargo run`)。単一クレート構成。
+依存バージョンは **egui の対応バージョンを起点に wgpu / winit をロックステップで固定**する。Rust は mise 管理(`mise exec -- cargo run`)。**workspace 構成**(R1、下記 §2)。
 
 ## 2. モジュール構成
 
+**workspace(R1)**: CPU 純粋部を 3 crate に切り出し、GPU / UI はバイナリ crate に残す。`cargo tree` で mixbox 依存が `pigment` crate だけなことを機械的に確認でき、商用化時の差し替え範囲がこの crate に閉じる(plan.md §4)。km / paint-core は wgpu をリンクせず `cargo test -p <crate>` が数秒で回る。
+
 ```
-src/
-├─ main.rs            eframe 起動
-├─ app.rs             egui UI(スライダー・ツール選択・レイヤーパネル・デバッグ表示・日本語フォント)
-├─ gpu/
-│  ├─ mod.rs          GpuCanvas: テクスチャ・パイプライン・ping-pong・bake/snapshot・パス発行
-│  └─ hot_reload.rs   WGSL ファイル監視と再ビルド(H1)
-├─ sim/mod.rs         SimParams(全パラメータの唯一の置き場)・Splat・CANVAS_SIZE
-├─ brush.rs           ストローク → splat 列(位置補間、筆圧の線形補間)
-├─ input.rs           PointerSource trait(MouseSource / PenSource = egui Touch)
-├─ replay.rs          ストローク記録・再生(H5。生ポインタ入力を保存)
-├─ pigment.rs         顔料パレット定義・mixbox latent / 物性 uniform(mixbox 隔離点)
-├─ paper.rs           紙ハイトテクスチャの CPU 生成(値ノイズ3成分)
-├─ preset.rs          SimParams ⇄ JSON(H3)
-├─ km.rs              Kubelka-Munk 純関数の CPU 参照実装(cargo test 対象)
-└─ assets.rs          assets/ ディレクトリ解決の共通化
-assets/
-├─ shaders/*.wgsl     実行時ロード(ビルドに埋め込まない)
-├─ presets/*.json     SimParams プリセット(git 管理)
-└─ strokes/*.json     テストストローク(git 管理)
+my-paint/                 (workspace ルート = バイナリ crate。[profile.*] もここ)
+├─ Cargo.toml             [workspace] + [package] my-paint(GPU / UI / 入力)
+├─ crates/
+│  ├─ km/src/lib.rs       Kubelka-Munk 純関数の CPU 参照実装(依存ゼロ、cargo test 対象)
+│  ├─ pigment/src/lib.rs  顔料パレット定義・mixbox latent / 物性 uniform(mixbox 隔離点)
+│  └─ paint-core/         CPU 純粋部(依存は bytemuck + serde のみ)
+│     └─ src/
+│        ├─ lib.rs        crate ルート(sim / brush / paper / replay を公開)
+│        ├─ sim.rs        SimParams(全パラメータの唯一の置き場)・Splat・CANVAS_SIZE
+│        ├─ brush.rs      ストローク → splat 列(位置補間、筆圧の線形補間)
+│        ├─ paper.rs      紙ハイトテクスチャの CPU 生成(値ノイズ3成分)
+│        └─ replay.rs     ストローク記録・再生モデル(H5。Recorder / Player)
+├─ src/                   バイナリ crate(egui / wgpu / naga はここだけ)
+│  ├─ main.rs             eframe 起動
+│  ├─ app.rs              egui UI(スライダー・ツール選択・レイヤーパネル・デバッグ表示・日本語フォント)
+│  ├─ gpu/
+│  │  ├─ mod.rs           GpuCanvas: テクスチャ・パイプライン・ping-pong・bake/snapshot・パス発行
+│  │  └─ hot_reload.rs    WGSL ファイル監視と再ビルド(H1)
+│  ├─ input.rs            PointerSource trait(MouseSource / PenSource = egui Touch)
+│  ├─ preset.rs           SimParams ⇄ JSON(H3)
+│  ├─ replay.rs           ストローク記録の永続化(assets 依存の保存/読込。モデルは paint-core を再エクスポート)
+│  └─ assets.rs           assets/ ディレクトリ解決(CARGO_MANIFEST_DIR 基準なのでバイナリ crate に残す)
+├─ tests/shader_compile.rs  WGSL コンパイル可能性テスト(naga)
+└─ assets/
+   ├─ shaders/*.wgsl      実行時ロード(ビルドに埋め込まない)
+   ├─ presets/*.json      SimParams プリセット(git 管理)
+   └─ strokes/*.json      テストストローク(git 管理)
 ```
+
+`replay` の**モデル**(Recorder / Player / Recording)は paint-core、**永続化**(strokes の save/load、assets ディレクトリ解決に依存)はバイナリ crate、と分けてある。`asset_dir` が `env!("CARGO_MANIFEST_DIR")` でワークスペースルート基準の `assets/` を指すため、これを使うコードはバイナリ crate に置く必要がある。
 
 ## 3. GPU リソース
 
@@ -98,9 +110,9 @@ paint:
 
 **層「内」の混色 = mixbox、層「間」の合成 = Kubelka-Munk** と役割を分ける(RGB 3ch の K,S で層内を混ぜると黄+青が濁り、mixbox を使う意味が消えるため)。
 
-- **CPU 側**([src/pigment.rs](../src/pigment.rs)): 顔料基本色+紙色+白+黒の mixbox latent を起動時に1回計算して uniform で渡す。**mixbox 呼び出しの隔離点**(CC BY-NC 対策、plan.md §4)
+- **CPU 側**([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs)): 顔料基本色+紙色+白+黒の mixbox latent を起動時に1回計算して uniform で渡す。**mixbox 呼び出しの隔離点**(CC BY-NC 対策、plan.md §4)
 - **GPU 側**(display.wgsl): 画素ごとに4顔料の濃度比で latent を線形混合 → latent→RGB 多項式(mixbox eval_polynomial の WGSL 移植)で発色。紙とは被覆率 `1−exp(−pigment_density·総濃度)` で混合
-- **KM 合成**: 各層(紙 → 乾燥レイヤー下から → 湿レイヤー)を白地・黒地に置いた mixbox 発色 R_w, R_b から `R = R_b`、`T² = (R_w−R_b)(1−R_b)` の閉じた形で反射率・透過率を導き、リニア色空間で下から光学合成(sinh/cosh 不要 = オーバーフロー対策不要)。この簡約が Curtis 一般式と一致することは [src/km.rs](../src/km.rs) のテストで担保。「顔料ごとの K,S プリセット」は不採用(混色モデルを二重化しないため)
+- **KM 合成**: 各層(紙 → 乾燥レイヤー下から → 湿レイヤー)を白地・黒地に置いた mixbox 発色 R_w, R_b から `R = R_b`、`T² = (R_w−R_b)(1−R_b)` の閉じた形で反射率・透過率を導き、リニア色空間で下から光学合成(sinh/cosh 不要 = オーバーフロー対策不要)。この簡約が Curtis 一般式と一致することは [crates/km/src/lib.rs](../crates/km/src/lib.rs) のテストで担保。「顔料ごとの K,S プリセット」は不採用(混色モデルを二重化しないため)
 
 ## 6. 乾燥とレイヤー
 
@@ -129,6 +141,6 @@ paint:
 
 ## 9. テスト戦略
 
-- **CPU 参照実装+cargo test**: km.rs(KM 純関数4件)、pigment.rs(黄+青=緑、latent 往復、物性範囲)、SimParams(整列・筆圧式)、プリセット互換
+- **CPU 参照実装+cargo test**(`cargo test --workspace`): km crate(KM 純関数5件)、pigment crate(黄+青=緑、latent 往復、物性範囲)、paint-core(SimParams 整列・筆圧式、brush 補間、replay 往復、paper 生成)、プリセット互換・ストローク読込(バイナリ crate)
 - **WGSL コンパイル可能性テスト**([tests/shader_compile.rs](../tests/shader_compile.rs)): 実行時ロードのため cargo build では壊れた WGSL を検出できない。naga(wgpu と同バージョン)で全シェーダーをパース+検証
 - 流体シェーダーの**挙動はテストしない**方針 — 数値の正しさより見た目なので、デバッグ表示(H4)+ストローク再生(H5)で診断する

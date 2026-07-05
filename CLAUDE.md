@@ -27,10 +27,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## コマンド
 
-Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise exec -- cargo run` / `cargo test` / `cargo clippy`。
+Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise exec -- cargo run` / `cargo test --workspace` / `cargo clippy --workspace`。**workspace 構成**(R1: km / pigment / paint-core の 3 crate + バイナリ crate。ルートが同時にバイナリ package なので、下位 crate のテストまで回すには `--workspace` を付ける)。
 
-- コンパイル時間対策として `[profile.dev.package."*"] opt-level = 2` + 自前コード opt-level 1 を設定する方針(plan.md §2)
-- `km.rs`(Kubelka-Munk 純関数)と mixbox 混色は CPU 参照実装 + `cargo test` の対象。流体シェーダー本体は挙動をテストせずデバッグ表示(H4)で診断する方針。WGSL は naga のコンパイル可能性テスト([tests/shader_compile.rs](tests/shader_compile.rs))のみ守る
+- コンパイル時間対策として `[profile.dev.package."*"] opt-level = 2` + 自前コード opt-level 1 を設定する方針(plan.md §2。profile はワークスペースルート Cargo.toml でのみ有効)
+- `crates/km`(Kubelka-Munk 純関数)と `crates/pigment`(mixbox 混色)は CPU 参照実装 + `cargo test` の対象。流体シェーダー本体は挙動をテストせずデバッグ表示(H4)で診断する方針。WGSL は naga のコンパイル可能性テスト([tests/shader_compile.rs](tests/shader_compile.rs))のみ守る
 
 ## 設計の核心原則: 試行錯誤の速度を最優先
 
@@ -43,4 +43,4 @@ Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise
 
 ## 先送り済みの判断(再検討トリガーが来るまで蒸し返さない)
 
-plan.md §4 の表が正典。要点: 混色は mixbox クレート(CC BY-NC、商用化時に自作スペクトラル WGM へ — **mixbox 呼び出しは pigment.rs に隔離**)/ 流体は Curtis 簡略版(不安定なら Stam、表情不足なら LBM)/ 同時顔料数は 4ch のまま(多色化はレイヤーごとパレット記録 M5c で)/ ペン入力は Windows Ink のみ(WinTab 非対応)/ Web 版はやらないが input・保存の trait 抽象だけ維持。
+plan.md §4 の表が正典。要点: 混色は mixbox クレート(CC BY-NC、商用化時に自作スペクトラル WGM へ — **mixbox 依存は `crates/pigment` に隔離**(R1 で依存グラフとして強制))/ 流体は Curtis 簡略版(不安定なら Stam、表情不足なら LBM)/ 同時顔料数は 4ch のまま(多色化はレイヤーごとパレット記録 M5c で)/ ペン入力は Windows Ink のみ(WinTab 非対応)/ Web 版はやらないが input・保存の trait 抽象だけ維持。

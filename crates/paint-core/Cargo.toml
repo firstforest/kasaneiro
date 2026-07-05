@@ -1,0 +1,8 @@
+[package]
+name = "paint-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }

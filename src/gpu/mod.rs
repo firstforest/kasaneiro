@@ -19,9 +19,8 @@
 
 pub mod hot_reload;
 
-use crate::paper;
-use crate::pigment;
-use crate::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
+use paint_core::paper;
+use paint_core::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
 use std::path::PathBuf;
 

@@ -1411,6 +1411,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "km"
+version = "0.1.0"
+
+[[package]]
 name = "kqueue"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1587,9 +1591,10 @@ dependencies = [
  "env_logger",
  "image",
  "log",
- "mixbox",
  "naga",
  "notify",
+ "paint-core",
+ "pigment",
  "pollster",
  "serde",
  "serde_json",
@@ -2056,6 +2061,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "paint-core"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2096,6 +2109,13 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "pigment"
+version = "0.1.0"
+dependencies = [
+ "mixbox",
+]
 
 [[package]]
 name = "pin-project"
