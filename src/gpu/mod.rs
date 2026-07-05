@@ -22,6 +22,7 @@ pub mod hot_reload;
 use paint_core::paper;
 use paint_core::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// シミュレーションテクスチャのフォーマット。レイアウトは common.wgsl のコメントと対応。
@@ -44,23 +45,47 @@ const MAX_RELAX_ITERS: u32 = 64;
 /// 顔料拡散の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_DIFFUSE_ITERS: u32 = 32;
 
+/// compute シェーダーのバインドグループレイアウト種別(R3)。
+/// ほとんどは共通レイアウト、bake だけ専用(乾燥レイヤースライス binding 9)。
+#[derive(Clone, Copy)]
+enum ComputeLayout {
+    Common,
+    Bake,
+}
+
+/// compute パイプラインの定義表(R3)。**シェーダー追加 = ここに1行**。
+/// キーは WGSL ファイル名で、`Pipelines::compute()` の名前引きと prepare() の
+/// パス実行順(ハードコード)が同じ名前を参照する。ここが持つのは「どのファイルを
+/// どのレイアウトでビルドするか」だけで、実行順は心臓部なので prepare() 側に残す。
+const COMPUTE_SHADERS: &[(&str, ComputeLayout)] = &[
+    ("splat.wgsl", ComputeLayout::Common),
+    ("velocity.wgsl", ComputeLayout::Common),
+    ("relax.wgsl", ComputeLayout::Common),
+    ("flowout.wgsl", ComputeLayout::Common),
+    ("advect.wgsl", ComputeLayout::Common),
+    ("diffuse.wgsl", ComputeLayout::Common),
+    ("transfer.wgsl", ComputeLayout::Common),
+    ("bake.wgsl", ComputeLayout::Bake),
+    ("fastdry.wgsl", ComputeLayout::Common),
+    ("rewet.wgsl", ComputeLayout::Common),
+];
+
 struct Pipelines {
-    splat: wgpu::ComputePipeline,
-    velocity: wgpu::ComputePipeline,
-    relax: wgpu::ComputePipeline,
-    flowout: wgpu::ComputePipeline,
-    advect: wgpu::ComputePipeline,
-    diffuse: wgpu::ComputePipeline,
-    transfer: wgpu::ComputePipeline,
-    /// M2「乾かす」= 定着パス(専用レイアウト: 共通 0..6,8 + 乾燥レイヤースライス 9)
-    bake: wgpu::ComputePipeline,
-    /// M2 Fast Dry(水だけ除去。共通レイアウト)
-    fastdry: wgpu::ComputePipeline,
-    /// M2 Wet the Layer(全面再湿潤。共通レイアウト)
-    rewet: wgpu::ComputePipeline,
+    /// COMPUTE_SHADERS を WGSL ファイル名で引く compute パイプライン群
+    compute: HashMap<&'static str, wgpu::ComputePipeline>,
     display: wgpu::RenderPipeline,
     /// display と同じシェーダーを PNG スナップショット用フォーマットで焼くパイプライン(H6)
     snapshot: wgpu::RenderPipeline,
+}
+
+impl Pipelines {
+    /// WGSL ファイル名で compute パイプラインを引く。ビルド成功時は COMPUTE_SHADERS が
+    /// 全て揃っているので、未登録名(タイプミス)は開発時に落として気付けるよう panic する
+    fn compute(&self, name: &str) -> &wgpu::ComputePipeline {
+        self.compute
+            .get(name)
+            .unwrap_or_else(|| panic!("compute パイプライン {name} が未登録です(COMPUTE_SHADERS を確認)"))
+    }
 }
 
 /// 乾燥レイヤー(M2)1枚分のメタ情報。実体は dried_texture のスライス `slot`。
@@ -632,7 +657,7 @@ impl GpuCanvas {
                 timestamp_writes: None,
             });
             let workgroups = CANVAS_SIZE.div_ceil(8);
-            pass.set_pipeline(&pipelines.bake);
+            pass.set_pipeline(pipelines.compute("bake.wgsl"));
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, workgroups, 1);
         }
@@ -649,12 +674,12 @@ impl GpuCanvas {
 
     /// Fast Dry(M2): 水だけ除去(浮遊顔料はその場で沈着)。焼き込みはしない
     pub fn fast_dry(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), String> {
-        self.run_oneshot(device, queue, "fastdry_pass", |p| &p.fastdry)
+        self.run_oneshot(device, queue, "fastdry_pass", |p| p.compute("fastdry.wgsl"))
     }
 
     /// Wet the Layer(M2): キャンバス全面を再湿潤(水 += rewet_water、マスク=1)
     pub fn rewet(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), String> {
-        self.run_oneshot(device, queue, "rewet_pass", |p| &p.rewet)
+        self.run_oneshot(device, queue, "rewet_pass", |p| p.compute("rewet.wgsl"))
     }
 
     /// 共通レイアウトの compute パスを1回だけ即時実行する(M2 の手動ボタン用)
@@ -694,21 +719,10 @@ impl GpuCanvas {
                 .map_err(|e| format!("{} を読めません: {e}", path.display()))
         };
         let common = read("common.wgsl")?;
-        let load = |name: &str| -> Result<String, String> {
-            // エラーメッセージの行番号は common.wgsl の行数分ずれる点に注意
-            Ok(format!("{common}\n{}", read(name)?))
-        };
-        let splat_src = load("splat.wgsl")?;
-        let velocity_src = load("velocity.wgsl")?;
-        let relax_src = load("relax.wgsl")?;
-        let flowout_src = load("flowout.wgsl")?;
-        let advect_src = load("advect.wgsl")?;
-        let diffuse_src = load("diffuse.wgsl")?;
-        let transfer_src = load("transfer.wgsl")?;
-        let bake_src = load("bake.wgsl")?;
-        let fastdry_src = load("fastdry.wgsl")?;
-        let rewet_src = load("rewet.wgsl")?;
-        let display_src = load("display.wgsl")?;
+        // common.wgsl を先頭に連結する分、コンパイルエラーの行番号がずれる。
+        // 補正のため連結プレフィックス(common + "\n")が占める行数を数えておく(R3)
+        let prefix_lines = common.matches('\n').count() + 1;
+        let load = |name: &str| -> Result<String, String> { Ok(format!("{common}\n{}", read(name)?)) };
 
         // エラースコープで検証エラーを捕捉し、クラッシュさせない
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -719,52 +733,28 @@ impl GpuCanvas {
                 source: wgpu::ShaderSource::Wgsl(src.into()),
             })
         };
-        let make_compute = |label: &str, module: &wgpu::ShaderModule| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(label),
-                layout: Some(&self.compute_layout),
-                module,
+
+        // compute パイプラインは COMPUTE_SHADERS の表を回して作る(シェーダー追加 = 表に1行。R3)
+        let mut compute = HashMap::new();
+        for &(name, layout) in COMPUTE_SHADERS {
+            let module = make_module(name, load(name)?);
+            let pipeline_layout = match layout {
+                ComputeLayout::Common => &self.compute_layout,
+                // bake(M2)だけ専用レイアウト(binding 9 = 乾燥レイヤースライス)
+                ComputeLayout::Bake => &self.bake_layout,
+            };
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(name),
+                layout: Some(pipeline_layout),
+                module: &module,
                 entry_point: Some("main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
-            })
-        };
+            });
+            compute.insert(name, pipeline);
+        }
 
-        let splat = make_compute("splat_pipeline", &make_module("splat.wgsl", splat_src));
-        let velocity = make_compute(
-            "velocity_pipeline",
-            &make_module("velocity.wgsl", velocity_src),
-        );
-        let relax = make_compute("relax_pipeline", &make_module("relax.wgsl", relax_src));
-        let flowout = make_compute(
-            "flowout_pipeline",
-            &make_module("flowout.wgsl", flowout_src),
-        );
-        let advect = make_compute("advect_pipeline", &make_module("advect.wgsl", advect_src));
-        let diffuse = make_compute(
-            "diffuse_pipeline",
-            &make_module("diffuse.wgsl", diffuse_src),
-        );
-        let transfer = make_compute(
-            "transfer_pipeline",
-            &make_module("transfer.wgsl", transfer_src),
-        );
-        let fastdry = make_compute(
-            "fastdry_pipeline",
-            &make_module("fastdry.wgsl", fastdry_src),
-        );
-        let rewet = make_compute("rewet_pipeline", &make_module("rewet.wgsl", rewet_src));
-        // bake(M2)だけ専用レイアウト(binding 9 = 乾燥レイヤースライス)
-        let bake = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("bake_pipeline"),
-            layout: Some(&self.bake_layout),
-            module: &make_module("bake.wgsl", bake_src),
-            entry_point: Some("main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-
-        let display_module = make_module("display.wgsl", display_src);
+        let display_module = make_module("display.wgsl", load("display.wgsl")?);
         // 同じ display シェーダーを、画面用とスナップショット用(H6)の2フォーマットで作る
         let make_display = |label: &str, format: wgpu::TextureFormat| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -797,19 +787,11 @@ impl GpuCanvas {
         let snapshot = make_display("snapshot_pipeline", self.snapshot_format);
 
         if let Some(error) = pollster::block_on(scope.pop()) {
-            return Err(error.to_string());
+            // common.wgsl 連結でずれた行番号をシェーダー内の行に補正して表示(R3 QoL)
+            return Err(remap_shader_error_lines(&error.to_string(), prefix_lines));
         }
         self.pipelines = Some(Pipelines {
-            splat,
-            velocity,
-            relax,
-            flowout,
-            advect,
-            diffuse,
-            transfer,
-            bake,
-            fastdry,
-            rewet,
+            compute,
             display,
             snapshot,
         });
@@ -943,26 +925,26 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
 
             // ブラシ入力(水+初速+顔料の注入)は一時停止中でも反映する
             if splat_count > 0 {
-                run(&mut pass, &pipelines.splat);
+                run(&mut pass, pipelines.compute("splat.wgsl"));
             }
             // 1 ステップ = 速度更新 → 発散緩和 × N → FlowOutward → 移流
-            //   → 顔料拡散 × N → 吸着/脱着+蒸発
+            //   → 顔料拡散 × N → 吸着/脱着+蒸発(パス実行順はここがハードコードの正典。R3)
             let relax_iters = self.params.relax_iters.clamp(1, MAX_RELAX_ITERS);
             let diffuse_iters = self.params.diffuse_iters.min(MAX_DIFFUSE_ITERS);
             for _ in 0..self.sim_steps {
-                run(&mut pass, &pipelines.velocity);
+                run(&mut pass, pipelines.compute("velocity.wgsl"));
                 for _ in 0..relax_iters {
-                    run(&mut pass, &pipelines.relax);
+                    run(&mut pass, pipelines.compute("relax.wgsl"));
                 }
                 // エッジダークニング(M1d)。η=0 ならぼかしの読み出しごと省略
                 if self.params.edge_eta > 0.0 {
-                    run(&mut pass, &pipelines.flowout);
+                    run(&mut pass, pipelines.compute("flowout.wgsl"));
                 }
-                run(&mut pass, &pipelines.advect);
+                run(&mut pass, pipelines.compute("advect.wgsl"));
                 for _ in 0..diffuse_iters {
-                    run(&mut pass, &pipelines.diffuse);
+                    run(&mut pass, pipelines.compute("diffuse.wgsl"));
                 }
-                run(&mut pass, &pipelines.transfer);
+                run(&mut pass, pipelines.compute("transfer.wgsl"));
             }
         }
         canvas.current = current;
@@ -986,5 +968,85 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
         render_pass.set_pipeline(&pipelines.display);
         render_pass.set_bind_group(0, &canvas.display_bind_groups[canvas.current], &[]);
         render_pass.draw(0..3, 0..1);
+    }
+}
+
+/// common.wgsl を連結してコンパイルしている都合で、WGSL コンパイルエラーの行番号は
+/// プレフィックス(common + "\n")の行数分だけ後ろにずれる。エラー文字列中の行番号から
+/// `prefix_lines` を引いて「シェーダーファイル内の行番号」に直す(R3 QoL。ホットリロードの
+/// 反復速度に直結する)。naga/codespan の2形式を対象にする:
+/// - 位置指定 `wgsl:LINE:COL`
+/// - コードフレームの行番号ガター `␠␠LINE␠│ …`(box-drawing `│` または ASCII `|`)
+///
+/// プレフィックス内(LINE ≤ prefix_lines = common.wgsl 側)のエラーはそのままにする。
+/// 想定フォーマットに合わない行は変更しない(フォーマット変更に対する fail-safe)。
+fn remap_shader_error_lines(msg: &str, prefix_lines: usize) -> String {
+    let shift = |n: usize| if n > prefix_lines { n - prefix_lines } else { n };
+    msg.lines()
+        .map(|line| remap_error_line(line, &shift))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// エラー1行分の行番号補正(remap_shader_error_lines のヘルパー)。
+fn remap_error_line(line: &str, shift: &impl Fn(usize) -> usize) -> String {
+    // 1) "wgsl:LINE:COL" の LINE
+    if let Some(idx) = line.find("wgsl:") {
+        let rest = &line[idx + "wgsl:".len()..];
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(n) = digits.parse::<usize>() {
+            return format!(
+                "{}wgsl:{}{}",
+                &line[..idx],
+                shift(n),
+                &rest[digits.len()..]
+            );
+        }
+    }
+    // 2) 行番号ガター "␠…␠LINE␠…│…" の LINE(数字の直後に空白を挟んで │ / | が来る行だけ)
+    let indent: usize = line.len() - line.trim_start().len();
+    let body = &line[indent..];
+    let digits: String = body.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if !digits.is_empty() {
+        let after = &body[digits.len()..];
+        if after.trim_start().starts_with(['│', '|'])
+            && let Ok(n) = digits.parse::<usize>()
+        {
+            return format!("{}{}{}", &line[..indent], shift(n), after);
+        }
+    }
+    line.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// common.wgsl 連結でずれた行番号が、位置指定・ガターの両方で補正されること(R3)
+    #[test]
+    fn remaps_concatenated_error_lines() {
+        let prefix = 30; // common.wgsl が 30 行を占めると仮定
+        let msg = "parsing error: unknown identifier\n  ┌─ wgsl:37:13\n   │\n37 │     let x = foo;\n   │             ^^^ oops";
+        let out = remap_shader_error_lines(msg, prefix);
+        assert!(out.contains("wgsl:7:13"), "位置指定が未補正: {out}");
+        assert!(out.contains("7 │     let x = foo;"), "ガターが未補正: {out}");
+        // カラム番号(13)や caret 行(^^^)は触らない
+        assert!(out.contains(":13"));
+        assert!(out.contains("^^^ oops"));
+    }
+
+    /// プレフィックス内(common.wgsl 側)のエラー行番号は据え置く
+    #[test]
+    fn keeps_common_region_lines() {
+        let prefix = 30;
+        let msg = "  ┌─ wgsl:10:3";
+        assert_eq!(remap_shader_error_lines(msg, prefix), "  ┌─ wgsl:10:3");
+    }
+
+    /// 行番号を含まない普通のメッセージは素通し(fail-safe)
+    #[test]
+    fn passes_through_plain_text() {
+        let msg = "Shader validation error: something went wrong";
+        assert_eq!(remap_shader_error_lines(msg, 30), msg);
     }
 }

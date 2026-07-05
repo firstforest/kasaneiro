@@ -20,7 +20,7 @@ R1 は挙動不変のファイル移動が主なので**最初**にやる(後に
 |---|---|---|---|---|
 | R1 | workspace 化(km / pigment / paint-core の切り出し) | 全体。mixbox 隔離の構造化・テスト反復の高速化 | 中 | ✅ 完了(2026-07-05) |
 | R2 | Tool の階層 enum 化(`Tool::Wet` / `Tool::Raster`) | M4.5 全般 | 小 | ✅ 完了(2026-07-05) |
-| R3 | パイプラインのテーブル駆動化+エラー行番号補正 | M4.5、日々のシェーダー反復 | 小〜中 | ⬜ 未着手 |
+| R3 | パイプラインのテーブル駆動化+エラー行番号補正 | M4.5、日々のシェーダー反復 | 小〜中 | ✅ 完了(2026-07-05) |
 | R4 | app.rs の UI 分割と状態のグループ化 | M4.5 / M5 | 中 | ⬜ 未着手 |
 | R5 | 顔料バッファのフィールド化+ Palette 状態化の準備 | M5b | 極小 | ⬜ 未着手 |
 | R6 | LayerStack の抽出 | M4.5a / M5c | 小 | ⬜ 未着手 |
@@ -118,6 +118,12 @@ pub trait ToolInfo {
 - `const COMPUTE_SHADERS: &[(&str, レイアウト種別)]` +名前引きのコレクションにして、**「シェーダー追加 = ファイル名1行」**にする(bake だけ専用レイアウトなので種別タグ付き)
 - パス実行順(`prepare()` のシーケンス)はハードコードのまま維持する。ここは心臓部で、データ駆動化しても得がない
 - **QoL**: common.wgsl 連結でコンパイルエラーの行番号がずれる問題は、エラー文字列中の行番号から共通部の行数を引いて表示し直すだけで直せる。ホットリロードの反復速度に直結するため R3 に同梱する
+
+**実施メモ(2026-07-05 完了)**:
+
+- `const COMPUTE_SHADERS: &[(&str, ComputeLayout)]`(キー = WGSL ファイル名)を回して compute パイプラインを `HashMap<&'static str, ComputePipeline>` に作る。`Pipelines::compute("splat.wgsl")` で名前引き(未登録名は開発時に panic で気付ける)。**シェーダー追加 = 表に1行**。display/snapshot は render パイプラインで別レイアウト・2フォーマットなので表の外に残す。
+- パス実行順は `prepare()` のハードコードのまま(「ここがパス実行順の正典」とコメント明記)。名前引きなので prepare は `pipelines.compute("velocity.wgsl")` のように読む。
+- 行番号補正 `remap_shader_error_lines`(gpu/mod.rs、純関数): プレフィックス行数 = `common.matches('\n').count() + 1` を引く。codespan の2形式(`wgsl:LINE:COL` と行番号ガター `LINE │ …`)を対象、プレフィックス内(common.wgsl 側)は据え置き、想定外フォーマットは素通し(fail-safe)。GPU 不要の純関数なので cargo test で3件検証。
 
 ## 5. R4 — app.rs の UI 分割と状態のグループ化
 
