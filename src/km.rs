@@ -138,7 +138,10 @@ mod tests {
         let (r, t2) = layer_r_t2_from_backgrounds(0.6, 0.2); // 半透明
         let on_white = composite_over(r, t2, 0.95);
         let on_black = composite_over(r, t2, 0.02);
-        assert!(on_white > on_black, "下地が透けていない: {on_white} <= {on_black}");
+        assert!(
+            on_white > on_black,
+            "下地が透けていない: {on_white} <= {on_black}"
+        );
         // 黒地では層の固有反射率(R_b)にほぼ一致
         assert!((on_black - 0.2).abs() < 0.02);
     }
