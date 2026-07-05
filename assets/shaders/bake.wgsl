@@ -4,9 +4,12 @@
 // 焼き込み時に掛かる3つの効果(いずれも試行錯誤対象 = plan.md M2):
 //   dry shift   — 乾くと薄くなる(dry_shift < 1)
 //   粒状感ゲート — 紙の凹部で濃く/凸部で薄く定着(dry_gran)
-//   エッジダークニング — 濡れ領域の縁バンドで濃度を増す(dry_edge。Curtis のエッジ
-//     ダークニングは乾燥時の現象なのでここで掛ける。縁バンド = 濡れマスクのボックス
-//     ぼかしが 1 を割る帯、幅は edge_radius。M1d の FlowOutward とは独立)
+//   エッジダークニング — 顔料の縁バンドで濃度を増す(dry_edge。Curtis のエッジ
+//     ダークニングは乾燥時の現象なのでここで掛ける。縁バンド = 顔料被覆率とその
+//     ボックスぼかしの差 max(cover − blur, 0) = 顔料の縁のすぐ内側で正になる帯。
+//     幅は edge_radius。濡れマスク基準にしないこと: マスクは顔料より広く、マスク縁は
+//     濃度ほぼゼロなので掛け算しても見えない。被覆率基準なら Fast Dry 後(マスク=0)でも効く。
+//     M1d の FlowOutward とは独立)
 // binding は共通レイアウトの 0..6, 8 + 専用の 9(splats の 7 は使わない)。
 // 先頭に common.wgsl が連結される。
 
@@ -20,6 +23,15 @@
 @group(0) @binding(8) var paper_tex: texture_2d<f32>;
 @group(0) @binding(9) var dst_layer: texture_storage_2d<rgba32float, write>;
 
+// 顔料被覆率(display.wgsl の cover と同式)。エッジダークニングの縁検出は
+// この知覚的な 0..1 の場で行う(生の濃度だと薄い水彩で縁が立たない)
+fn cover_at(ip: vec2i) -> f32 {
+    let s = load_clamped(src_susp, ip);
+    let d = load_clamped(src_dep, ip);
+    let total = max(s.x + s.y + s.z + s.w + d.x + d.y + d.z + d.w, 0.0);
+    return 1.0 - exp(-params.pigment_density * total);
+}
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
     let dims = textureDimensions(src_water);
@@ -27,24 +39,26 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         return;
     }
     let ip = vec2i(gid.xy);
-    let cell = textureLoad(src_water, ip, 0);
     let susp = textureLoad(src_susp, ip, 0);
     let dep = textureLoad(src_dep, ip, 0);
 
-    // 濡れ領域の縁バンド: マスクのボックスぼかし M' に対し max(M − M', 0)。
-    // 内部は M'≈1 で 0、縁ほど大きい。乾いたセル(M=0)は常に 0
+    // 顔料の縁バンド: 被覆率 cover とそのボックスぼかしの差 max(cover − blur, 0)。
+    // 一様な塗りの内部では 0、縁のすぐ内側(自分は濃いが近傍に薄い側が入る)で正になる
     var band = 0.0;
-    if (params.dry_edge > 0.0 && is_wet(cell)) {
-        let r = i32(clamp(params.edge_radius, 1u, 8u));
-        var sum = 0.0;
-        var n = 0.0;
-        for (var dy = -r; dy <= r; dy++) {
-            for (var dx = -r; dx <= r; dx++) {
-                sum += load_clamped(src_water, ip + vec2i(dx, dy)).a;
-                n += 1.0;
+    if (params.dry_edge > 0.0) {
+        let cover = cover_at(ip);
+        if (cover > 1e-4) {
+            let r = i32(clamp(params.edge_radius, 1u, 8u));
+            var sum = 0.0;
+            var n = 0.0;
+            for (var dy = -r; dy <= r; dy++) {
+                for (var dx = -r; dx <= r; dx++) {
+                    sum += cover_at(ip + vec2i(dx, dy));
+                    n += 1.0;
+                }
             }
+            band = max(cover - sum / n, 0.0);
         }
-        band = max(cell.a - sum / n, 0.0);
     }
 
     // 粒状感ゲート: 凹部(h=0)で ×(1+gran)、凸部(h=1)で ×(1−gran)
