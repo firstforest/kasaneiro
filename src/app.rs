@@ -4,7 +4,7 @@
 
 use crate::brush::StrokeState;
 use crate::gpu::hot_reload::{ShaderWatcher, shader_dir};
-use crate::gpu::{CanvasCallback, GpuCanvas};
+use crate::gpu::{CanvasCallback, GpuCanvas, MAX_LAYERS};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase, PointerSource};
 use crate::pigment::PIGMENTS;
 use crate::preset;
@@ -148,9 +148,111 @@ impl PaintApp {
     }
 
     fn clear_canvas(&self) {
-        let renderer = self.render_state.renderer.read();
-        if let Some(canvas) = renderer.callback_resources.get::<GpuCanvas>() {
+        let mut renderer = self.render_state.renderer.write();
+        if let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() {
             canvas.clear(&self.render_state.queue);
+        }
+    }
+
+    /// M2 の手動アクション(乾かす / Fast Dry / 再湿潤)を GpuCanvas 上で実行する共通経路。
+    /// 失敗(シェーダー未ビルド・レイヤー上限)はステータス表示に流す
+    fn run_canvas_action(
+        &mut self,
+        action: impl FnOnce(
+            &mut GpuCanvas,
+            &egui_wgpu::wgpu::Device,
+            &egui_wgpu::wgpu::Queue,
+        ) -> Result<(), String>,
+    ) {
+        let result = {
+            let mut renderer = self.render_state.renderer.write();
+            match renderer.callback_resources.get_mut::<GpuCanvas>() {
+                Some(canvas) => action(
+                    canvas,
+                    &self.render_state.device,
+                    &self.render_state.queue,
+                ),
+                None => Err("キャンバスが初期化されていません".to_owned()),
+            }
+        };
+        if let Err(e) = result {
+            self.status_msg = Some(e);
+        }
+    }
+
+    /// M2: 乾燥操作は「にじみを止めたい瞬間」に間に合う必要がある(Fresco の UX 教訓)ため、
+    /// スクロール領域の外=左パネル最上部に常時表示する
+    fn dry_controls(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui
+                .button(egui::RichText::new("乾かす").strong())
+                .on_hover_text("定着パスを走らせて乾燥レイヤーへ焼き込み、湿レイヤーを空にする(M2)")
+                .clicked()
+            {
+                self.run_canvas_action(|c, d, q| c.bake_dry(d, q));
+            }
+            if ui
+                .button("水だけ除去")
+                .on_hover_text("Fast Dry: 水と流れを止め、浮遊顔料をその場で沈着(焼き込みはしない)")
+                .clicked()
+            {
+                self.run_canvas_action(|c, d, q| c.fast_dry(d, q));
+            }
+            if ui
+                .button("全面を湿らす")
+                .on_hover_text("Wet the Layer: キャンバス全面を濡らす(水量は「再湿潤の水量」スライダー)")
+                .clicked()
+            {
+                self.run_canvas_action(|c, d, q| c.rewet(d, q));
+            }
+        });
+        ui.add_space(4.0);
+    }
+
+    /// M2: レイヤーパネル(可視性・並べ替え)。乾燥レイヤーは焼き込み後は編集不可で、
+    /// multiply 合成では順序は見た目に効かない(KM 合成 M3 で効く)が配管は通しておく
+    fn layer_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("レイヤー (M2)");
+        let mut renderer = self.render_state.renderer.write();
+        let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() else {
+            return;
+        };
+        ui.label(format!(
+            "湿レイヤー(描画先)+ 乾燥 {}/{} 枚",
+            canvas.layers.len(),
+            MAX_LAYERS
+        ));
+        let count = canvas.layers.len();
+        let mut changed = false;
+        let mut swap: Option<(usize, usize)> = None;
+        // 上から表示(Vec の末尾=最後に乾かしたもの=最上層)
+        for k in (0..count).rev() {
+            ui.horizontal(|ui| {
+                let layer = &mut canvas.layers[k];
+                if ui
+                    .checkbox(&mut layer.visible, format!("乾燥レイヤー {}", layer.slot + 1))
+                    .changed()
+                {
+                    changed = true;
+                }
+                if ui
+                    .add_enabled(k + 1 < count, egui::Button::new("⬆"))
+                    .clicked()
+                {
+                    swap = Some((k, k + 1));
+                }
+                if ui.add_enabled(k > 0, egui::Button::new("⬇")).clicked() {
+                    swap = Some((k, k - 1));
+                }
+            });
+        }
+        if let Some((a, b)) = swap {
+            canvas.layers.swap(a, b);
+            changed = true;
+        }
+        if changed {
+            canvas.sync_layers(&self.render_state.queue);
         }
     }
 
@@ -279,6 +381,27 @@ impl PaintApp {
         ui.add(egui::Slider::new(&mut self.params.brush_water, 0.0..=2.0).text("水量"));
         ui.add(egui::Slider::new(&mut self.params.brush_velocity, 0.0..=2.0).text("初速"));
         ui.add(egui::Slider::new(&mut self.params.brush_pigment, 0.0..=2.0).text("顔料量(0=水筆)"));
+
+        ui.separator();
+        self.layer_panel(ui);
+
+        ui.separator();
+        ui.heading("乾燥 (M2)");
+        ui.add(
+            egui::Slider::new(&mut self.params.dry_shift, 0.0..=1.5)
+                .text("乾燥シフト(<1で乾くと薄く)"),
+        );
+        ui.add(
+            egui::Slider::new(&mut self.params.dry_gran, 0.0..=1.0)
+                .text("焼き込み粒状感ゲート(凹部に濃く)"),
+        );
+        ui.add(
+            egui::Slider::new(&mut self.params.dry_edge, 0.0..=2.0)
+                .text("焼き込みエッジダークニング(縁バンド幅は M1d の値を共用)"),
+        );
+        ui.add(
+            egui::Slider::new(&mut self.params.rewet_water, 0.0..=2.0).text("再湿潤の水量"),
+        );
 
         ui.separator();
         ui.heading("筆圧 (M1.5)");
@@ -620,6 +743,9 @@ impl eframe::App for PaintApp {
         egui::Panel::left("tools")
             .default_size(280.0)
             .show(ui, |ui| {
+                // M2: 乾燥ボタンはスクロールの外に置き、常に見える位置に固定する
+                self.dry_controls(ui);
+                ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| self.tool_panel(ui));
             });
 

@@ -95,6 +95,17 @@ pub struct SimParams {
     pub pressure_pigment: f32,
     /// 筆圧の応答カーブ γ(筆圧^γ)。1=線形 / >1 で軽いタッチがより細く弱くなる
     pub pressure_gamma: f32,
+    /// 乾燥シフト(M2): 焼き込み時に顔料濃度へ掛ける係数。水彩は乾くと薄くなる(<1)
+    pub dry_shift: f32,
+    /// 焼き込み時の粒状感ゲート(M2): 紙の凹部で濃く/凸部で薄く定着する度合い(0=無効)。
+    /// transfer.wgsl の paper_gran(描画中の吸着変調)とは独立に、乾く瞬間の紙目を強調する
+    pub dry_gran: f32,
+    /// 焼き込み時のエッジダークニング(M2): 濡れ領域の縁バンドで濃度を増す強さ(0=無効)。
+    /// Curtis のエッジダークニングは乾燥時に起こる現象なので定着パスで掛ける
+    /// (M1d の FlowOutward = シミュレーション中の縁への移流とは別方式。縁バンド幅は edge_radius を共用)
+    pub dry_edge: f32,
+    /// Wet the Layer(M2): 再湿潤で全面に足す水量
+    pub rewet_water: f32,
     /// uniform の 16 バイト境界合わせ。パラメータを増やすときはまずここを置き換える
     #[serde(skip)]
     pub _pad0: u32,
@@ -148,6 +159,10 @@ impl Default for SimParams {
             pressure_water: 0.3,
             pressure_pigment: 0.7,
             pressure_gamma: 1.0,
+            dry_shift: 0.85,
+            dry_gran: 0.0,
+            dry_edge: 0.4,
+            rewet_water: 0.5,
             _pad0: 0,
             _pad1: 0,
             _pad2: 0,

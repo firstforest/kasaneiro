@@ -4,6 +4,11 @@
 //! 吸着・脱着+蒸発)、表示用パイプライン、PNG スナップショット用の読み戻し(H6)、
 //! WGSL の実行時ロードと再ビルド(H1)。
 //!
+//! 乾燥レイヤー(M2): rgba32float の texture array(スライス = レイヤー、rgba = 4顔料濃度)。
+//! 「乾かす」= bake パスで湿レイヤーの顔料を新スライスへ焼き込み、湿レイヤーを全ゼロに戻す。
+//! RGB でなく顔料濃度のまま持つので、表示(multiply)は毎フレーム mixbox latent で発色でき、
+//! KM 合成(M3)への置換もレイヤーデータを作り直さずに済む。合成順・可視性は LayerUniform。
+//!
 //! ping-pong は 3 テクスチャまとめて単一の `current` で管理する。各 compute パスは
 //! 3 枚の src を読み、3 枚の dst を必ず全テクセル書いて(変更しない分は素通し)反転する。
 //! パスごとに別の index を持つより素通しコストを払う方が単純で、512² では十分軽い。
@@ -27,6 +32,10 @@ const SIM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 /// 紙ハイト(M1d)は静的なので含まない(paper_texture として別持ち)
 const TEX_KINDS: usize = 3;
 
+/// 乾燥レイヤー(M2)の上限枚数。texture array のスライス数として固定確保する
+/// (512² rgba32float × 8 = 32MB。display.wgsl の visible_mask が u32 なので 32 が理論上限)
+pub const MAX_LAYERS: usize = 8;
+
 /// 紙ハイト生成のシード。「紙を作り直す」UI を足すならここをフィールド化する
 const PAPER_SEED: u32 = 0x5EED;
 
@@ -44,9 +53,37 @@ struct Pipelines {
     advect: wgpu::ComputePipeline,
     diffuse: wgpu::ComputePipeline,
     transfer: wgpu::ComputePipeline,
+    /// M2「乾かす」= 定着パス(専用レイアウト: 共通 0..6,8 + 乾燥レイヤースライス 9)
+    bake: wgpu::ComputePipeline,
+    /// M2 Fast Dry(水だけ除去。共通レイアウト)
+    fastdry: wgpu::ComputePipeline,
+    /// M2 Wet the Layer(全面再湿潤。共通レイアウト)
+    rewet: wgpu::ComputePipeline,
     display: wgpu::RenderPipeline,
     /// display と同じシェーダーを PNG スナップショット用フォーマットで焼くパイプライン(H6)
     snapshot: wgpu::RenderPipeline,
+}
+
+/// 乾燥レイヤー(M2)1枚分のメタ情報。実体は dried_texture のスライス `slot`。
+/// Vec の並び = 重ね順(先頭が最下層)。multiply 合成では順序は見た目に効かないが、
+/// KM 合成(M3)で効くため UI の並べ替えをそのまま uniform へ流す
+#[derive(Clone, Copy)]
+pub struct DriedLayer {
+    /// dried_texture のスライス番号(焼き込み順に採番。全消去以外で解放しない)
+    pub slot: u32,
+    pub visible: bool,
+}
+
+/// display.wgsl の LayerUniform と同レイアウト(48 バイト)
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LayerUniform {
+    count: u32,
+    /// bit k = 下から k 番目のレイヤーの可視性
+    visible_mask: u32,
+    _pad: [u32; 2],
+    /// order[k] = 下から k 番目のレイヤーのスロット番号
+    order: [u32; MAX_LAYERS],
 }
 
 pub struct GpuCanvas {
@@ -54,12 +91,23 @@ pub struct GpuCanvas {
     target_format: wgpu::TextureFormat,
     /// [水, 浮遊顔料, 沈着顔料] × ping-pong 2枚
     textures: [[wgpu::Texture; 2]; TEX_KINDS],
+    /// textures と同順のビュー(bake の bind group をボタン押下時に組むため保持)
+    sim_views: [[wgpu::TextureView; 2]; TEX_KINDS],
+    paper_view: wgpu::TextureView,
     compute_bind_groups: [wgpu::BindGroup; 2],
     display_bind_groups: [wgpu::BindGroup; 2],
     params_buffer: wgpu::Buffer,
     splat_buffer: wgpu::Buffer,
     compute_layout: wgpu::PipelineLayout,
     display_layout: wgpu::PipelineLayout,
+    /// 乾燥レイヤー(M2): スライス = レイヤースロット、rgba = 4顔料濃度
+    dried_slice_views: Vec<wgpu::TextureView>,
+    layers_buffer: wgpu::Buffer,
+    bake_bgl: wgpu::BindGroupLayout,
+    bake_layout: wgpu::PipelineLayout,
+    /// 乾燥レイヤーの重ね順とメタ情報(先頭が最下層)。UI(app.rs)から直接編集し、
+    /// 変更後に sync_layers() で uniform へ反映する
+    pub layers: Vec<DriedLayer>,
     /// シェーダーが一度も通っていない/壊れている間は None(描画をスキップして継続)
     pipelines: Option<Pipelines>,
     /// 表示中のテクスチャ番号。各 compute パスは current を読み 1-current へ書いてから反転する
@@ -101,15 +149,49 @@ impl GpuCanvas {
             [make_texture("susp_a"), make_texture("susp_b")],
             [make_texture("dep_a"), make_texture("dep_b")],
         ];
-        let views: Vec<[wgpu::TextureView; 2]> = textures
-            .iter()
-            .map(|pair| {
-                [
-                    pair[0].create_view(&wgpu::TextureViewDescriptor::default()),
-                    pair[1].create_view(&wgpu::TextureViewDescriptor::default()),
-                ]
+        let sim_views: [[wgpu::TextureView; 2]; TEX_KINDS] = std::array::from_fn(|kind| {
+            std::array::from_fn(|i| {
+                textures[kind][i].create_view(&wgpu::TextureViewDescriptor::default())
+            })
+        });
+
+        // 乾燥レイヤー(M2): texture array 1枚に MAX_LAYERS スライス。
+        // 作成直後は wgpu がゼロ初期化する = 濃度ゼロ = multiply で無色(白)
+        let dried_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("dried_layers"),
+            size: wgpu::Extent3d {
+                width: CANVAS_SIZE,
+                height: CANVAS_SIZE,
+                depth_or_array_layers: MAX_LAYERS as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SIM_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        });
+        // 表示用: 全スライスを 2d array で / 焼き込み用: スライスごとの 2d ビュー
+        let dried_array_view = dried_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let dried_slice_views: Vec<wgpu::TextureView> = (0..MAX_LAYERS as u32)
+            .map(|slot| {
+                dried_texture.create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: slot,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
             })
             .collect();
+        let layers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("dried_layer_uniform"),
+            size: std::mem::size_of::<LayerUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         // 紙ハイト(M1d): CPU 生成の静的テクスチャ。ping-pong せず全パスから読み専用
         let paper_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -261,7 +343,7 @@ impl GpuCanvas {
         });
 
         // 表示は 3 テクスチャ + params(H4 の表示モード分岐)+ 顔料 latent(M1c の mixbox 混色)
-        // + 紙ハイト(M1d、表示モード 6)
+        // + 紙ハイト(M1d、表示モード 6)+ 乾燥レイヤー array + レイヤー uniform(M2)
         let display_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("display_bgl"),
             entries: &[
@@ -279,13 +361,49 @@ impl GpuCanvas {
                     wgpu::BufferBindingType::Uniform,
                 ),
                 sampled_entry(5, wgpu::ShaderStages::FRAGMENT),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                buffer_entry(
+                    7,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+            ],
+        });
+
+        // bake(M2)専用レイアウト: 共通の 0..6, 8 + 乾燥レイヤースライス 9(splats の 7 は不要)。
+        // 書き込み先スライスが焼き込みごとに変わるため、bind group はボタン押下時に組む
+        let bake_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bake_bgl"),
+            entries: &[
+                sampled_entry(0, wgpu::ShaderStages::COMPUTE),
+                storage_entry(1),
+                sampled_entry(2, wgpu::ShaderStages::COMPUTE),
+                storage_entry(3),
+                sampled_entry(4, wgpu::ShaderStages::COMPUTE),
+                storage_entry(5),
+                buffer_entry(
+                    6,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+                sampled_entry(8, wgpu::ShaderStages::COMPUTE),
+                storage_entry(9),
             ],
         });
 
         // src=current / dst=もう片方 の2方向分
         let make_compute_bg = |src: usize, dst: usize| {
             let mut entries = Vec::new();
-            for (kind, pair) in views.iter().enumerate() {
+            for (kind, pair) in sim_views.iter().enumerate() {
                 entries.push(wgpu::BindGroupEntry {
                     binding: (kind * 2) as u32,
                     resource: wgpu::BindingResource::TextureView(&pair[src]),
@@ -317,7 +435,7 @@ impl GpuCanvas {
 
         let make_display_bg = |i: usize| {
             let mut entries = Vec::new();
-            for (kind, pair) in views.iter().enumerate() {
+            for (kind, pair) in sim_views.iter().enumerate() {
                 entries.push(wgpu::BindGroupEntry {
                     binding: kind as u32,
                     resource: wgpu::BindingResource::TextureView(&pair[i]),
@@ -334,6 +452,14 @@ impl GpuCanvas {
             entries.push(wgpu::BindGroupEntry {
                 binding: 5,
                 resource: wgpu::BindingResource::TextureView(&paper_view),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(&dried_array_view),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 7,
+                resource: layers_buffer.as_entire_binding(),
             });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("display_bg"),
@@ -353,17 +479,29 @@ impl GpuCanvas {
             bind_group_layouts: &[Some(&display_bgl)],
             immediate_size: 0,
         });
+        let bake_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("bake_pipeline_layout"),
+            bind_group_layouts: &[Some(&bake_bgl)],
+            immediate_size: 0,
+        });
 
-        let canvas = Self {
+        let mut canvas = Self {
             shader_dir,
             target_format,
             textures,
+            sim_views,
+            paper_view,
             compute_bind_groups,
             display_bind_groups,
             params_buffer,
             splat_buffer,
             compute_layout,
             display_layout,
+            dried_slice_views,
+            layers_buffer,
+            bake_bgl,
+            bake_layout,
+            layers: Vec::new(),
             pipelines: None,
             current: 0,
             snapshot_format,
@@ -375,8 +513,10 @@ impl GpuCanvas {
         canvas
     }
 
-    /// キャンバスをリセット(水・速度・濡れマスク・顔料をゼロに = 乾いた白い紙)
-    pub fn clear(&self, queue: &wgpu::Queue) {
+    /// キャンバスをリセット(水・速度・濡れマスク・顔料をゼロに = 乾いた白い紙)。
+    /// 乾燥レイヤー(M2)も全て破棄する(スロットは焼き込み時に上書きされるため
+    /// テクスチャ自体はクリア不要。count=0 で表示から消える)
+    pub fn clear(&mut self, queue: &wgpu::Queue) {
         // rgba32float 1 テクセル = 16 バイト。全ゼロ = 水なし・顔料なし・全面乾燥
         let zeros = vec![0u8; (CANVAS_SIZE * CANVAS_SIZE * 16) as usize];
         for texture in self.textures.iter().flatten() {
@@ -400,6 +540,130 @@ impl GpuCanvas {
                 },
             );
         }
+        self.layers.clear();
+        self.sync_layers(queue);
+    }
+
+    /// レイヤーの並び・可視性(self.layers)を display 用 uniform へ反映する(M2)。
+    /// app.rs がレイヤーパネルで layers を編集したあとに呼ぶ
+    pub fn sync_layers(&self, queue: &wgpu::Queue) {
+        let mut uniform = LayerUniform {
+            count: self.layers.len().min(MAX_LAYERS) as u32,
+            visible_mask: 0,
+            _pad: [0; 2],
+            order: [0; MAX_LAYERS],
+        };
+        for (k, layer) in self.layers.iter().take(MAX_LAYERS).enumerate() {
+            uniform.order[k] = layer.slot;
+            if layer.visible {
+                uniform.visible_mask |= 1 << k;
+            }
+        }
+        queue.write_buffer(&self.layers_buffer, 0, bytemuck::bytes_of(&uniform));
+    }
+
+    /// 「乾かす」(M2): 定着パスを1回走らせ、湿レイヤーの顔料を新しい乾燥レイヤーへ
+    /// 焼き込んで湿レイヤーを解放する。手動ボタンから呼ばれる(フレーム外の即時 submit)
+    pub fn bake_dry(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), String> {
+        let pipelines = self.pipelines.as_ref().ok_or("シェーダーが未ビルドです")?;
+        if self.layers.len() >= MAX_LAYERS {
+            return Err(format!(
+                "乾燥レイヤーの上限({MAX_LAYERS}枚)に達しています。リセットしてください"
+            ));
+        }
+        // スロットは焼き込み順に採番(解放は全消去のみなので len がそのまま次の空き)
+        let slot = self.layers.len();
+
+        let src = self.current;
+        let dst = 1 - src;
+        let mut entries = Vec::new();
+        for (kind, pair) in self.sim_views.iter().enumerate() {
+            entries.push(wgpu::BindGroupEntry {
+                binding: (kind * 2) as u32,
+                resource: wgpu::BindingResource::TextureView(&pair[src]),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: (kind * 2 + 1) as u32,
+                resource: wgpu::BindingResource::TextureView(&pair[dst]),
+            });
+        }
+        entries.push(wgpu::BindGroupEntry {
+            binding: 6,
+            resource: self.params_buffer.as_entire_binding(),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: 8,
+            resource: wgpu::BindingResource::TextureView(&self.paper_view),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: 9,
+            resource: wgpu::BindingResource::TextureView(&self.dried_slice_views[slot]),
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bake_bg"),
+            layout: &self.bake_bgl,
+            entries: &entries,
+        });
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("bake_encoder"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("bake_pass"),
+                timestamp_writes: None,
+            });
+            let workgroups = CANVAS_SIZE.div_ceil(8);
+            pass.set_pipeline(&pipelines.bake);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups, workgroups, 1);
+        }
+        queue.submit([encoder.finish()]);
+        self.current = dst;
+
+        self.layers.push(DriedLayer {
+            slot: slot as u32,
+            visible: true,
+        });
+        self.sync_layers(queue);
+        Ok(())
+    }
+
+    /// Fast Dry(M2): 水だけ除去(浮遊顔料はその場で沈着)。焼き込みはしない
+    pub fn fast_dry(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), String> {
+        self.run_oneshot(device, queue, "fastdry_pass", |p| &p.fastdry)
+    }
+
+    /// Wet the Layer(M2): キャンバス全面を再湿潤(水 += rewet_water、マスク=1)
+    pub fn rewet(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), String> {
+        self.run_oneshot(device, queue, "rewet_pass", |p| &p.rewet)
+    }
+
+    /// 共通レイアウトの compute パスを1回だけ即時実行する(M2 の手動ボタン用)
+    fn run_oneshot(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        pick: impl Fn(&Pipelines) -> &wgpu::ComputePipeline,
+    ) -> Result<(), String> {
+        let pipelines = self.pipelines.as_ref().ok_or("シェーダーが未ビルドです")?;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some(label),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(label),
+                timestamp_writes: None,
+            });
+            let workgroups = CANVAS_SIZE.div_ceil(8);
+            pass.set_pipeline(pick(pipelines));
+            pass.set_bind_group(0, &self.compute_bind_groups[self.current], &[]);
+            pass.dispatch_workgroups(workgroups, workgroups, 1);
+        }
+        queue.submit([encoder.finish()]);
+        self.current ^= 1;
+        Ok(())
     }
 
     /// assets/shaders/ から WGSL を読み直してパイプラインを作り直す(H1)。
@@ -423,6 +687,9 @@ impl GpuCanvas {
         let advect_src = load("advect.wgsl")?;
         let diffuse_src = load("diffuse.wgsl")?;
         let transfer_src = load("transfer.wgsl")?;
+        let bake_src = load("bake.wgsl")?;
+        let fastdry_src = load("fastdry.wgsl")?;
+        let rewet_src = load("rewet.wgsl")?;
         let display_src = load("display.wgsl")?;
 
         // エラースコープで検証エラーを捕捉し、クラッシュさせない
@@ -464,6 +731,20 @@ impl GpuCanvas {
             "transfer_pipeline",
             &make_module("transfer.wgsl", transfer_src),
         );
+        let fastdry = make_compute(
+            "fastdry_pipeline",
+            &make_module("fastdry.wgsl", fastdry_src),
+        );
+        let rewet = make_compute("rewet_pipeline", &make_module("rewet.wgsl", rewet_src));
+        // bake(M2)だけ専用レイアウト(binding 9 = 乾燥レイヤースライス)
+        let bake = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("bake_pipeline"),
+            layout: Some(&self.bake_layout),
+            module: &make_module("bake.wgsl", bake_src),
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
 
         let display_module = make_module("display.wgsl", display_src);
         // 同じ display シェーダーを、画面用とスナップショット用(H6)の2フォーマットで作る
@@ -508,6 +789,9 @@ impl GpuCanvas {
             advect,
             diffuse,
             transfer,
+            bake,
+            fastdry,
+            rewet,
             display,
             snapshot,
         });

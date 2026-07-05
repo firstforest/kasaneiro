@@ -10,6 +10,8 @@
 // compute パスの binding は全シェーダー共通:
 //   0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats, 8 = 紙ハイト
 // dst は毎パス全テクセルを書くこと(変更しないテクスチャも素通しで write する。ping-pong のため)
+// 乾燥レイヤー(M2): rgba32float の texture array(1 スライス = 1 乾燥レイヤー、rgba = 4顔料濃度)。
+// bake.wgsl だけが binding 9 に書き込みスライスを持つ(splats は持たない)。表示側の合成は display.wgsl 参照
 
 // src/sim/mod.rs の SimParams と同レイアウトにすること(H2)
 struct SimParams {
@@ -42,6 +44,10 @@ struct SimParams {
     pressure_water: f32,
     pressure_pigment: f32,
     pressure_gamma: f32,
+    dry_shift: f32,
+    dry_gran: f32,
+    dry_edge: f32,
+    rewet_water: f32,
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
