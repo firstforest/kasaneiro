@@ -38,8 +38,14 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 ├─ src/                   バイナリ crate(egui / wgpu / naga はここだけ)
 │  ├─ main.rs             eframe 起動
 │  ├─ app/                egui UI
-│  │  ├─ mod.rs           PaintApp・セクション描画メソッド(brush/layers/tuning/preset/replay/shader。R4)
-│  │  └─ ui/mod.rs        UI 状態(PresetUi / ReplayUi)+ 名前保存・一覧の共通部品 NamedStore(R4)
+│  │  ├─ mod.rs           PaintApp の状態・ライフサイクル・ディスパッチャ tool_panel・App::ui(R4)
+│  │  └─ ui/              UI 状態 + パネル描画を per-file 分割(R4。impl PaintApp を分散)
+│  │     ├─ mod.rs        UI 状態(PresetUi / ReplayUi)+ 共通部品 NamedStore
+│  │     ├─ tools.rs      乾燥ボタン・水ブラシ(dry_controls / brush_panel)
+│  │     ├─ layers.rs     レイヤー可視性・並べ替え・合成方式(layer_panel / layers_panel)
+│  │     ├─ tuning.rs     乾燥・筆圧・味付け・診断・シミュ制御(tuning_panel)
+│  │     ├─ panels.rs     プリセット/記録再生/シェーダー状態(preset/replay/shader_status)
+│  │     └─ canvas.rs     キャンバス描画とエラーオーバーレイ(canvas_ui / error_overlay)
 │  ├─ gpu/                GpuCanvas。リソース定義と型・実行時メソッドを持ち、長い処理は分離
 │  │  ├─ mod.rs           型定義(GpuCanvas / Pipelines / DriedLayer)・COMPUTE_SHADERS 表・
 │  │  │                   clear/sync_layers/bake_dry/fast_dry/rewet/rebuild_pipelines

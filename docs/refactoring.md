@@ -139,6 +139,8 @@ pub trait ToolInfo {
 - フィールド束ね: `PresetUi { store }` と `ReplayUi { store, recorder, pending_recording, player }`(`store: NamedStore { name, list }`)。PaintApp の 7 フィールドが 2 フィールド + status_msg に減った。
 - 重複していた「名前入力+保存+一覧」は `NamedStore::save_controls`(名前欄+保存+↻)/ `list_rows`(一覧行)に一本化。副作用としてストローク保存行にも ↻(一覧再読込)が付き、「試し再生」は保存行の次の行に移った(機能は不変。プリセット行と UI が揃った)。
 
+**追記(2026-07-05、per-file 分割を実施)**: 上記メモの「窮屈になったら per-file 分割」を、mod.rs に実装を溜めない方針の見直しとして前倒しで実施(挙動不変・cargo test + clippy 済み)。app/mod.rs(822行)は状態・ライフサイクル・ディスパッチャ `tool_panel`・`App::ui` だけ(324行)に減らし、パネル描画は `app/ui/` 配下に `impl PaintApp` を分散(可視性は `pub(in crate::app)`):`tools.rs`(dry_controls / brush_panel)・`layers.rs`・`tuning.rs`・`panels.rs`(preset/replay/shader_status)・`canvas.rs`(canvas_ui / error_overlay)。表示モード表(DISPLAY_MODES)・合成方式表(COMPOSE_MODES)は使うファイルへ移した。
+
 **追記(2026-07-05、gpu/mod.rs の分割を実施)**: mod.rs に実装を溜めない方針の見直しとして、gpu 側も分割した(番号なし。§12「GpuCanvas の全面再設計はやらない」の範囲内の切り出し。挙動不変・cargo test + clippy 済み)。gpu/mod.rs(1052行)は型定義・COMPUTE_SHADERS 表・実行時メソッド(clear/sync_layers/bake_dry/fast_dry/rewet/rebuild_pipelines)だけ(401行)に減らし、以下を子モジュールへ移した(いずれも挙動不変の移動。責務の再設計はしていない):`init.rs`(`GpuCanvas::new` の 415 行のリソース生成)・`callback.rs`(`CanvasCallback`。`pub use` で `crate::gpu::CanvasCallback` を維持)・`snapshot.rs`(`GpuCanvas::snapshot`)・`shader_error.rs`(R3 の行番号補正の純関数+テスト)。**R8(readback 一般化)は未着手のまま**で、snapshot は現状のまま snapshot.rs へ移しただけ(M5e/M7 の直前に readback.rs へ一般化する)。
 
 ## 6. R5 — 顔料バッファのフィールド化+ Palette 準備(M5b の前提)

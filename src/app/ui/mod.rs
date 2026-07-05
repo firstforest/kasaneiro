@@ -1,13 +1,23 @@
-//! app の UI 状態(R4)。
+//! app の UI(R4)。UI 状態の構造体と、各パネル描画の `impl PaintApp`(per-file 分割)。
 //!
-//! [`super::PaintApp`] の肥大化していたフィールドとメソッドを整理する一環で、UI 状態を
-//! 意味ごとの構造体にまとめる: プリセット([`PresetUi`])・ストローク記録再生([`ReplayUi`])。
-//! セクション描画メソッド自体は PaintApp の `impl`(app/mod.rs、`brush_panel` /
-//! `layers_panel` / `tuning_panel` / `preset_panel` / `replay_panel` / `shader_status`)へ
-//! 分解済みで、ここはそれらが読み書きする状態と共通 UI 部品を持つ。
+//! [`super::PaintApp`] の肥大化していたフィールドを意味ごとの構造体にまとめる:
+//! プリセット([`PresetUi`])・ストローク記録再生([`ReplayUi`])。各セクションの描画は
+//! `impl PaintApp` メソッドとして以下のサブモジュールに分割してある(app/mod.rs 側は
+//! 状態・ライフサイクルとディスパッチャ `tool_panel` だけを持つ):
+//! - [`tools`] — 乾燥ボタン・水ブラシ(`dry_controls` / `brush_panel`)
+//! - [`layers`] — レイヤー可視性・並べ替え・合成方式(`layer_panel` / `layers_panel`)
+//! - [`tuning`] — 乾燥・筆圧・味付けスライダー・診断・シミュ制御(`tuning_panel`)
+//! - [`panels`] — プリセット / 記録再生 / シェーダー状態(`preset_panel` / `replay_panel` / `shader_status`)
+//! - [`canvas`] — キャンバス描画とエラーオーバーレイ(`canvas_ui` / `error_overlay`)
 //!
 //! プリセット(H3)とストローク(H5)で重複していた「名前入力+保存+一覧」パターンは
 //! [`NamedStore`] に一本化した(save_controls / list_rows)。
+
+mod canvas;
+mod layers;
+mod panels;
+mod tools;
+mod tuning;
 
 use eframe::egui;
 use paint_core::replay::{Player, Recorder, Recording};
