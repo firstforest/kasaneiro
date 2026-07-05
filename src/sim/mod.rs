@@ -95,7 +95,8 @@ pub struct SimParams {
     pub pressure_pigment: f32,
     /// 筆圧の応答カーブ γ(筆圧^γ)。1=線形 / >1 で軽いタッチがより細く弱くなる
     pub pressure_gamma: f32,
-    /// 乾燥シフト(M2): 焼き込み時に顔料濃度へ掛ける係数。水彩は乾くと薄くなる(<1)
+    /// 乾燥シフト(M2): 焼き込み時に顔料濃度へ掛ける係数。デジタルでは乾いても濃度を保つ(=1.0)。
+    /// アナログ調に乾くと薄くする場合は <1 にする
     pub dry_shift: f32,
     /// 焼き込み時の粒状感ゲート(M2): 紙の凹部で濃く/凸部で薄く定着する度合い(0=無効)。
     /// transfer.wgsl の paper_gran(描画中の吸着変調)とは独立に、乾く瞬間の紙目を強調する
@@ -179,7 +180,7 @@ impl Default for SimParams {
             pressure_water: 0.3,
             pressure_pigment: 0.7,
             pressure_gamma: 1.0,
-            dry_shift: 0.85,
+            dry_shift: 1.0,
             dry_gran: 0.0,
             dry_edge: 0.4,
             rewet_water: 0.5,
