@@ -4,7 +4,7 @@
 //! prepare で compute パス(splat → シミュレーション本体)を積み、paint で表示する。
 //! パス実行順(prepare 内)はシミュレーションの心臓部で、ここがその正典(R3)。
 
-use super::{GpuCanvas, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS};
+use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS};
 use paint_core::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
 
@@ -14,6 +14,9 @@ pub struct CanvasCallback {
     pub splats: Vec<Splat>,
     /// このフレームで進めるシミュレーションステップ数(H6: 0=一時停止中)
     pub sim_steps: u32,
+    /// ラスタ線画ツール(M4.5a)選択中の描画先。Some のときは splat を流体でなく
+    /// 対応する線画テクスチャへ linesplat.wgsl で直描きする(水は注入しない)
+    pub line_target: Option<LineTarget>,
 }
 
 impl egui_wgpu::CallbackTrait for CanvasCallback {
@@ -61,9 +64,16 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
                 current ^= 1;
             };
 
-            // ブラシ入力(水+初速+顔料の注入)は一時停止中でも反映する
+            // ブラシ入力は一時停止中でも反映する。ラスタツール(M4.5a)のときは流体の
+            // splat でなく、対象の線画テクスチャへ直描きする(ping-pong しないので current は反転しない)
             if splat_count > 0 {
-                run(&mut pass, pipelines.compute("splat.wgsl"));
+                if let Some(target) = self.line_target {
+                    pass.set_pipeline(pipelines.compute("linesplat.wgsl"));
+                    pass.set_bind_group(0, canvas.raster_bind_group(target), &[]);
+                    pass.dispatch_workgroups(workgroups, workgroups, 1);
+                } else {
+                    run(&mut pass, pipelines.compute("splat.wgsl"));
+                }
             }
             // 1 ステップ = 速度更新 → 発散緩和 × N → FlowOutward → 移流
             //   → 顔料拡散 × N → 吸着/脱着+蒸発(パス実行順はここがハードコードの正典。R3)

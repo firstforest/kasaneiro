@@ -11,13 +11,14 @@
 mod ui;
 
 use crate::gpu::GpuCanvas;
+use crate::gpu::LineTarget;
 use crate::gpu::hot_reload::{ShaderWatcher, shader_dir};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase};
 use crate::preset;
 use crate::replay::{self, Player, Recording};
 use paint_core::brush::StrokeState;
 use paint_core::sim::{CANVAS_SIZE, SimParams, Splat};
-use paint_core::tool::{Tool, WetTool};
+use paint_core::tool::{RasterTool, Tool, WetTool};
 use ui::{NamedStore, PresetUi, ReplayUi};
 use eframe::egui;
 use eframe::egui_wgpu;
@@ -204,6 +205,9 @@ impl PaintApp {
         splats: &mut Vec<Splat>,
     ) {
         let scale = CANVAS_SIZE as f32 / rect.width();
+        // H5 の記録は流体ストロークだけを対象にする(記録は params.tool = WetTool の gpu_id を
+        // 前提に再生するため。ラスタ線画 M4.5 の履歴は M4.5d で別系統に持つ)
+        let recordable = self.tool.wet().is_some();
         for ev in events {
             match ev.phase {
                 PointerPhase::Down => {
@@ -214,7 +218,9 @@ impl PaintApp {
                     self.painting = true;
                     self.stroke.begin();
                     // H5: 記録はストローク単位。そのとき選ばれていた顔料スロットとツールも残す
-                    if let Some(recorder) = &mut self.replay_ui.recorder {
+                    if let Some(recorder) = &mut self.replay_ui.recorder
+                        && recordable
+                    {
                         recorder.begin_stroke(self.params.brush_channel, self.params.tool);
                     }
                 }
@@ -223,7 +229,9 @@ impl PaintApp {
                     if self.painting {
                         self.painting = false;
                         self.stroke.end();
-                        if let Some(recorder) = &mut self.replay_ui.recorder {
+                        if let Some(recorder) = &mut self.replay_ui.recorder
+                            && recordable
+                        {
                             recorder.end_stroke();
                         }
                     }
@@ -240,9 +248,22 @@ impl PaintApp {
                 .add_motion([px.x, px.y], ev.pressure, spacing, splats);
             // H5: 補間前の生ポインタ位置+筆圧を記録する(再生時に補間し直すため
             // ブラシ半径や筆圧マッピングを変えても同じストロークを引ける)
-            if let Some(recorder) = &mut self.replay_ui.recorder {
+            if let Some(recorder) = &mut self.replay_ui.recorder
+                && recordable
+            {
                 recorder.add_point([px.x, px.y], ev.pressure);
             }
+        }
+    }
+
+    /// ラスタ線画ツール(M4.5a)選択中の描画先。流体ツールのときは None。
+    /// CanvasCallback へ渡し、Some なら splat を linesplat.wgsl へ流す
+    fn line_target(&self) -> Option<LineTarget> {
+        match self.tool {
+            Tool::Raster { kind: RasterTool::Pencil, .. } => Some(LineTarget::Pencil),
+            Tool::Raster { kind: RasterTool::Pen, .. } => Some(LineTarget::Pen),
+            // ハイライト(RasterTool::Highlight)は M4.5c で実装(現状は描画先なし)
+            _ => None,
         }
     }
 
@@ -290,6 +311,7 @@ impl PaintApp {
     /// このディスパッチャに1行足すだけで済む
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
         self.brush_panel(ui);
+        self.linework_panel(ui);
         self.layers_panel(ui);
         self.tuning_panel(ui);
         self.preset_panel(ui);

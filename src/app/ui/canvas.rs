@@ -56,6 +56,7 @@ impl PaintApp {
                 params: self.params,
                 splats,
                 sim_steps,
+                line_target: self.line_target(),
             },
         ));
         ui.painter().rect_stroke(

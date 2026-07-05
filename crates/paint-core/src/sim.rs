@@ -128,12 +128,20 @@ pub struct SimParams {
     /// 寄せる1フレームあたりの緩和率。濃いところに置くとその山が周囲へ拡散して均一に伸びる。
     /// 水筆(water_lift、半径2固定の局所ならし)と違い、近傍半径をブラシ半径に応じて広げる
     pub smear_rate: f32,
-    /// SimParams を 16 バイト境界に合わせるパディング(次の追加時はまずここを埋める)。
-    /// serde(skip) でプリセット JSON には出さない
-    #[serde(skip)]
-    pub _pad1: f32,
-    #[serde(skip)]
-    pub _pad2: f32,
+    /// ラスタ線画(M4.5a)の種別: 0=鉛筆(グレー粒状線・紙ハイトで濃度変調・筆圧→濃さ)/
+    /// 1=ペン(濃色スムーズ線・筆圧→太さ)/ 2=ハイライト(M4.5c 予約)。linesplat.wgsl の視覚分岐。
+    /// 対象テクスチャ自体は bind group で選ぶ(流体は通らない)
+    pub line_mode: u32,
+    /// ラスタ消しゴム(M4.5a): 0=描画(蓄積)/ 1=減算。linesplat.wgsl が分岐する
+    pub line_eraser: u32,
+    /// 1パスで置くインク濃度の基準(M4.5a)。鉛筆は筆圧で、ペンは満量で掛かる
+    pub line_strength: f32,
+    /// 鉛筆の粒状感(M4.5a): 紙ハイトでインク濃度を変調する度合い(0=一様 / 1=山に強く乗る)
+    pub line_gran: f32,
+    /// 下書き(鉛筆)レイヤーの表示(M4.5a): 0=非表示 / 1=表示。display.wgsl が合成時に参照
+    pub show_pencil: u32,
+    /// 清書(ペン)レイヤーの表示(M4.5a): 0=非表示 / 1=表示
+    pub show_pen: u32,
 }
 
 impl SimParams {
@@ -189,8 +197,12 @@ impl Default for SimParams {
             compose_mode: 1, // 既定は KM(M3 の完成形)。0 で M2 の multiply に戻せる
             water_lift: 0.4, // 水筆の均し(近傍平均への緩和率)。なでるほど均一へ収束する
             smear_rate: 0.35, // ならし: 総顔料をブラシスケールで均す緩和率。濃い山を周囲へ伸ばす
-            _pad1: 0.0,
-            _pad2: 0.0,
+            line_mode: 0,     // 既定は鉛筆
+            line_eraser: 0,
+            line_strength: 0.7,
+            line_gran: 0.5,
+            show_pencil: 1,
+            show_pen: 1,
         }
     }
 }

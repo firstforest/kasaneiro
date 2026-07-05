@@ -59,6 +59,17 @@ impl PaintApp {
         if changed {
             canvas.sync_layers(&self.render_state.queue);
         }
+        drop(renderer);
+
+        // 線画レイヤー(M4.5a): 位置固定・並べ替え対象外。表示切替のみ(色より上に合成)
+        let mut show_pencil = self.params.show_pencil != 0;
+        let mut show_pen = self.params.show_pen != 0;
+        if ui.checkbox(&mut show_pencil, "下書き(鉛筆)").changed() {
+            self.params.show_pencil = show_pencil as u32;
+        }
+        if ui.checkbox(&mut show_pen, "清書(ペン)").changed() {
+            self.params.show_pen = show_pen as u32;
+        }
     }
 
     /// レイヤー(M2): 乾燥レイヤーの可視性・並べ替え + 合成方式(M3)

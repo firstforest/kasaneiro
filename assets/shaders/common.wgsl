@@ -55,8 +55,12 @@ struct SimParams {
     compose_mode: u32,   // M3: 0=multiply / 1=KM(R/T 光学合成)
     water_lift: f32,     // 水筆(tool=3): ブラシ下の顔料を近傍平均へ均す緩和率(半径2固定)
     smear_rate: f32,     // ならし(tool=4): 総顔料をブラシスケールで均す緩和率(濃い山を周囲へ伸ばす)
-    _pad1: f32,
-    _pad2: f32,
+    line_mode: u32,      // M4.5a: ラスタ線画 0=鉛筆 / 1=ペン / 2=ハイライト(予約)
+    line_eraser: u32,    // M4.5a: ラスタ消しゴム 0=描画 / 1=減算
+    line_strength: f32,  // M4.5a: 1パスで置くインク濃度の基準
+    line_gran: f32,      // M4.5a: 鉛筆の粒状感(紙ハイトでの濃度変調度)
+    show_pencil: u32,    // M4.5a: 下書き(鉛筆)レイヤーの表示 0/1
+    show_pen: u32,       // M4.5a: 清書(ペン)レイヤーの表示 0/1
 };
 
 // 筆圧 0..1 → 応答カーブ γ を通した補間係数(M1.5)。

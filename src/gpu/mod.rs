@@ -64,6 +64,25 @@ const MAX_DIFFUSE_ITERS: u32 = 32;
 enum ComputeLayout {
     Common,
     Bake,
+    /// ラスタ線画(M4.5a): 対象の線画テクスチャ(read_write)+ params + splats + 紙ハイト
+    Raster,
+}
+
+/// ラスタ線画(M4.5a)の描画先テクスチャ。Tool::Raster の種別と対応。
+/// 流体を通らず linesplat.wgsl が対応する read_write 線画テクスチャへ直接書く
+#[derive(Clone, Copy)]
+pub enum LineTarget {
+    Pencil,
+    Pen,
+}
+
+impl LineTarget {
+    fn index(self) -> usize {
+        match self {
+            LineTarget::Pencil => 0,
+            LineTarget::Pen => 1,
+        }
+    }
 }
 
 /// compute パイプラインの定義表(R3)。**シェーダー追加 = ここに1行**。
@@ -81,6 +100,7 @@ const COMPUTE_SHADERS: &[(&str, ComputeLayout)] = &[
     ("bake.wgsl", ComputeLayout::Bake),
     ("fastdry.wgsl", ComputeLayout::Common),
     ("rewet.wgsl", ComputeLayout::Common),
+    ("linesplat.wgsl", ComputeLayout::Raster),
 ];
 
 struct Pipelines {
@@ -142,6 +162,12 @@ pub struct GpuCanvas {
     layers_buffer: wgpu::Buffer,
     bake_bgl: wgpu::BindGroupLayout,
     bake_layout: wgpu::PipelineLayout,
+    /// 線画(M4.5a): [鉛筆, ペン] の r32float テクスチャ(read_write。ping-pong しない)。
+    /// clear() でゼロに戻すため実体を保持する
+    line_textures: [wgpu::Texture; 2],
+    /// linesplat.wgsl 用の描画先別 bind group([鉛筆, ペン]。LineTarget::index の順)
+    raster_bind_groups: [wgpu::BindGroup; 2],
+    raster_layout: wgpu::PipelineLayout,
     /// 乾燥レイヤーの重ね順とメタ情報(先頭が最下層)。UI(app.rs)から直接編集し、
     /// 変更後に sync_layers() で uniform へ反映する
     pub layers: Vec<DriedLayer>,
@@ -184,8 +210,36 @@ impl GpuCanvas {
                 },
             );
         }
+        // 線画(M4.5a): r32float = 4 バイト/テクセル。全ゼロ = 線なし
+        for texture in &self.line_textures {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &zeros[..(CANVAS_SIZE * CANVAS_SIZE * 4) as usize],
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(CANVAS_SIZE * 4),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: CANVAS_SIZE,
+                    height: CANVAS_SIZE,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         self.layers.clear();
         self.sync_layers(queue);
+    }
+
+    /// 線画(M4.5a)の描画先 bind group を返す。CanvasCallback の prepare() が
+    /// ラスタツールのとき linesplat.wgsl に渡す
+    pub(crate) fn raster_bind_group(&self, target: LineTarget) -> &wgpu::BindGroup {
+        &self.raster_bind_groups[target.index()]
     }
 
     /// レイヤーの並び・可視性(self.layers)を display 用 uniform へ反映する(M2)。
@@ -343,6 +397,8 @@ impl GpuCanvas {
                 ComputeLayout::Common => &self.compute_layout,
                 // bake(M2)だけ専用レイアウト(binding 9 = 乾燥レイヤースライス)
                 ComputeLayout::Bake => &self.bake_layout,
+                // ラスタ線画(M4.5a): 線画テクスチャ(read_write)専用レイアウト
+                ComputeLayout::Raster => &self.raster_layout,
             };
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(name),

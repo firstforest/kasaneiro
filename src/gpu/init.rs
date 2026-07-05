@@ -122,6 +122,31 @@ impl GpuCanvas {
         );
         let paper_view = paper_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // 線画(M4.5a): 鉛筆・ペン各 r32float 1枚。ping-pong せず、linesplat.wgsl が
+        // read_write storage で直接インクを蓄積する。表示側は sampled として読む
+        let make_line_texture = |label: &str| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: CANVAS_SIZE,
+                    height: CANVAS_SIZE,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let line_textures = [make_line_texture("line_pencil"), make_line_texture("line_pen")];
+        let line_views: [wgpu::TextureView; 2] = std::array::from_fn(|i| {
+            line_textures[i].create_view(&wgpu::TextureViewDescriptor::default())
+        });
+
         // PNG スナップショット(H6): 画面と同じ見た目になるよう sRGB か否かを表示先に合わせる
         let snapshot_format = if target_format.is_srgb() {
             wgpu::TextureFormat::Rgba8UnormSrgb
@@ -283,6 +308,9 @@ impl GpuCanvas {
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::BufferBindingType::Uniform,
                 ),
+                // 線画(M4.5a): 鉛筆(8)・ペン(9)の r32float。合成で色の上に重ねる
+                sampled_entry(8, wgpu::ShaderStages::FRAGMENT),
+                sampled_entry(9, wgpu::ShaderStages::FRAGMENT),
             ],
         });
 
@@ -304,6 +332,35 @@ impl GpuCanvas {
                 ),
                 sampled_entry(8, wgpu::ShaderStages::COMPUTE),
                 storage_entry(9),
+            ],
+        });
+
+        // ラスタ線画(M4.5a): 対象の線画テクスチャ(read_write)+ params + splats + 紙ハイト。
+        // 描画先(鉛筆 / ペン)は bind group を差し替えて選ぶ(パイプラインは1本)
+        let raster_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("raster_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::ReadWrite,
+                        format: wgpu::TextureFormat::R32Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                buffer_entry(
+                    1,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+                buffer_entry(
+                    2,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
+                sampled_entry(3, wgpu::ShaderStages::COMPUTE),
             ],
         });
 
@@ -372,6 +429,14 @@ impl GpuCanvas {
                 binding: 7,
                 resource: layers_buffer.as_entire_binding(),
             });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 8,
+                resource: wgpu::BindingResource::TextureView(&line_views[0]),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 9,
+                resource: wgpu::BindingResource::TextureView(&line_views[1]),
+            });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("display_bg"),
                 layout: &display_bgl,
@@ -379,6 +444,37 @@ impl GpuCanvas {
             })
         };
         let display_bind_groups = [make_display_bg(0), make_display_bg(1)];
+
+        // ラスタ線画(M4.5a): 描画先(鉛筆 / ペン)ごとの bind group。線画は ping-pong しない
+        // ので current に依存せず固定。paper_view は鉛筆の粒状変調に使う
+        let make_raster_bg = |i: usize, label: &str| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &raster_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&line_views[i]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: splat_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&paper_view),
+                    },
+                ],
+            })
+        };
+        let raster_bind_groups = [
+            make_raster_bg(0, "raster_pencil_bg"),
+            make_raster_bg(1, "raster_pen_bg"),
+        ];
 
         let compute_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sim_pipeline_layout"),
@@ -393,6 +489,11 @@ impl GpuCanvas {
         let bake_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("bake_pipeline_layout"),
             bind_group_layouts: &[Some(&bake_bgl)],
+            immediate_size: 0,
+        });
+        let raster_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("raster_pipeline_layout"),
+            bind_group_layouts: &[Some(&raster_bgl)],
             immediate_size: 0,
         });
 
@@ -412,6 +513,9 @@ impl GpuCanvas {
             layers_buffer,
             bake_bgl,
             bake_layout,
+            line_textures,
+            raster_bind_groups,
+            raster_layout,
             layers: Vec::new(),
             pipelines: None,
             current: 0,

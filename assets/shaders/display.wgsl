@@ -58,6 +58,9 @@ struct LayerUniform {
     order: array<vec4u, 2>,
 };
 @group(0) @binding(7) var<uniform> layers: LayerUniform;
+// 線画(M4.5a): r32float ×2。r = インク濃度 0..1(0=線なし)。色より上に合成する
+@group(0) @binding(8) var pencil_tex: texture_2d<f32>;
+@group(0) @binding(9) var pen_tex: texture_2d<f32>;
 
 // 黒 → 青 → シアン → 白 のヒートマップ
 fn heatmap(x: f32) -> vec3f {
@@ -236,6 +239,18 @@ fn compose(water: f32, susp: vec4f, dep: vec4f, p: vec2f) -> vec3f {
     return render_paper(water, susp, dep) * dried_factor(p);
 }
 
+// 線画(M4.5a)を色の上に重ねる。plan の合成順(紙→乾燥→湿→線画→ハイライト)に従い、
+// 下書き(鉛筆=グレー)→ 清書(ペン=濃色)の順にアルファ合成する。インク濃度 r がアルファ。
+// 表示切替(show_pencil / show_pen)で各レイヤーを消せる
+fn apply_lines(color_in: vec3f, p: vec2f) -> vec3f {
+    var color = color_in;
+    let pencil = load_bilinear(pencil_tex, p).r;
+    let pen = load_bilinear(pen_tex, p).r;
+    color = mix(color, vec3f(0.42, 0.42, 0.44), pencil * f32(params.show_pencil));
+    color = mix(color, vec3f(0.08, 0.08, 0.10), pen * f32(params.show_pen));
+    return color;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
     let dims = vec2f(textureDimensions(water_tex));
@@ -260,7 +275,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         }
         case 3u: {
             // 湿りオーバーレイ: 通常表示の上に濡れ領域(wet-area mask)を青く重ねる
-            color = compose(water, susp, dep, p);
+            color = apply_lines(compose(water, susp, dep, p), p);
             if (is_wet(cell)) {
                 color = mix(color, vec3f(0.15, 0.35, 0.95), 0.3);
             }
@@ -279,8 +294,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
             color = vec3f(clamp(h * params.display_gain, 0.0, 1.0));
         }
         default: {
-            // 通常: multiply(M2) か KM(M3) で湿+乾燥レイヤーを合成(params.compose_mode)
-            color = compose(water, susp, dep, p);
+            // 通常: multiply(M2) か KM(M3) で湿+乾燥レイヤーを合成(params.compose_mode)し、
+            // その上に線画(M4.5a)を重ねる
+            color = apply_lines(compose(water, susp, dep, p), p);
         }
     }
     return vec4f(color, 1.0);

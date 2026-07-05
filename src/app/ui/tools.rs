@@ -1,7 +1,7 @@
 //! 乾燥ボタン(常時表示)と水ブラシパネル。app/mod.rs から分割(R4)。
 
 use crate::app::PaintApp;
-use paint_core::tool::{Tool, ToolInfo, WetTool};
+use paint_core::tool::{RasterTool, Tool, ToolInfo, WetTool};
 use pigment::PIGMENTS;
 use eframe::egui;
 
@@ -101,5 +101,49 @@ impl PaintApp {
             egui::Slider::new(&mut self.params.smear_rate, 0.0..=1.0)
                 .text("ならし強度(濃い山を伸ばす)"),
         );
+    }
+
+    /// 線画(M4.5a): 鉛筆/ペンの選択・消しゴム・線のスライダー。流体を通らないラスタツール。
+    /// 選択したら kind を params.line_mode / eraser を params.line_eraser へ同期し
+    /// linesplat.wgsl の分岐に渡す(描画先テクスチャの選択は CanvasCallback 経由)
+    pub(in crate::app) fn linework_panel(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("線画 (M4.5)");
+        // 現在の消しゴム状態を引き継いでツールを切り替える(ラスタでなければ描画から始める)
+        let cur_eraser = matches!(self.tool, Tool::Raster { eraser: true, .. });
+        ui.horizontal(|ui| {
+            for kind in [RasterTool::Pencil, RasterTool::Pen] {
+                let selected = matches!(self.tool, Tool::Raster { kind: k, .. } if k == kind);
+                if ui
+                    .selectable_label(selected, kind.label())
+                    .on_hover_text(kind.hint())
+                    .clicked()
+                {
+                    self.tool = Tool::Raster { kind, eraser: cur_eraser };
+                }
+            }
+            // 消しゴムはラスタツール選択中のみ有効
+            let is_raster = matches!(self.tool, Tool::Raster { .. });
+            let mut eraser = cur_eraser;
+            if ui
+                .add_enabled(is_raster, egui::Checkbox::new(&mut eraser, "消しゴム"))
+                .changed()
+                && let Tool::Raster { kind, .. } = self.tool
+            {
+                self.tool = Tool::Raster { kind, eraser };
+            }
+        });
+        // ツール状態を GPU パラメータへ同期(ラスタ選択中のみ)
+        if let Tool::Raster { kind, eraser } = self.tool {
+            self.params.line_mode = match kind {
+                RasterTool::Pencil => 0,
+                RasterTool::Pen => 1,
+                RasterTool::Highlight => 2,
+            };
+            self.params.line_eraser = eraser as u32;
+        }
+        ui.add(egui::Slider::new(&mut self.params.line_strength, 0.0..=1.0).text("線の濃さ"));
+        ui.add(egui::Slider::new(&mut self.params.line_gran, 0.0..=1.0).text("鉛筆の粒状感"));
+        ui.label("※半径・筆圧の効きは「水ブラシ」「筆圧」の値を共用します");
     }
 }
