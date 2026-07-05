@@ -50,9 +50,9 @@ struct SimParams {
     dry_gran: f32,
     dry_edge: f32,
     rewet_water: f32,
-    tool: u32,          // M3: 0=描画 / 1=リフト(削り) / 2=消去
-    lift_strength: f32, // M3: リフトの基準強度
-    _pad2: u32,
+    tool: u32,           // M3: 0=描画 / 1=リフト(削り) / 2=消去
+    lift_strength: f32,  // M3: リフトの基準強度
+    compose_mode: u32,   // M3: 0=multiply / 1=KM(R/T 光学合成)
 };
 
 // 筆圧 0..1 → 応答カーブ γ を通した補間係数(M1.5)。

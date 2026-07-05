@@ -14,10 +14,12 @@
 // mixbox LUT から顔料ごとに1回だけ計算して uniform で渡すため、GPU に LUT は不要。
 //
 // 乾燥レイヤー(M2): texture array の各スライス = 1 乾燥レイヤー(rgba = 4顔料濃度)。
-// 合成は multiply(M3 で KM の R/T 合成へ置換予定):
-//   最終色 = 湿レイヤーの紙上発色 × Π(可視な乾燥レイヤーを白地に置いた透過率)
-// 各レイヤーの透過率は白 latent との混合で計算するため、グレーズの重なりも mixbox の
-// 発色を通る(黄の上に青を乾かして重ねると緑側に転ぶ)。
+// 合成は params.compose_mode で切替(H5 の再生で A/B 比較):
+//   0 = multiply(M2): 最終色 = 湿レイヤーの紙上発色 × Π(可視な乾燥レイヤーを白地に置いた透過率)
+//   1 = KM(M3): 各層を白地/黒地に置いた発色 R_w,R_b から反射率 R=R_b・透過率² T²=(R_w−R_b)(1−R_b)
+//       を導き(km.rs の簡約)、紙を最下層に下から光学合成する。上に薄い層を重ねるほど下が透ける
+//       「内側から光る」グレーズ挙動になる。計算はリニア色空間で行い最後に sRGB へ戻す(note 03 §3)。
+// どちらも層「内」の混色は mixbox の latent 混合(render_conc)を通す(黄+青が濁らない M1c の芯)。
 
 struct VsOut {
     @builtin(position) pos: vec4f,
@@ -39,8 +41,9 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 @group(0) @binding(2) var dep_tex: texture_2d<f32>;
 @group(0) @binding(3) var<uniform> params: SimParams;
 // mixbox latent(src/pigment.rs の latent_uniform と同レイアウト):
-//   [2i] = 顔料 i の (c0..c3) / [2i+1] = 顔料 i の RGB 残差 / [8],[9] = 紙色 / [10],[11] = 白
-@group(0) @binding(4) var<uniform> latents: array<vec4f, 12>;
+//   [2i] = 顔料 i の (c0..c3) / [2i+1] = 顔料 i の RGB 残差
+//   [8],[9] = 紙色 / [10],[11] = 白 / [12],[13] = 黒(KM 合成の R_b 用)
+@group(0) @binding(4) var<uniform> latents: array<vec4f, 14>;
 @group(0) @binding(5) var paper_tex: texture_2d<f32>;
 // 乾燥レイヤー(M2): スライス = レイヤースロット、rgba = 4顔料濃度
 @group(0) @binding(6) var dried_tex: texture_2d_array<f32>;
@@ -179,6 +182,60 @@ fn dried_factor(p: vec2f) -> vec3f {
     return factor;
 }
 
+// ---- KM 合成(M3): 層間の光学スタック。計算はリニア色空間 ----
+fn srgb_to_linear(c: vec3f) -> vec3f {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3f(2.4));
+    return select(lo, hi, c > vec3f(0.04045));
+}
+
+fn linear_to_srgb(c: vec3f) -> vec3f {
+    let x = clamp(c, vec3f(0.0), vec3f(1.0));
+    let lo = x * 12.92;
+    let hi = 1.055 * pow(x, vec3f(1.0 / 2.4)) - 0.055;
+    return select(lo, hi, x > vec3f(0.0031308));
+}
+
+// 濃度 conc の1層を、リニア反射率 r_below の下地の上に KM で重ねた反射率(リニア)。
+// 層の反射率 R=R_b(黒地発色)・透過率² T²=(R_w−R_b)(1−R_b)(km.rs の簡約)を
+// 白地/黒地の mixbox 発色から求め、合成式 R = R_top + T²·R_below/(1−R_top·R_below) を畳む。
+fn km_over_conc(conc: vec4f, r_below: vec3f) -> vec3f {
+    let rw = srgb_to_linear(render_conc(conc, latents[10], latents[11]));
+    let rb = srgb_to_linear(render_conc(conc, latents[12], latents[13]));
+    let r_top = rb;
+    let t2 = max(rw - rb, vec3f(0.0)) * (vec3f(1.0) - rb);
+    let denom = max(vec3f(1.0) - r_top * r_below, vec3f(1e-4));
+    return r_top + t2 * r_below / denom;
+}
+
+// 紙(最下層)→ 乾燥レイヤー(下から)→ 湿レイヤー(最上)を KM で光学合成した最終色(sRGB)。
+fn km_composite(water: f32, susp: vec4f, dep: vec4f, p: vec2f) -> vec3f {
+    // 下地 = 紙の反射率(リニア)。render_conc(0,紙) は紙色そのもの
+    var r = srgb_to_linear(render_conc(vec4f(0.0), latents[8], latents[9]));
+    for (var k = 0u; k < min(layers.count, 8u); k++) {
+        if ((layers.visible_mask & (1u << k)) == 0u) {
+            continue;
+        }
+        let slot = layers.order[k >> 2u][k & 3u];
+        let conc = load_bilinear_layer(dried_tex, p, slot);
+        r = km_over_conc(conc, r);
+    }
+    // 湿レイヤーを最上に重ねる
+    r = km_over_conc(susp + dep, r);
+    var color = linear_to_srgb(r);
+    // 濡れている場所をわずかに暗く(render_paper と同じ演出。水だけのストロークも見えるように)
+    color *= 1.0 - 0.12 * clamp(water, 0.0, 1.0);
+    return color;
+}
+
+// 通常表示の最終合成: compose_mode で multiply(M2) か KM(M3) を選ぶ
+fn compose(water: f32, susp: vec4f, dep: vec4f, p: vec2f) -> vec3f {
+    if (params.compose_mode == 1u) {
+        return km_composite(water, susp, dep, p);
+    }
+    return render_paper(water, susp, dep) * dried_factor(p);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
     let dims = vec2f(textureDimensions(water_tex));
@@ -203,7 +260,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         }
         case 3u: {
             // 湿りオーバーレイ: 通常表示の上に濡れ領域(wet-area mask)を青く重ねる
-            color = render_paper(water, susp, dep) * dried_factor(p);
+            color = compose(water, susp, dep, p);
             if (is_wet(cell)) {
                 color = mix(color, vec3f(0.15, 0.35, 0.95), 0.3);
             }
@@ -222,8 +279,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
             color = vec3f(clamp(h * params.display_gain, 0.0, 1.0));
         }
         default: {
-            // 通常: 湿レイヤーの紙上発色 × 乾燥レイヤーの multiply 合成(M2)
-            color = render_paper(water, susp, dep) * dried_factor(p);
+            // 通常: multiply(M2) か KM(M3) で湿+乾燥レイヤーを合成(params.compose_mode)
+            color = compose(water, susp, dep, p);
         }
     }
     return vec4f(color, 1.0);

@@ -114,9 +114,11 @@ pub struct SimParams {
     /// リフトの強さ(M3): 1 ストロークで沈着顔料を浮遊層へ戻す割合の基準値。
     /// 実効値は顔料の ω(剥がれにくさ)と紙ハイト(凸部ほど剥がれる)で変調される
     pub lift_strength: f32,
-    /// uniform の 16 バイト境界合わせ。パラメータを増やすときはまずここを置き換える
-    #[serde(skip)]
-    pub _pad2: u32,
+    /// レイヤー合成方式(M3): 0=multiply(M2 の乗算)/ 1=KM(Kubelka-Munk の R/T 合成)。
+    /// KM は各乾燥/湿レイヤーを白地・黒地に置いた発色から R,T を導き下から光学合成する
+    /// (km.rs / display.wgsl 参照)。H5 のストローク再生で multiply と A/B 比較できる。
+    /// この u32 が末尾で SimParams を 16 バイト境界に合わせている(次の追加時はまず _pad を復活させる)
+    pub compose_mode: u32,
 }
 
 impl SimParams {
@@ -169,7 +171,7 @@ impl Default for SimParams {
             rewet_water: 0.5,
             tool: 0,
             lift_strength: 0.3,
-            _pad2: 0,
+            compose_mode: 1, // 既定は KM(M3 の完成形)。0 で M2 の multiply に戻せる
         }
     }
 }

@@ -5,6 +5,7 @@ mod assets;
 mod brush;
 mod gpu;
 mod input;
+mod km;
 mod paper;
 mod pigment;
 mod preset;
