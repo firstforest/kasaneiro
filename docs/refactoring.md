@@ -139,6 +139,8 @@ pub trait ToolInfo {
 - フィールド束ね: `PresetUi { store }` と `ReplayUi { store, recorder, pending_recording, player }`(`store: NamedStore { name, list }`)。PaintApp の 7 フィールドが 2 フィールド + status_msg に減った。
 - 重複していた「名前入力+保存+一覧」は `NamedStore::save_controls`(名前欄+保存+↻)/ `list_rows`(一覧行)に一本化。副作用としてストローク保存行にも ↻(一覧再読込)が付き、「試し再生」は保存行の次の行に移った(機能は不変。プリセット行と UI が揃った)。
 
+**追記(2026-07-05、gpu/mod.rs の分割を実施)**: mod.rs に実装を溜めない方針の見直しとして、gpu 側も分割した(番号なし。§12「GpuCanvas の全面再設計はやらない」の範囲内の切り出し。挙動不変・cargo test + clippy 済み)。gpu/mod.rs(1052行)は型定義・COMPUTE_SHADERS 表・実行時メソッド(clear/sync_layers/bake_dry/fast_dry/rewet/rebuild_pipelines)だけ(401行)に減らし、以下を子モジュールへ移した(いずれも挙動不変の移動。責務の再設計はしていない):`init.rs`(`GpuCanvas::new` の 415 行のリソース生成)・`callback.rs`(`CanvasCallback`。`pub use` で `crate::gpu::CanvasCallback` を維持)・`snapshot.rs`(`GpuCanvas::snapshot`)・`shader_error.rs`(R3 の行番号補正の純関数+テスト)。**R8(readback 一般化)は未着手のまま**で、snapshot は現状のまま snapshot.rs へ移しただけ(M5e/M7 の直前に readback.rs へ一般化する)。
+
 ## 6. R5 — 顔料バッファのフィールド化+ Palette 準備(M5b の前提)
 
 `pigment_buffer` / `physics_buffer` は `GpuCanvas::new()` で**ローカル変数のまま bind group に渡して破棄**されている(bind group が生かすので動くが、後から `write_buffer` できない)。M5b「編集時に再計算して write_buffer」はフィールド化が前提。合わせて UI が `const PIGMENTS` を直接読んでいる箇所を `Palette` 構造体(中身は当面 const のコピー)経由に変えておくと、M5a/M5b がスライダー追加だけになる。

@@ -40,8 +40,13 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │  ├─ app/                egui UI
 │  │  ├─ mod.rs           PaintApp・セクション描画メソッド(brush/layers/tuning/preset/replay/shader。R4)
 │  │  └─ ui/mod.rs        UI 状態(PresetUi / ReplayUi)+ 名前保存・一覧の共通部品 NamedStore(R4)
-│  ├─ gpu/
-│  │  ├─ mod.rs           GpuCanvas: テクスチャ・パイプライン・ping-pong・bake/snapshot・パス発行
+│  ├─ gpu/                GpuCanvas。リソース定義と型・実行時メソッドを持ち、長い処理は分離
+│  │  ├─ mod.rs           型定義(GpuCanvas / Pipelines / DriedLayer)・COMPUTE_SHADERS 表・
+│  │  │                   clear/sync_layers/bake_dry/fast_dry/rewet/rebuild_pipelines
+│  │  ├─ init.rs          GpuCanvas::new(テクスチャ・バッファ・bind group の生成)
+│  │  ├─ callback.rs      CanvasCallback(フレーム描画。パス実行順の正典)
+│  │  ├─ snapshot.rs      GpuCanvas::snapshot(PNG 読み戻し。H6。R8 で readback を一般化予定)
+│  │  ├─ shader_error.rs  WGSL コンパイルエラーの行番号補正の純関数+テスト(R3 QoL)
 │  │  └─ hot_reload.rs    WGSL ファイル監視と再ビルド(H1)
 │  ├─ input.rs            PointerSource trait(MouseSource / PenSource = egui Touch)
 │  ├─ preset.rs           SimParams ⇄ JSON(H3)
@@ -75,7 +80,7 @@ compute の binding は全シェーダー共通([assets/shaders/common.wgsl](../
 
 ## 4. フレームの流れ
 
-egui-wgpu の `CallbackTrait` で駆動する(`gpu/mod.rs` の `CanvasCallback`):
+egui-wgpu の `CallbackTrait` で駆動する(`gpu/callback.rs` の `CanvasCallback`):
 
 ```
 prepare(毎フレーム):
