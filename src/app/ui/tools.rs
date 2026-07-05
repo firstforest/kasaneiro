@@ -16,6 +16,8 @@ impl PaintApp {
                 .clicked()
             {
                 self.run_canvas_action(|c, d, q| c.bake_dry(d, q));
+                // M6: 湿レイヤーを別経路で書き替えたので水彩の 1 段 undo を無効化
+                self.invalidate_wet_undo();
             }
             if ui
                 .button("水だけ除去")
@@ -23,6 +25,7 @@ impl PaintApp {
                 .clicked()
             {
                 self.run_canvas_action(|c, d, q| c.fast_dry(d, q));
+                self.invalidate_wet_undo();
             }
             if ui
                 .button("全面を湿らす")
@@ -30,6 +33,27 @@ impl PaintApp {
                 .clicked()
             {
                 self.run_canvas_action(|c, d, q| c.rewet(d, q));
+                self.invalidate_wet_undo();
+            }
+        });
+        // M6: 統一 Undo/Redo(水彩=1段 / 線画=多段)。乾燥ボタンと同じく常時見える位置に置く。
+        // Ctrl+Z / Ctrl+Shift+Z と同じ経路(末尾の操作種別で振り分け)
+        ui.horizontal(|ui| {
+            let can_undo = !self.undo_stack.is_empty();
+            let can_redo = !self.line_history.redo.is_empty();
+            if ui
+                .add_enabled(can_undo, egui::Button::new("↶ 元に戻す"))
+                .on_hover_text("直前の操作を戻す (Ctrl+Z)。水彩は1段、線画は多段")
+                .clicked()
+            {
+                self.undo();
+            }
+            if ui
+                .add_enabled(can_redo, egui::Button::new("↷ やり直し"))
+                .on_hover_text("取り消しをやり直す (Ctrl+Shift+Z)。対象は線画")
+                .clicked()
+            {
+                self.redo();
             }
         });
         ui.add_space(4.0);

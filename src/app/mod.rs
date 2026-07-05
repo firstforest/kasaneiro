@@ -66,6 +66,17 @@ fn install_japanese_font(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// 統一 Undo 履歴(M6)の1操作の種別。Ctrl+Z を「最後の操作の種別」で振り分けるため、
+/// 線画(多段、`line_history`)と湿レイヤー(1段、GPU 退避)の操作順だけを時系列で持つ。
+/// - `Line`: ラスタ線画1本。実データと Redo は `LineHistory` 側が多段で持つ
+/// - `Wet`: 水彩ストローク1本。退避は GPU テクスチャ1組だけ=**最新の1本のみ**戻せる
+///   (新しい水彩ストロークで退避が上書きされ、古い `Wet` マーカーは無効化される)
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UndoKind {
+    Line,
+    Wet,
+}
+
 pub struct PaintApp {
     render_state: egui_wgpu::RenderState,
     params: SimParams,
@@ -97,6 +108,9 @@ pub struct PaintApp {
     /// M4.5d: 線画(鉛筆・ペン・ハイライト)の多段 Undo/Redo 履歴。
     /// 流体を通らないラスタ線画をストローク単位で決定論的に引き直す(湿レイヤーは対象外)
     line_history: LineHistory,
+    /// M6: 統一 Undo 履歴。線画(多段)と湿レイヤー(1段)の操作順を時系列で持ち、
+    /// Ctrl+Z を末尾の種別で振り分ける。湿レイヤーの退避実体は GpuCanvas::wet_backup
+    undo_stack: Vec<UndoKind>,
     /// M5: ランタイムパレット(4スロットの色・ρ/ω/γ)。編集したら apply_palette() で GPU へ。
     /// 乾かすと現行パレットの色がそのレイヤー専用スロットへ記録される(M5c、遡って変色しない)
     palette: pigment::Palette,
@@ -154,6 +168,7 @@ impl PaintApp {
             },
             status_msg: None,
             line_history: LineHistory::default(),
+            undo_stack: Vec::new(),
             // GpuCanvas::new が既定パレットを両バッファへ書き込み済み(同じ値で開始)
             palette: pigment::Palette::default_palette(),
             palette_ui: PaletteUi {
@@ -190,13 +205,60 @@ impl PaintApp {
         }
         // 線画テクスチャは canvas.clear() がゼロにする。履歴も破棄する(M4.5d)
         self.line_history.clear();
+        // 統一 Undo 履歴も破棄(退避テクスチャは次の水彩ストロークで上書きされるので消さなくてよい)
+        self.undo_stack.clear();
+    }
+
+    /// 統一 Undo(M6): 末尾の操作種別で振り分ける(Ctrl+Z)。線を描いた直後は線が、
+    /// 水彩ストロークの直後は湿レイヤーが戻る。ボタン・キーの両方からここを通す
+    fn undo(&mut self) {
+        match self.undo_stack.last().copied() {
+            Some(UndoKind::Wet) => self.wet_undo(),
+            Some(UndoKind::Line) => {
+                self.line_undo();
+            }
+            None => {}
+        }
+    }
+
+    /// 統一 Redo(M6): Ctrl+Shift+Z。湿レイヤーは 1 段 undo で Redo を持たないため、
+    /// Redo 対象は線画のみ(新しいストロークで線画 Redo は破棄済み=順序は破綻しない)
+    fn redo(&mut self) {
+        self.line_redo();
+    }
+
+    /// 湿レイヤーの 1 段 undo(M6): 退避テクスチャを current へ書き戻し、Wet マーカーを外す。
+    /// 退避は最新1本ぶんだけなので、これで戻せるのは直前の水彩ストローク開始時の状態
+    fn wet_undo(&mut self) {
+        self.run_canvas_action(|c, d, q| {
+            c.restore_wet(d, q);
+            Ok(())
+        });
+        if let Some(pos) = self.undo_stack.iter().rposition(|k| *k == UndoKind::Wet) {
+            self.undo_stack.remove(pos);
+        }
+    }
+
+    /// 水彩ストローク開始(Down)時に湿レイヤーを退避する(M6)。restore の読み元になる
+    fn backup_wet_layer(&mut self) {
+        self.run_canvas_action(|c, d, q| {
+            c.backup_wet(d, q);
+            Ok(())
+        });
+    }
+
+    /// 乾かす / Fast Dry / 再湿潤 は湿レイヤーを別経路で書き替えるので、退避との整合が崩れる。
+    /// これらの手動操作後は水彩の 1 段 undo を無効化する(M6。線画の履歴には触れない)
+    fn invalidate_wet_undo(&mut self) {
+        self.undo_stack.retain(|k| *k != UndoKind::Wet);
     }
 
     /// 線画の Undo(M4.5d): 末尾のストロークを Redo へ移し、その target テクスチャを
-    /// クリアして残りのストロークを保存済みパラメータで引き直す(他の線種は無傷)
-    fn line_undo(&mut self) {
+    /// クリアして残りのストロークを保存済みパラメータで引き直す(他の線種は無傷)。
+    /// 実際に1本戻したら true(統一スタックの Line マーカーも1つ外す。M6)
+    fn line_undo(&mut self) -> bool {
         let Some(stroke) = self.line_history.done.pop() else {
-            return;
+            return false;
         };
         let target = stroke.target;
         self.line_history.redo.push(stroke);
@@ -215,23 +277,30 @@ impl PaintApp {
             }
             Ok(())
         });
+        if let Some(pos) = self.undo_stack.iter().rposition(|k| *k == UndoKind::Line) {
+            self.undo_stack.remove(pos);
+        }
+        true
     }
 
-    /// 線画の Redo(M4.5d): 取り消した末尾のストロークを対象テクスチャへ再適用する
-    fn line_redo(&mut self) {
+    /// 線画の Redo(M4.5d): 取り消した末尾のストロークを対象テクスチャへ再適用する。
+    /// 実際に1本復元したら true(統一スタックへ Line マーカーを積む。M6)
+    fn line_redo(&mut self) -> bool {
         let Some(stroke) = self.line_history.redo.pop() else {
-            return;
+            return false;
         };
         let target = stroke.target;
         let params = stroke.params;
         let splats = stroke_splats(&stroke);
         self.run_canvas_action(move |c, d, q| c.rasterize_line(d, q, target, &params, &splats));
         self.line_history.done.push(stroke);
+        self.undo_stack.push(UndoKind::Line);
+        true
     }
 
-    /// 線画の Undo/Redo ショートカット(M4.5d): Ctrl+Z / Ctrl+Shift+Z(Redo は Ctrl+Y も)。
-    /// テキスト入力中(プリセット名など)は横取りしない
-    fn handle_line_shortcuts(&mut self, ctx: &egui::Context) {
+    /// Undo/Redo ショートカット(M4.5d/M6): Ctrl+Z / Ctrl+Shift+Z(Redo は Ctrl+Y も)。
+    /// 統一履歴を通す(線画・水彩の両方)。テキスト入力中(プリセット名など)は横取りしない
+    fn handle_undo_shortcuts(&mut self, ctx: &egui::Context) {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
@@ -243,10 +312,10 @@ impl PaintApp {
             (undo, redo)
         });
         if undo {
-            self.line_undo();
+            self.undo();
         }
         if redo {
-            self.line_redo();
+            self.redo();
         }
     }
 
@@ -322,6 +391,10 @@ impl PaintApp {
                     // M4.5d: ラスタ線画は履歴へストロークを開始(実効パラメータをスナップショット)
                     if let Some(target) = line_target {
                         self.line_history.begin(target, self.params);
+                    } else {
+                        // M6: 水彩ストローク開始 → 湿レイヤーを退避(1段 undo の読み元)。
+                        // このフレームの splat + シミュより前=ストローク直前の状態を捉える
+                        self.backup_wet_layer();
                     }
                 }
                 PointerPhase::Move => {}
@@ -336,7 +409,15 @@ impl PaintApp {
                         }
                         // M4.5d: ラスタ線画のストロークを確定(Redo 履歴を破棄)
                         if line_target.is_some() {
-                            self.line_history.finish();
+                            if self.line_history.finish() {
+                                self.undo_stack.push(UndoKind::Line);
+                            }
+                        } else {
+                            // M6: 水彩ストローク確定。退避は最新1本ぶんだけなので、古い Wet
+                            // マーカーを外して積み直す。新ストロークは線画 Redo も無効化する
+                            self.invalidate_wet_undo();
+                            self.undo_stack.push(UndoKind::Wet);
+                            self.line_history.redo.clear();
                         }
                     }
                     continue;
@@ -487,8 +568,8 @@ impl eframe::App for PaintApp {
             self.rebuild_shaders();
         }
 
-        // M4.5d: 線画の Undo/Redo(Ctrl+Z / Ctrl+Shift+Z)
-        self.handle_line_shortcuts(ui.ctx());
+        // M4.5d/M6: 統一 Undo/Redo(Ctrl+Z / Ctrl+Shift+Z)。線画・水彩の両方を振り分ける
+        self.handle_undo_shortcuts(ui.ctx());
 
         egui::Panel::left("tools")
             .default_size(280.0)

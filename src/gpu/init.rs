@@ -32,6 +32,8 @@ impl GpuCanvas {
                 format: SIM_FORMAT,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::STORAGE_BINDING
+                    // COPY_SRC は湿レイヤーの undo 退避(M6)でテクスチャ間コピーの読み元にするため
+                    | wgpu::TextureUsages::COPY_SRC
                     | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             })
@@ -44,6 +46,26 @@ impl GpuCanvas {
         let sim_views: [[wgpu::TextureView; 2]; TEX_KINDS] = std::array::from_fn(|kind| {
             std::array::from_fn(|i| {
                 textures[kind][i].create_view(&wgpu::TextureViewDescriptor::default())
+            })
+        });
+
+        // 湿レイヤーの 1 段 undo(M6): ストローク開始時に current の 3 テクスチャ(水 / 浮遊 /
+        // 沈着)をここへ GPU 間コピーで退避し、Ctrl+Z で current へ書き戻す。表示専用でなく
+        // コピーの読み元/書き先にしかならないので usage は COPY のみ(512² rgba32float × 3 = 12MB)
+        let wet_backup: [wgpu::Texture; TEX_KINDS] = std::array::from_fn(|_| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("wet_backup"),
+                size: wgpu::Extent3d {
+                    width: CANVAS_SIZE,
+                    height: CANVAS_SIZE,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: SIM_FORMAT,
+                usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
             })
         });
 
@@ -534,6 +556,7 @@ impl GpuCanvas {
             target_format,
             textures,
             sim_views,
+            wet_backup,
             paper_view,
             compute_bind_groups,
             display_bind_groups,

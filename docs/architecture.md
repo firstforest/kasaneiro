@@ -83,6 +83,7 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 | 紙ハイト | r32float × 1(静的) | r = 高さ 0..1(0=谷 / 1=山)。起動時に CPU 生成、ping-pong しない |
 | 乾燥レイヤー | rgba32float texture array(最大8スライス) | 1スライス = 1乾燥レイヤー、rgba = 4顔料濃度。RGB に潰さず顔料濃度のまま焼くので表示は毎フレーム latent で発色できる |
 | 線画(M4.5a/c) | r32float × 3(鉛筆・ペン・ハイライト、静的な read_write) | r = インク濃度/不透明度 0..1。ping-pong せず `linesplat.wgsl` が read_write storage で直接蓄積。display は sampled で読み色の上に合成。清書ペンは compute 側も binding 10 で読む(M4.5b の透水率境界) |
+| 湿レイヤー退避(M6) | rgba32float × 3(水・浮遊・沈着、COPY のみ) | 水彩ストローク開始時に `current` の3テクスチャを GPU 間コピーで退避。Ctrl+Z(水彩=1段 undo)で `current` へ書き戻す。bind せずコピーの読み元/書き先にしかならない。最新1本ぶんだけ保持 |
 
 **ping-pong は3テクスチャまとめて単一の `current`** で管理する。各 compute パスは3枚の src を読み、3枚の dst を必ず全テクセル書いて(変更しない分は素通し)反転する。パスごとに index を分けるより単純で、512² では素通しコストは十分軽い。線画テクスチャ(M4.5a/c)は ping-pong せず read_write で自己更新するため `current` に依存しない。
 

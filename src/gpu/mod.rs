@@ -165,6 +165,9 @@ pub struct GpuCanvas {
     textures: [[wgpu::Texture; 2]; TEX_KINDS],
     /// textures と同順のビュー(bake の bind group をボタン押下時に組むため保持)
     sim_views: [[wgpu::TextureView; 2]; TEX_KINDS],
+    /// 湿レイヤーの 1 段 undo(M6): ストローク開始時に current の [水, 浮遊, 沈着] を退避する。
+    /// GPU 間コピー専用(bind しない)。restore_wet で current へ書き戻す
+    wet_backup: [wgpu::Texture; TEX_KINDS],
     paper_view: wgpu::TextureView,
     compute_bind_groups: [wgpu::BindGroup; 2],
     display_bind_groups: [wgpu::BindGroup; 2],
@@ -256,6 +259,46 @@ impl GpuCanvas {
         }
         self.layers.clear();
         self.sync_layers(queue);
+    }
+
+    /// 湿レイヤーの 1 段 undo(M6): いま表示中(current)の [水, 浮遊, 沈着] を退避テクスチャへ
+    /// GPU 間コピーする。水彩ストローク開始(Down)時に呼ぶ。ping-pong の反転より前の
+    /// 「ストローク直前の状態」を捉える(この後のフレームで splat + シミュが current を書き替える)
+    pub fn backup_wet(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.copy_wet(device, queue, "wet_backup", true);
+    }
+
+    /// 湿レイヤーの 1 段 undo(M6): 退避テクスチャを current へ書き戻す。Ctrl+Z(水彩)で呼ぶ。
+    /// current に書くので ping-pong の parity に依らず、次フレームの表示・シミュがここから続く
+    pub fn restore_wet(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.copy_wet(device, queue, "wet_restore", false);
+    }
+
+    /// backup(current→退避)/ restore(退避→current)の共通実装。`backup=true` で退避方向。
+    fn copy_wet(&self, device: &wgpu::Device, queue: &wgpu::Queue, label: &str, backup: bool) {
+        let extent = wgpu::Extent3d {
+            width: CANVAS_SIZE,
+            height: CANVAS_SIZE,
+            depth_or_array_layers: 1,
+        };
+        fn at(texture: &wgpu::Texture) -> wgpu::TexelCopyTextureInfo<'_> {
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            }
+        }
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some(label),
+        });
+        for kind in 0..TEX_KINDS {
+            let live = &self.textures[kind][self.current];
+            let saved = &self.wet_backup[kind];
+            let (src, dst) = if backup { (live, saved) } else { (saved, live) };
+            encoder.copy_texture_to_texture(at(src), at(dst), extent);
+        }
+        queue.submit([encoder.finish()]);
     }
 
     /// 線画(M4.5a)の描画先 bind group を返す。CanvasCallback の prepare() が

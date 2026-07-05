@@ -54,14 +54,17 @@ impl LineHistory {
     }
 
     /// ストローク確定(Up)。点があれば履歴へ積み、Redo 履歴を破棄する。
-    /// 確定したストロークはすでにテクスチャへライブ描画済み(再ラスタライズ不要)
-    pub fn finish(&mut self) {
+    /// 確定したストロークはすでにテクスチャへライブ描画済み(再ラスタライズ不要)。
+    /// 実際に1本積んだら true(統一 undo スタックへ Line マーカーを積むかの判断に使う。M6)
+    pub fn finish(&mut self) -> bool {
         if let Some(b) = self.building.take()
             && !b.points.is_empty()
         {
             self.done.push(b);
             self.redo.clear();
+            return true;
         }
+        false
     }
 
     /// キャンバスリセット時に履歴も全消去する
