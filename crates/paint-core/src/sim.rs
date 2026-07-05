@@ -134,25 +134,39 @@ pub struct SimParams {
     pub line_mode: u32,
     /// ラスタ消しゴム(M4.5a): 0=描画(蓄積)/ 1=減算。linesplat.wgsl が分岐する
     pub line_eraser: u32,
-    /// 1パスで置くインク濃度の基準(M4.5a)。鉛筆は筆圧で、ペンは満量で掛かる
-    pub line_strength: f32,
+    /// 鉛筆の半径(M4.5a、テクセル)。水ブラシ(brush_radius)とは独立。筆圧で締められる
+    pub pencil_radius: f32,
+    /// 鉛筆の線の濃さ(M4.5a): 1パスで置くインク濃度の基準(筆圧で変調)
+    pub pencil_strength: f32,
     /// 鉛筆の粒状感(M4.5a): 紙ハイトでインク濃度を変調する度合い(0=一様 / 1=山に強く乗る)
-    pub line_gran: f32,
+    pub pencil_gran: f32,
+    /// ペンの半径(M4.5a、テクセル)。水ブラシ(brush_radius)とは独立。筆圧→太さ
+    pub pen_radius: f32,
+    /// ペンの線の濃さ(M4.5a): 1パスで置くインク濃度の基準(満量で掛かる)
+    pub pen_strength: f32,
     /// 下書き(鉛筆)レイヤーの表示(M4.5a): 0=非表示 / 1=表示。display.wgsl が合成時に参照
     pub show_pencil: u32,
     /// 清書(ペン)レイヤーの表示(M4.5a): 0=非表示 / 1=表示
     pub show_pen: u32,
+    /// uniform の 16B 整列用パディング(48フィールド=192B)。プリセット JSON には出さない
+    #[serde(skip)]
+    pub _pad_line: f32,
 }
 
 impl SimParams {
-    /// 筆圧を反映した実効ブラシ半径(splat.wgsl と同じ式)。
-    /// CPU 側ではストローク補間のサンプル間隔の算出に使う(brush.rs / replay.rs)
-    pub fn radius_at(&self, pressure: f32) -> f32 {
+    /// 任意の基準半径に筆圧を反映した実効半径(splat.wgsl / linesplat.wgsl と同じ式)。
+    /// 水ブラシは brush_radius、ラスタ線画は pencil_radius / pen_radius を base に渡す
+    pub fn radius_at_base(&self, base: f32, pressure: f32) -> f32 {
         let p = pressure
             .clamp(0.0, 1.0)
             .powf(self.pressure_gamma.max(0.01));
         let factor = 1.0 + (p - 1.0) * self.pressure_radius.clamp(0.0, 1.0);
-        (self.brush_radius * factor).max(0.5)
+        (base * factor).max(0.5)
+    }
+
+    /// 水ブラシの実効半径。CPU 側ではストローク補間のサンプル間隔の算出に使う(brush.rs / replay.rs)
+    pub fn radius_at(&self, pressure: f32) -> f32 {
+        self.radius_at_base(self.brush_radius, pressure)
     }
 }
 
@@ -199,10 +213,14 @@ impl Default for SimParams {
             smear_rate: 0.35, // ならし: 総顔料をブラシスケールで均す緩和率。濃い山を周囲へ伸ばす
             line_mode: 0,     // 既定は鉛筆
             line_eraser: 0,
-            line_strength: 0.7,
-            line_gran: 0.5,
+            pencil_radius: 8.0,   // 鉛筆は柔らかめの中細
+            pencil_strength: 0.7,
+            pencil_gran: 0.5,
+            pen_radius: 4.0,      // ペンは細く硬い線
+            pen_strength: 0.9,    // ペンは濃い
             show_pencil: 1,
             show_pen: 1,
+            _pad_line: 0.0,
         }
     }
 }

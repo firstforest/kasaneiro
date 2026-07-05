@@ -26,10 +26,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let h = textureLoad(paper_tex, ip, 0).r;
     var ink = textureLoad(line_tex, ip).r;
 
+    // 鉛筆/ペンで独立した半径を使う(brush_radius = 水ブラシとは切り離す)
+    let base_radius = select(params.pencil_radius, params.pen_radius, params.line_mode == 1u);
+
     for (var i = 0u; i < splat_buf.count; i++) {
         let s = splat_buf.splats[i];
         let press = pressure_curve(s.pressure);
-        let radius = max(params.brush_radius * mix(1.0, press, params.pressure_radius), 0.5);
+        let radius = max(base_radius * mix(1.0, press, params.pressure_radius), 0.5);
         let dist = distance(p, s.pos);
 
         var deposit = 0.0;
@@ -37,12 +40,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             // ペン: 硬いエッジ(1px の遷移帯)、筆圧で太さを締める、濃度は満量
             let r = radius * mix(0.5, 1.0, press);
             let cover = 1.0 - smoothstep(r - 1.0, r, dist);
-            deposit = cover * params.line_strength;
+            deposit = cover * params.pen_strength;
         } else {
             // 鉛筆: 柔らかいエッジ、筆圧→濃さ、紙ハイトで粒状変調(山=濃く / 谷=薄く)
             let cover = 1.0 - smoothstep(radius * 0.4, radius, dist);
-            let gran = mix(1.0, h, params.line_gran);
-            deposit = cover * params.line_strength * mix(1.0, press, params.pressure_pigment) * gran;
+            let gran = mix(1.0, h, params.pencil_gran);
+            deposit = cover * params.pencil_strength * mix(1.0, press, params.pressure_pigment) * gran;
         }
 
         if (params.line_eraser == 1u) {

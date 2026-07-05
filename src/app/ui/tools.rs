@@ -142,8 +142,22 @@ impl PaintApp {
             };
             self.params.line_eraser = eraser as u32;
         }
-        ui.add(egui::Slider::new(&mut self.params.line_strength, 0.0..=1.0).text("線の濃さ"));
-        ui.add(egui::Slider::new(&mut self.params.line_gran, 0.0..=1.0).text("鉛筆の粒状感"));
-        ui.label("※半径・筆圧の効きは「水ブラシ」「筆圧」の値を共用します");
+        // 鉛筆/ペンは太さ・濃さを独立に持つ(水ブラシの brush_radius とは別)
+        ui.label(egui::RichText::new("鉛筆").strong());
+        ui.add(
+            egui::Slider::new(&mut self.params.pencil_radius, 1.0..=64.0)
+                .text("太さ")
+                .suffix(" px"),
+        );
+        ui.add(egui::Slider::new(&mut self.params.pencil_strength, 0.0..=1.0).text("濃さ"));
+        ui.add(egui::Slider::new(&mut self.params.pencil_gran, 0.0..=1.0).text("粒状感"));
+        ui.label(egui::RichText::new("ペン").strong());
+        ui.add(
+            egui::Slider::new(&mut self.params.pen_radius, 1.0..=64.0)
+                .text("太さ")
+                .suffix(" px"),
+        );
+        ui.add(egui::Slider::new(&mut self.params.pen_strength, 0.0..=1.0).text("濃さ"));
+        ui.label("※筆圧の効きは「筆圧」パネルの値を共用します");
     }
 }

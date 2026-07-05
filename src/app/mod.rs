@@ -242,8 +242,10 @@ impl PaintApp {
                 continue;
             }
             let px = (ev.pos - rect.min) * scale;
-            // サンプル間隔は筆圧を反映した実効半径から(細い筆入れでも隙間を作らない)
-            let spacing = (self.params.radius_at(ev.pressure) * 0.25).max(1.0);
+            // サンプル間隔は筆圧を反映した実効半径から(細い筆入れでも隙間を作らない)。
+            // ラスタ線画は鉛筆/ペンの独立半径を使う(brush_radius と切り離す)
+            let base = self.active_base_radius();
+            let spacing = (self.params.radius_at_base(base, ev.pressure) * 0.25).max(1.0);
             self.stroke
                 .add_motion([px.x, px.y], ev.pressure, spacing, splats);
             // H5: 補間前の生ポインタ位置+筆圧を記録する(再生時に補間し直すため
@@ -253,6 +255,16 @@ impl PaintApp {
             {
                 recorder.add_point([px.x, px.y], ev.pressure);
             }
+        }
+    }
+
+    /// 現在のツールが使うブラシ半径の基準値(筆圧前)。ラスタ線画は鉛筆/ペンの
+    /// 独立半径、流体ツールは brush_radius。ストローク補間の間隔算出に使う
+    fn active_base_radius(&self) -> f32 {
+        match self.tool {
+            Tool::Raster { kind: RasterTool::Pencil, .. } => self.params.pencil_radius,
+            Tool::Raster { kind: RasterTool::Pen, .. } => self.params.pen_radius,
+            _ => self.params.brush_radius,
         }
     }
 
