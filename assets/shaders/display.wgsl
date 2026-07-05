@@ -61,6 +61,8 @@ struct LayerUniform {
 // 線画(M4.5a): r32float ×2。r = インク濃度 0..1(0=線なし)。色より上に合成する
 @group(0) @binding(8) var pencil_tex: texture_2d<f32>;
 @group(0) @binding(9) var pen_tex: texture_2d<f32>;
+// ハイライト(M4.5c): r32float 1枚。r = 不透明度 0..1。合成の最後に白として重ねる(最上段)
+@group(0) @binding(10) var highlight_tex: texture_2d<f32>;
 
 // 黒 → 青 → シアン → 白 のヒートマップ
 fn heatmap(x: f32) -> vec3f {
@@ -248,6 +250,9 @@ fn apply_lines(color_in: vec3f, p: vec2f) -> vec3f {
     let pen = load_bilinear(pen_tex, p).r;
     color = mix(color, vec3f(0.42, 0.42, 0.44), pencil * f32(params.show_pencil));
     color = mix(color, vec3f(0.08, 0.08, 0.10), pen * f32(params.show_pen));
+    // ハイライト(M4.5c): 不透明白を最上段に重ねる(合成順 紙→乾燥→湿→線画→ハイライト)
+    let hi = load_bilinear(highlight_tex, p).r;
+    color = mix(color, vec3f(1.0), clamp(hi, 0.0, 1.0) * f32(params.show_highlight));
     return color;
 }
 

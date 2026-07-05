@@ -142,8 +142,13 @@ impl GpuCanvas {
                 view_formats: &[],
             })
         };
-        let line_textures = [make_line_texture("line_pencil"), make_line_texture("line_pen")];
-        let line_views: [wgpu::TextureView; 2] = std::array::from_fn(|i| {
+        // [鉛筆, ペン, ハイライト] の順(LineTarget::index と一致)。ハイライトは M4.5c
+        let line_textures = [
+            make_line_texture("line_pencil"),
+            make_line_texture("line_pen"),
+            make_line_texture("line_highlight"),
+        ];
+        let line_views: [wgpu::TextureView; 3] = std::array::from_fn(|i| {
             line_textures[i].create_view(&wgpu::TextureViewDescriptor::default())
         });
 
@@ -245,7 +250,8 @@ impl GpuCanvas {
 
         // 全 compute パス共通のレイアウト。binding は common.wgsl のコメントと対応:
         // 0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats,
-        // 8 = 紙ハイト(M1d、静的), 9 = 顔料個性 ρ/ω/γ(M3、静的)
+        // 8 = 紙ハイト(M1d、静的), 9 = 顔料個性 ρ/ω/γ(M3、静的),
+        // 10 = 清書ペンの線画(M4.5b、透水率の境界。velocity/diffuse だけが読む。他パスは宣言せず素通し)
         let compute_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sim_bgl"),
             entries: &[
@@ -271,6 +277,7 @@ impl GpuCanvas {
                     wgpu::ShaderStages::COMPUTE,
                     wgpu::BufferBindingType::Uniform,
                 ),
+                sampled_entry(10, wgpu::ShaderStages::COMPUTE),
             ],
         });
 
@@ -311,6 +318,8 @@ impl GpuCanvas {
                 // 線画(M4.5a): 鉛筆(8)・ペン(9)の r32float。合成で色の上に重ねる
                 sampled_entry(8, wgpu::ShaderStages::FRAGMENT),
                 sampled_entry(9, wgpu::ShaderStages::FRAGMENT),
+                // ハイライト(M4.5c): 不透明白。合成の最後に mix(色, 白, ハイライト)
+                sampled_entry(10, wgpu::ShaderStages::FRAGMENT),
             ],
         });
 
@@ -393,6 +402,12 @@ impl GpuCanvas {
                 binding: 9,
                 resource: physics_buffer.as_entire_binding(),
             });
+            // 清書ペンの線画(M4.5b): velocity/diffuse が透水率の境界として読む。
+            // ping-pong しないので src/dst に依らず固定([1] = ペン)
+            entries.push(wgpu::BindGroupEntry {
+                binding: 10,
+                resource: wgpu::BindingResource::TextureView(&line_views[1]),
+            });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("sim_bg"),
                 layout: &compute_bgl,
@@ -437,6 +452,11 @@ impl GpuCanvas {
                 binding: 9,
                 resource: wgpu::BindingResource::TextureView(&line_views[1]),
             });
+            // ハイライト(M4.5c): 合成の最後に白を重ねる
+            entries.push(wgpu::BindGroupEntry {
+                binding: 10,
+                resource: wgpu::BindingResource::TextureView(&line_views[2]),
+            });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("display_bg"),
                 layout: &display_bgl,
@@ -474,6 +494,7 @@ impl GpuCanvas {
         let raster_bind_groups = [
             make_raster_bg(0, "raster_pencil_bg"),
             make_raster_bg(1, "raster_pen_bg"),
+            make_raster_bg(2, "raster_highlight_bg"),
         ];
 
         let compute_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

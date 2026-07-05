@@ -14,6 +14,14 @@
 @group(0) @binding(5) var dst_dep: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(6) var<uniform> params: SimParams;
 @group(0) @binding(7) var<storage, read> splat_buf: SplatBuffer;
+// 清書ペンの線画(M4.5b): 隣接流束の透水率境界。ペン線を挟む2セル間は顔料が拡散しにくい
+@group(0) @binding(10) var pen_line_tex: texture_2d<f32>;
+
+// ペン線を挟んだ透水率(M4.5b): 両隣のどちらかにペン線があれば流束を絞る
+fn edge_perm(here: f32, at: vec2i) -> f32 {
+    let there = textureLoad(pen_line_tex, clamp(at, vec2i(0), vec2i(textureDimensions(pen_line_tex)) - 1), 0).r;
+    return clamp(1.0 - params.line_block * max(here, there), 0.0, 1.0);
+}
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -42,21 +50,23 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let n_r = load_clamped(src_water, ip + vec2i(1, 0));
     let n_u = load_clamped(src_water, ip + vec2i(0, -1));
     let n_d = load_clamped(src_water, ip + vec2i(0, 1));
+    // 透水率(M4.5b): 自セルのペン濃度と各隣接の max で流束を絞る(線を挟むと拡散しない)
+    let pen_c = textureLoad(pen_line_tex, ip, 0).r;
     var flux = vec4f(0.0);
     if (is_wet(n_l)) {
-        flux += clamp(0.5 * (cell.r + n_l.r), 0.0, 1.0)
+        flux += clamp(0.5 * (cell.r + n_l.r), 0.0, 1.0) * edge_perm(pen_c, ip + vec2i(-1, 0))
             * (load_clamped(src_susp, ip + vec2i(-1, 0)) - susp);
     }
     if (is_wet(n_r)) {
-        flux += clamp(0.5 * (cell.r + n_r.r), 0.0, 1.0)
+        flux += clamp(0.5 * (cell.r + n_r.r), 0.0, 1.0) * edge_perm(pen_c, ip + vec2i(1, 0))
             * (load_clamped(src_susp, ip + vec2i(1, 0)) - susp);
     }
     if (is_wet(n_u)) {
-        flux += clamp(0.5 * (cell.r + n_u.r), 0.0, 1.0)
+        flux += clamp(0.5 * (cell.r + n_u.r), 0.0, 1.0) * edge_perm(pen_c, ip + vec2i(0, -1))
             * (load_clamped(src_susp, ip + vec2i(0, -1)) - susp);
     }
     if (is_wet(n_d)) {
-        flux += clamp(0.5 * (cell.r + n_d.r), 0.0, 1.0)
+        flux += clamp(0.5 * (cell.r + n_d.r), 0.0, 1.0) * edge_perm(pen_c, ip + vec2i(0, 1))
             * (load_clamped(src_susp, ip + vec2i(0, 1)) - susp);
     }
     // 陽解法の安定条件: 係数は 4 近傍合計で 1 を超えないよう 0.2 に制限

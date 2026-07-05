@@ -148,7 +148,18 @@ pub struct SimParams {
     pub show_pencil: u32,
     /// 清書(ペン)レイヤーの表示(M4.5a): 0=非表示 / 1=表示
     pub show_pen: u32,
-    /// uniform の 16B 整列用パディング(48フィールド=192B)。プリセット JSON には出さない
+    /// 清書ペン線の透水率(M4.5b): 水の境界としての効きの強さ。
+    /// 透水率 perm = 1 − line_block×ペン濃度 を ①拡散(diffuse)の隣接流束 ②にじみ拡張
+    /// (velocity の wet_expand 蓄積)③速度場 に掛ける。ブラシの直接スプラットには掛けない
+    /// (線を跨ぐ筆使いなら明示的に越えられる)。0 で従来どおり(境界なし)
+    pub line_block: f32,
+    /// ハイライトの半径(M4.5c、テクセル)。不透明白ブラシ。筆圧で締められる
+    pub highlight_radius: f32,
+    /// ハイライトの不透明度基準(M4.5c): 1パスで置く白の不透明度(筆圧で変調)
+    pub highlight_strength: f32,
+    /// ハイライトレイヤーの表示(M4.5c): 0=非表示 / 1=表示。合成の最後に白を重ねる
+    pub show_highlight: u32,
+    /// uniform の 16B 整列用パディング(52フィールド=208B)。プリセット JSON には出さない
     #[serde(skip)]
     pub _pad_line: f32,
 }
@@ -220,6 +231,10 @@ impl Default for SimParams {
             pen_strength: 0.9,    // ペンは濃い
             show_pencil: 1,
             show_pen: 1,
+            line_block: 0.0,          // M4.5b: 既定は境界なし(明示的に上げると水が越えにくくなる)
+            highlight_radius: 6.0,    // M4.5c: ハイライトは中太
+            highlight_strength: 0.85, // M4.5c: 白の不透明度
+            show_highlight: 1,
             _pad_line: 0.0,
         }
     }

@@ -32,7 +32,7 @@ mod snapshot;
 
 pub use callback::CanvasCallback;
 
-use paint_core::sim::CANVAS_SIZE;
+use paint_core::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use shader_error::remap_shader_error_lines;
 use eframe::egui_wgpu::wgpu;
 use std::collections::HashMap;
@@ -68,12 +68,14 @@ enum ComputeLayout {
     Raster,
 }
 
-/// ラスタ線画(M4.5a)の描画先テクスチャ。Tool::Raster の種別と対応。
+/// ラスタ線画(M4.5a/c)の描画先テクスチャ。Tool::Raster の種別と対応。
 /// 流体を通らず linesplat.wgsl が対応する read_write 線画テクスチャへ直接書く
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LineTarget {
     Pencil,
     Pen,
+    /// 白ハイライト(M4.5c)。流体は通らず、合成の最上段に白を重ねる
+    Highlight,
 }
 
 impl LineTarget {
@@ -81,6 +83,7 @@ impl LineTarget {
         match self {
             LineTarget::Pencil => 0,
             LineTarget::Pen => 1,
+            LineTarget::Highlight => 2,
         }
     }
 }
@@ -162,11 +165,11 @@ pub struct GpuCanvas {
     layers_buffer: wgpu::Buffer,
     bake_bgl: wgpu::BindGroupLayout,
     bake_layout: wgpu::PipelineLayout,
-    /// 線画(M4.5a): [鉛筆, ペン] の r32float テクスチャ(read_write。ping-pong しない)。
-    /// clear() でゼロに戻すため実体を保持する
-    line_textures: [wgpu::Texture; 2],
-    /// linesplat.wgsl 用の描画先別 bind group([鉛筆, ペン]。LineTarget::index の順)
-    raster_bind_groups: [wgpu::BindGroup; 2],
+    /// 線画(M4.5a/c): [鉛筆, ペン, ハイライト] の r32float テクスチャ(read_write。ping-pong しない)。
+    /// clear() / clear_line() でゼロに戻すため実体を保持する
+    line_textures: [wgpu::Texture; 3],
+    /// linesplat.wgsl 用の描画先別 bind group([鉛筆, ペン, ハイライト]。LineTarget::index の順)
+    raster_bind_groups: [wgpu::BindGroup; 3],
     raster_layout: wgpu::PipelineLayout,
     /// 乾燥レイヤーの重ね順とメタ情報(先頭が最下層)。UI(app.rs)から直接編集し、
     /// 変更後に sync_layers() で uniform へ反映する
@@ -240,6 +243,75 @@ impl GpuCanvas {
     /// ラスタツールのとき linesplat.wgsl に渡す
     pub(crate) fn raster_bind_group(&self, target: LineTarget) -> &wgpu::BindGroup {
         &self.raster_bind_groups[target.index()]
+    }
+
+    /// 線画テクスチャ1枚をゼロに戻す(M4.5d の Undo で対象を再ラスタライズする前に呼ぶ)。
+    /// r32float = 4 バイト/テクセル
+    pub fn clear_line(&self, queue: &wgpu::Queue, target: LineTarget) {
+        let zeros = vec![0u8; (CANVAS_SIZE * CANVAS_SIZE * 4) as usize];
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.line_textures[target.index()],
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &zeros,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(CANVAS_SIZE * 4),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: CANVAS_SIZE,
+                height: CANVAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+
+    /// 1ストロークを対象の線画テクスチャへ引き直す(M4.5d の Undo/Redo 再ラスタライズ)。
+    /// 保存済みの実効パラメータ(params)で linesplat を回すので、現在のスライダー値に依らず
+    /// 過去の線の形が保たれる。splat 数が MAX_SPLATS を超える長い線は分割して dispatch する。
+    /// フレーム外の即時実行(params_buffer は次フレームの prepare() が上書きする)
+    pub fn rasterize_line(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: LineTarget,
+        params: &SimParams,
+        splats: &[Splat],
+    ) -> Result<(), String> {
+        let pipelines = self.pipelines.as_ref().ok_or("シェーダーが未ビルドです")?;
+        queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(params));
+        let workgroups = CANVAS_SIZE.div_ceil(8);
+        for chunk in splats.chunks(MAX_SPLATS) {
+            let header = SplatHeader {
+                count: chunk.len() as u32,
+                _pad: [0; 3],
+            };
+            let mut bytes = Vec::with_capacity(
+                std::mem::size_of::<SplatHeader>() + std::mem::size_of_val(chunk),
+            );
+            bytes.extend_from_slice(bytemuck::bytes_of(&header));
+            bytes.extend_from_slice(bytemuck::cast_slice(chunk));
+            queue.write_buffer(&self.splat_buffer, 0, &bytes);
+
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rasterize_line_encoder"),
+            });
+            {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("rasterize_line_pass"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(pipelines.compute("linesplat.wgsl"));
+                pass.set_bind_group(0, &self.raster_bind_groups[target.index()], &[]);
+                pass.dispatch_workgroups(workgroups, workgroups, 1);
+            }
+            queue.submit([encoder.finish()]);
+        }
+        Ok(())
     }
 
     /// レイヤーの並び・可視性(self.layers)を display 用 uniform へ反映する(M2)。

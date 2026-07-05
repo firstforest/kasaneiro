@@ -61,14 +61,18 @@ impl PaintApp {
         }
         drop(renderer);
 
-        // 線画レイヤー(M4.5a): 位置固定・並べ替え対象外。表示切替のみ(色より上に合成)
+        // 線画レイヤー(M4.5a/c): 位置固定・並べ替え対象外。表示切替のみ(色より上に合成)
         let mut show_pencil = self.params.show_pencil != 0;
         let mut show_pen = self.params.show_pen != 0;
+        let mut show_highlight = self.params.show_highlight != 0;
         if ui.checkbox(&mut show_pencil, "下書き(鉛筆)").changed() {
             self.params.show_pencil = show_pencil as u32;
         }
         if ui.checkbox(&mut show_pen, "清書(ペン)").changed() {
             self.params.show_pen = show_pen as u32;
+        }
+        if ui.checkbox(&mut show_highlight, "ハイライト(白)").changed() {
+            self.params.show_highlight = show_highlight as u32;
         }
     }
 

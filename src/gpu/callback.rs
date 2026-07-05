@@ -51,6 +51,23 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
         let mut current = canvas.current;
         if let Some(pipelines) = &canvas.pipelines {
             let workgroups = CANVAS_SIZE.div_ceil(8);
+
+            // ラスタ線画(M4.5a/c): 対象の線画テクスチャ(read_write)へ直描きする。
+            // 流体パスが清書ペンの線を sampled で読む(M4.5b の透水率)ため、同一 compute パスに
+            // 混ぜると同じテクスチャが read_write と sampled を兼ねて使用範囲が衝突する。別パスに分ける。
+            // ブラシ入力は一時停止中でも反映する(ping-pong しないので current は反転しない)。
+            if splat_count > 0
+                && let Some(target) = self.line_target
+            {
+                let mut line_pass = egui_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("line_pass"),
+                    timestamp_writes: None,
+                });
+                line_pass.set_pipeline(pipelines.compute("linesplat.wgsl"));
+                line_pass.set_bind_group(0, canvas.raster_bind_group(target), &[]);
+                line_pass.dispatch_workgroups(workgroups, workgroups, 1);
+            }
+
             let bind_groups = &canvas.compute_bind_groups;
             let mut pass = egui_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("sim_pass"),
@@ -64,16 +81,9 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
                 current ^= 1;
             };
 
-            // ブラシ入力は一時停止中でも反映する。ラスタツール(M4.5a)のときは流体の
-            // splat でなく、対象の線画テクスチャへ直描きする(ping-pong しないので current は反転しない)
-            if splat_count > 0 {
-                if let Some(target) = self.line_target {
-                    pass.set_pipeline(pipelines.compute("linesplat.wgsl"));
-                    pass.set_bind_group(0, canvas.raster_bind_group(target), &[]);
-                    pass.dispatch_workgroups(workgroups, workgroups, 1);
-                } else {
-                    run(&mut pass, pipelines.compute("splat.wgsl"));
-                }
+            // 流体ツールのときだけ splat を流す(ラスタツールは上の line_pass で処理済み)
+            if splat_count > 0 && self.line_target.is_none() {
+                run(&mut pass, pipelines.compute("splat.wgsl"));
             }
             // 1 ステップ = 速度更新 → 発散緩和 × N → FlowOutward → 移流
             //   → 顔料拡散 × N → 吸着/脱着+蒸発(パス実行順はここがハードコードの正典。R3)

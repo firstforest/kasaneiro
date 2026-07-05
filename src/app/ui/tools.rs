@@ -112,7 +112,7 @@ impl PaintApp {
         // 現在の消しゴム状態を引き継いでツールを切り替える(ラスタでなければ描画から始める)
         let cur_eraser = matches!(self.tool, Tool::Raster { eraser: true, .. });
         ui.horizontal(|ui| {
-            for kind in [RasterTool::Pencil, RasterTool::Pen] {
+            for kind in RasterTool::ALL {
                 let selected = matches!(self.tool, Tool::Raster { kind: k, .. } if k == kind);
                 if ui
                     .selectable_label(selected, kind.label())
@@ -158,6 +158,50 @@ impl PaintApp {
                 .suffix(" px"),
         );
         ui.add(egui::Slider::new(&mut self.params.pen_strength, 0.0..=1.0).text("濃さ"));
+        ui.add(
+            egui::Slider::new(&mut self.params.line_block, 0.0..=1.0)
+                .text("ペン線の透水率(水の境界)"),
+        )
+        .on_hover_text(
+            "清書ペンの線を水の境界にする強さ(M4.5b)。上げるほど、ペンで囲った領域を塗っても水がはみ出さない。0=境界なし。線を跨いでストロークすれば明示的に越えられる",
+        );
+        ui.label(egui::RichText::new("ハイライト").strong());
+        ui.add(
+            egui::Slider::new(&mut self.params.highlight_radius, 1.0..=64.0)
+                .text("太さ")
+                .suffix(" px"),
+        );
+        ui.add(egui::Slider::new(&mut self.params.highlight_strength, 0.0..=1.0).text("不透明度"));
         ui.label("※筆圧の効きは「筆圧」パネルの値を共用します");
+        // 線画の多段 Undo/Redo(M4.5d)
+        self.line_history_controls(ui);
+    }
+
+    /// 線画の多段 Undo/Redo(M4.5d): ボタン+履歴本数の表示。キーは Ctrl+Z / Ctrl+Shift+Z。
+    /// 湿レイヤー(水彩)は対象外(M6 の 1 段 undo で扱う)
+    pub(in crate::app) fn line_history_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            let can_undo = !self.line_history.done.is_empty();
+            let can_redo = !self.line_history.redo.is_empty();
+            if ui
+                .add_enabled(can_undo, egui::Button::new("↶ 元に戻す"))
+                .on_hover_text("線画を1本戻す (Ctrl+Z)。水彩は対象外")
+                .clicked()
+            {
+                self.line_undo();
+            }
+            if ui
+                .add_enabled(can_redo, egui::Button::new("↷ やり直し"))
+                .on_hover_text("取り消した線画を1本復元 (Ctrl+Shift+Z)")
+                .clicked()
+            {
+                self.line_redo();
+            }
+        });
+        ui.label(format!(
+            "線画履歴: {} 本(やり直し {} 本)",
+            self.line_history.done.len(),
+            self.line_history.redo.len()
+        ));
     }
 }

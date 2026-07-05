@@ -11,6 +11,8 @@
 //   0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats, 8 = 紙ハイト
 //   9 = 顔料個性(M3): array<vec4f, 4>、各 vec4 = (密度 ρ, ステイニング ω, 粒状感 γ, 予備)。
 //       起動時に1回だけ書く静的 uniform(src/pigment.rs の physics_uniform)。splat/transfer が読む
+//   10 = 清書ペンの線画テクスチャ(M4.5b、r32float、read only)。ペン濃度から透水率を出して
+//        velocity(速度場・にじみ拡張)/ diffuse(拡散流束)が水の境界として使う。線画パスが書く
 // dst は毎パス全テクセルを書くこと(変更しないテクスチャも素通しで write する。ping-pong のため)
 // 乾燥レイヤー(M2): rgba32float の texture array(1 スライス = 1 乾燥レイヤー、rgba = 4顔料濃度)。
 // bake.wgsl だけが binding 9 に書き込みスライスを持つ(splats は持たない)。表示側の合成は display.wgsl 参照
@@ -64,7 +66,11 @@ struct SimParams {
     pen_strength: f32,     // M4.5a: ペンのインク濃度基準
     show_pencil: u32,      // M4.5a: 下書き(鉛筆)レイヤーの表示 0/1
     show_pen: u32,         // M4.5a: 清書(ペン)レイヤーの表示 0/1
-    _pad_line: f32,        // M4.5a: 16B 整列パディング(48フィールド=192B)
+    line_block: f32,       // M4.5b: ペン線の透水率の効き(perm = 1 − line_block×ペン濃度)
+    highlight_radius: f32, // M4.5c: ハイライト(不透明白)の半径
+    highlight_strength: f32, // M4.5c: ハイライトの不透明度基準
+    show_highlight: u32,   // M4.5c: ハイライトレイヤーの表示 0/1
+    _pad_line: f32,        // 16B 整列パディング(52フィールド=208B)
 };
 
 // 筆圧 0..1 → 応答カーブ γ を通した補間係数(M1.5)。

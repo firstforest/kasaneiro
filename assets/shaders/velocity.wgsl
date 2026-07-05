@@ -15,6 +15,8 @@
 @group(0) @binding(6) var<uniform> params: SimParams;
 @group(0) @binding(7) var<storage, read> splat_buf: SplatBuffer;
 @group(0) @binding(8) var paper_tex: texture_2d<f32>;
+// 清書ペンの線画(M4.5b): 透水率 perm = 1 − line_block×ペン濃度 の境界。速度場とにじみ拡張に効く
+@group(0) @binding(10) var pen_line_tex: texture_2d<f32>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -24,6 +26,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
     let ip = vec2i(gid.xy);
     let cell = textureLoad(src_water, ip, 0);
+    // 透水率(M4.5b): ペン線が濃いほど 0 に近づき、水の動きを止める
+    let perm = clamp(1.0 - params.line_block * textureLoad(pen_line_tex, ip, 0).r, 0.0, 1.0);
 
     // 顔料は素通し(ping-pong のため必ず書く)
     textureStore(dst_susp, ip, textureLoad(src_susp, ip, 0));
@@ -45,7 +49,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         // 紙目変調(M1d): 谷(h=0)は最大2倍、山(h=1)はほぼ 0 倍で前線が進む
         let h = textureLoad(paper_tex, ip, 0).r;
         let seep_scale = mix(1.0, 2.0 * (1.0 - h), params.paper_wet);
-        let mask = min(cell.a + params.wet_expand * params.dt * seep * seep_scale, 1.0);
+        // 透水率(M4.5b): ペン線の乾いたセルへは濡れ前線が染み込みにくい
+        let mask = min(cell.a + params.wet_expand * params.dt * seep * seep_scale * perm, 1.0);
         textureStore(dst_water, ip, vec4f(cell.r, 0.0, 0.0, mask));
         return;
     }
@@ -69,6 +74,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // 勾配で加速(水は低い方へ)+ 減衰(粘性の代用)
     var vel = (cell.gb - params.accel * params.dt * grad) * (1.0 - params.damping);
+    // 透水率(M4.5b): ペン線のセルは速度を殺す = 水がその線を越えて流れない
+    vel *= perm;
 
     // CFL 的制約: 1 ステップで vel_max セル以上動かさない
     let speed = length(vel);

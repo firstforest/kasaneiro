@@ -8,10 +8,12 @@
 //! - プリセット/記録再生/シェーダー状態(`preset_panel` / `replay_panel` / `shader_status`)
 //! - キャンバスとエラーオーバーレイ(`canvas_ui` / `error_overlay`)
 
+mod linehist;
 mod ui;
 
 use crate::gpu::GpuCanvas;
 use crate::gpu::LineTarget;
+use linehist::{LineHistory, stroke_splats};
 use crate::gpu::hot_reload::{ShaderWatcher, shader_dir};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase};
 use crate::preset;
@@ -91,6 +93,9 @@ pub struct PaintApp {
     replay_ui: ReplayUi,
     /// H3/H5/H6 の操作結果の表示(保存先パスやエラー)
     status_msg: Option<String>,
+    /// M4.5d: 線画(鉛筆・ペン・ハイライト)の多段 Undo/Redo 履歴。
+    /// 流体を通らないラスタ線画をストローク単位で決定論的に引き直す(湿レイヤーは対象外)
+    line_history: LineHistory,
 }
 
 impl PaintApp {
@@ -142,6 +147,7 @@ impl PaintApp {
                 player: None,
             },
             status_msg: None,
+            line_history: LineHistory::default(),
         }
     }
 
@@ -154,10 +160,72 @@ impl PaintApp {
         }
     }
 
-    fn clear_canvas(&self) {
-        let mut renderer = self.render_state.renderer.write();
-        if let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() {
-            canvas.clear(&self.render_state.queue);
+    fn clear_canvas(&mut self) {
+        {
+            let mut renderer = self.render_state.renderer.write();
+            if let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() {
+                canvas.clear(&self.render_state.queue);
+            }
+        }
+        // 線画テクスチャは canvas.clear() がゼロにする。履歴も破棄する(M4.5d)
+        self.line_history.clear();
+    }
+
+    /// 線画の Undo(M4.5d): 末尾のストロークを Redo へ移し、その target テクスチャを
+    /// クリアして残りのストロークを保存済みパラメータで引き直す(他の線種は無傷)
+    fn line_undo(&mut self) {
+        let Some(stroke) = self.line_history.done.pop() else {
+            return;
+        };
+        let target = stroke.target;
+        self.line_history.redo.push(stroke);
+        // 対象 target の残りストロークを (params, splats) に確定させてから GPU へ流す
+        let strokes: Vec<(SimParams, Vec<Splat>)> = self
+            .line_history
+            .done
+            .iter()
+            .filter(|s| s.target == target)
+            .map(|s| (s.params, stroke_splats(s)))
+            .collect();
+        self.run_canvas_action(move |c, d, q| {
+            c.clear_line(q, target);
+            for (params, splats) in &strokes {
+                c.rasterize_line(d, q, target, params, splats)?;
+            }
+            Ok(())
+        });
+    }
+
+    /// 線画の Redo(M4.5d): 取り消した末尾のストロークを対象テクスチャへ再適用する
+    fn line_redo(&mut self) {
+        let Some(stroke) = self.line_history.redo.pop() else {
+            return;
+        };
+        let target = stroke.target;
+        let params = stroke.params;
+        let splats = stroke_splats(&stroke);
+        self.run_canvas_action(move |c, d, q| c.rasterize_line(d, q, target, &params, &splats));
+        self.line_history.done.push(stroke);
+    }
+
+    /// 線画の Undo/Redo ショートカット(M4.5d): Ctrl+Z / Ctrl+Shift+Z(Redo は Ctrl+Y も)。
+    /// テキスト入力中(プリセット名など)は横取りしない
+    fn handle_line_shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let (undo, redo) = ctx.input(|i| {
+            let cmd = i.modifiers.command;
+            let z = i.key_pressed(egui::Key::Z);
+            let undo = cmd && !i.modifiers.shift && z;
+            let redo = cmd && ((i.modifiers.shift && z) || i.key_pressed(egui::Key::Y));
+            (undo, redo)
+        });
+        if undo {
+            self.line_undo();
+        }
+        if redo {
+            self.line_redo();
         }
     }
 
@@ -206,8 +274,9 @@ impl PaintApp {
     ) {
         let scale = CANVAS_SIZE as f32 / rect.width();
         // H5 の記録は流体ストロークだけを対象にする(記録は params.tool = WetTool の gpu_id を
-        // 前提に再生するため。ラスタ線画 M4.5 の履歴は M4.5d で別系統に持つ)
+        // 前提に再生するため)。ラスタ線画(M4.5)は line_history に別系統で履歴を持つ(M4.5d)
         let recordable = self.tool.wet().is_some();
+        let line_target = self.line_target();
         for ev in events {
             match ev.phase {
                 PointerPhase::Down => {
@@ -223,6 +292,10 @@ impl PaintApp {
                     {
                         recorder.begin_stroke(self.params.brush_channel, self.params.tool);
                     }
+                    // M4.5d: ラスタ線画は履歴へストロークを開始(実効パラメータをスナップショット)
+                    if let Some(target) = line_target {
+                        self.line_history.begin(target, self.params);
+                    }
                 }
                 PointerPhase::Move => {}
                 PointerPhase::Up => {
@@ -234,6 +307,10 @@ impl PaintApp {
                         {
                             recorder.end_stroke();
                         }
+                        // M4.5d: ラスタ線画のストロークを確定(Redo 履歴を破棄)
+                        if line_target.is_some() {
+                            self.line_history.finish();
+                        }
                     }
                     continue;
                 }
@@ -243,7 +320,7 @@ impl PaintApp {
             }
             let px = (ev.pos - rect.min) * scale;
             // サンプル間隔は筆圧を反映した実効半径から(細い筆入れでも隙間を作らない)。
-            // ラスタ線画は鉛筆/ペンの独立半径を使う(brush_radius と切り離す)
+            // ラスタ線画は鉛筆/ペン/ハイライトの独立半径を使う(brush_radius と切り離す)
             let base = self.active_base_radius();
             let spacing = (self.params.radius_at_base(base, ev.pressure) * 0.25).max(1.0);
             self.stroke
@@ -255,6 +332,10 @@ impl PaintApp {
             {
                 recorder.add_point([px.x, px.y], ev.pressure);
             }
+            // M4.5d: ラスタ線画は生ポインタ点を履歴に溜める(Undo で引き直すため)
+            if line_target.is_some() {
+                self.line_history.push_point([px.x, px.y], ev.pressure);
+            }
         }
     }
 
@@ -264,17 +345,18 @@ impl PaintApp {
         match self.tool {
             Tool::Raster { kind: RasterTool::Pencil, .. } => self.params.pencil_radius,
             Tool::Raster { kind: RasterTool::Pen, .. } => self.params.pen_radius,
+            Tool::Raster { kind: RasterTool::Highlight, .. } => self.params.highlight_radius,
             _ => self.params.brush_radius,
         }
     }
 
-    /// ラスタ線画ツール(M4.5a)選択中の描画先。流体ツールのときは None。
+    /// ラスタ線画ツール(M4.5a/c)選択中の描画先。流体ツールのときは None。
     /// CanvasCallback へ渡し、Some なら splat を linesplat.wgsl へ流す
     fn line_target(&self) -> Option<LineTarget> {
         match self.tool {
             Tool::Raster { kind: RasterTool::Pencil, .. } => Some(LineTarget::Pencil),
             Tool::Raster { kind: RasterTool::Pen, .. } => Some(LineTarget::Pen),
-            // ハイライト(RasterTool::Highlight)は M4.5c で実装(現状は描画先なし)
+            Tool::Raster { kind: RasterTool::Highlight, .. } => Some(LineTarget::Highlight),
             _ => None,
         }
     }
@@ -338,6 +420,9 @@ impl eframe::App for PaintApp {
         if self.watcher.take_dirty() {
             self.rebuild_shaders();
         }
+
+        // M4.5d: 線画の Undo/Redo(Ctrl+Z / Ctrl+Shift+Z)
+        self.handle_line_shortcuts(ui.ctx());
 
         egui::Panel::left("tools")
             .default_size(280.0)

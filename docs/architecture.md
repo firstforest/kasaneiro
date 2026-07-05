@@ -39,9 +39,10 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │  ├─ main.rs             eframe 起動
 │  ├─ app/                egui UI
 │  │  ├─ mod.rs           PaintApp の状態・ライフサイクル・ディスパッチャ tool_panel・App::ui(R4)
+│  │  ├─ linehist.rs      線画の多段 Undo/Redo 履歴(M4.5d。RasterStroke / LineHistory / 再ラスタライズ)
 │  │  └─ ui/              UI 状態 + パネル描画を per-file 分割(R4。impl PaintApp を分散)
 │  │     ├─ mod.rs        UI 状態(PresetUi / ReplayUi)+ 共通部品 NamedStore
-│  │     ├─ tools.rs      乾燥ボタン・水ブラシ・線画(dry_controls / brush_panel / linework_panel)
+│  │     ├─ tools.rs      乾燥ボタン・水ブラシ・線画・線画 Undo/Redo(dry_controls / brush_panel / linework_panel / line_history_controls)
 │  │     ├─ layers.rs     レイヤー可視性・並べ替え・合成方式(layer_panel / layers_panel)
 │  │     ├─ tuning.rs     乾燥・筆圧・味付け・診断・シミュ制御(tuning_panel)
 │  │     ├─ panels.rs     プリセット/記録再生/シェーダー状態(preset/replay/shader_status)
@@ -78,16 +79,16 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 | 沈着顔料 | rgba32float × 2 | 同上。紙に定着した分で移流しない |
 | 紙ハイト | r32float × 1(静的) | r = 高さ 0..1(0=谷 / 1=山)。起動時に CPU 生成、ping-pong しない |
 | 乾燥レイヤー | rgba32float texture array(最大8スライス) | 1スライス = 1乾燥レイヤー、rgba = 4顔料濃度。RGB に潰さず顔料濃度のまま焼くので表示は毎フレーム latent で発色できる |
-| 線画(M4.5a) | r32float × 2(鉛筆・ペン、静的な read_write) | r = インク濃度 0..1。ping-pong せず `linesplat.wgsl` が read_write storage で直接蓄積。display は sampled で読み色の上に合成 |
+| 線画(M4.5a/c) | r32float × 3(鉛筆・ペン・ハイライト、静的な read_write) | r = インク濃度/不透明度 0..1。ping-pong せず `linesplat.wgsl` が read_write storage で直接蓄積。display は sampled で読み色の上に合成。清書ペンは compute 側も binding 10 で読む(M4.5b の透水率境界) |
 
-**ping-pong は3テクスチャまとめて単一の `current`** で管理する。各 compute パスは3枚の src を読み、3枚の dst を必ず全テクセル書いて(変更しない分は素通し)反転する。パスごとに index を分けるより単純で、512² では素通しコストは十分軽い。線画テクスチャ(M4.5a)は ping-pong せず read_write で自己更新するため `current` に依存しない。
+**ping-pong は3テクスチャまとめて単一の `current`** で管理する。各 compute パスは3枚の src を読み、3枚の dst を必ず全テクセル書いて(変更しない分は素通し)反転する。パスごとに index を分けるより単純で、512² では素通しコストは十分軽い。線画テクスチャ(M4.5a/c)は ping-pong せず read_write で自己更新するため `current` に依存しない。
 
 compute の binding は種別ごとに3レイアウト(R3 の `ComputeLayout`):
-- **共通**(splat 系ほか、[assets/shaders/common.wgsl](../assets/shaders/common.wgsl)): `0/1` 水 src/dst、`2/3` 浮遊 src/dst、`4/5` 沈着 src/dst、`6` SimParams uniform、`7` splat storage、`8` 紙ハイト、`9` 顔料個性 uniform
+- **共通**(splat 系ほか、[assets/shaders/common.wgsl](../assets/shaders/common.wgsl)): `0/1` 水 src/dst、`2/3` 浮遊 src/dst、`4/5` 沈着 src/dst、`6` SimParams uniform、`7` splat storage、`8` 紙ハイト、`9` 顔料個性 uniform、`10` 清書ペンの線画(M4.5b、透水率境界。読むのは velocity/diffuse だけで他パスは宣言せず素通し)
 - **bake**: 共通の `0..6, 8` + `9` = 乾燥レイヤーの書き込みスライス(splats なし)
-- **raster**(M4.5a、linesplat.wgsl): `0` 対象の線画テクスチャ(read_write r32float)、`1` SimParams、`2` splat storage、`3` 紙ハイト。描画先(鉛筆/ペン)は bind group を差し替えて選ぶ(パイプラインは1本)
+- **raster**(M4.5a/c、linesplat.wgsl): `0` 対象の線画テクスチャ(read_write r32float)、`1` SimParams、`2` splat storage、`3` 紙ハイト。描画先(鉛筆/ペン/ハイライト)は bind group を差し替えて選ぶ(パイプラインは1本)。ライブ描画は流体パスがペン線を sampled で読むため `linesplat` を専用 compute パスに分ける(同一パス内で read_write と sampled を兼ねると使用範囲が衝突するため)
 
-display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 latent、`5` 紙ハイト、`6` 乾燥レイヤー array、`7` LayerUniform、`8/9` 線画(鉛筆/ペン、M4.5a)。
+display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 latent、`5` 紙ハイト、`6` 乾燥レイヤー array、`7` LayerUniform、`8/9` 線画(鉛筆/ペン、M4.5a)、`10` ハイライト(M4.5c)。
 
 ## 4. フレームの流れ
 
@@ -98,12 +99,12 @@ prepare(毎フレーム):
   SimParams を uniform に write_buffer(スライダー即時反映)
   splat があれば storage buffer へ(一時停止中でもブラシは反映)
   ブラシ入力パス:
-    流体ツール → splat.wgsl(水+初速+顔料の注入。tool で分岐)
-    ラスタツール(M4.5a、line_target=Some)→ linesplat.wgsl(対象の線画テクスチャへ直描き。水は注入しない)
+    ラスタツール(M4.5a/c、line_target=Some)→ 専用 line_pass で linesplat.wgsl(対象の線画テクスチャへ直描き。水は注入しない)
+    流体ツール → sim_pass 先頭で splat.wgsl(水+初速+顔料の注入。tool で分岐)
   sim_steps 回(H6 の速度倍率):
-    速度更新(velocity) → 発散緩和(relax)× relax_iters
+    速度更新(velocity。ペン線で速度/にじみ拡張に透水率 M4.5b) → 発散緩和(relax)× relax_iters
     → FlowOutward(edge_eta > 0 のときだけ) → 移流(advect: 水+浮遊顔料)
-    → 顔料拡散(diffuse)× diffuse_iters → 吸着/脱着+蒸発(transfer)
+    → 顔料拡散(diffuse。ペン線で隣接流束に透水率 M4.5b)× diffuse_iters → 吸着/脱着+蒸発(transfer)
 paint:
   display.wgsl でフルスクリーン三角形を描画(合成・発色・デバッグ表示)
 ```
@@ -116,17 +117,17 @@ paint:
 |---|---|
 | common.wgsl | 共通定義(SimParams / Splat 構造体、濡れ判定、バイリニア補間)。Rust 側が各シェーダーの先頭に連結してコンパイル |
 | splat.wgsl | ブラシ入力。tool(描画/リフト/消去/水筆/ならし)で分岐 |
-| velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速) |
+| velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率 `perm` を速度場・にじみ拡張に掛ける(M4.5b) |
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
 | flowout.wgsl | FlowOutward(縁の水を抜く。既定オフ=edge_eta 0、M2 方式に置き換え済みで残置) |
 | advect.wgsl | セミラグランジアン移流(水+浮遊顔料。差し替え用に分離) |
-| diffuse.wgsl | 浮遊顔料の拡散(フィックの法則の陽解法。濡れセル間のみ・保存則あり) |
+| diffuse.wgsl | 浮遊顔料の拡散(フィックの法則の陽解法。濡れセル間のみ・保存則あり)。ペン線を挟む隣接流束に透水率を掛ける(M4.5b) |
 | transfer.wgsl | 吸着/脱着(顔料個性 ρ/ω で per-channel 変調)+蒸発 |
 | bake.wgsl | 「乾かす」= 乾燥レイヤーへの焼き込み+湿レイヤー全ゼロ |
 | fastdry.wgsl | Fast Dry(浮遊→沈着に落として水と流れをゼロに。焼き込まない) |
 | rewet.wgsl | Wet the Layer(全面マスク=1+rewet_water。沈着は既存の脱着で再浮遊) |
-| linesplat.wgsl | ラスタ線画(M4.5a)。鉛筆/ペンを対象の r32float テクスチャへ直描き(line_mode で視覚分岐、line_eraser で減算)。流体を通らない |
-| display.wgsl | 表示: 層内発色(mixbox latent)→ レイヤー合成(multiply / KM)→ 線画合成(M4.5a)→ sRGB。デバッグ表示 H4 の分岐もここ |
+| linesplat.wgsl | ラスタ線画(M4.5a/c)。鉛筆/ペン/ハイライトを対象の r32float テクスチャへ直描き(line_mode で視覚分岐、line_eraser で減算)。流体を通らない |
+| display.wgsl | 表示: 層内発色(mixbox latent)→ レイヤー合成(multiply / KM)→ 線画合成(鉛筆→ペン→ハイライト、M4.5a/c)→ sRGB。デバッグ表示 H4 の分岐もここ |
 
 ## 5. 混色・発色のアーキテクチャ(2段構え)
 
@@ -142,14 +143,16 @@ paint:
 - レイヤーの重ね順・可視性は `LayerUniform`(order + visible_mask)で display へ渡す。UI の並べ替えがそのまま KM 合成順になる
 - 焼き込みは一方通行(乾燥レイヤーの再編集はしない)。Fast Dry / Wet the Layer が「焼かずに止める / 濡らし直す」の中間操作を提供する
 
-## 6.5 線画(M4.5a)
+## 6.5 線画(M4.5)
 
-下書き鉛筆・清書ペンのラスタツール。流体を通らず専用テクスチャに直描きする(型階層は R2 の `Tool::Raster`)。
+下書き鉛筆・清書ペン・白ハイライトのラスタツール。流体を通らず専用テクスチャに直描きする(型階層は R2 の `Tool::Raster`)。
 
-- **描画経路**: 選択中ツールが `Tool::Raster` のとき `PaintApp::line_target()` が `Some(LineTarget)` を返し、`CanvasCallback` がブラシ入力を `splat.wgsl` でなく `linesplat.wgsl` へ回す。対象テクスチャ(鉛筆/ペン)は Rust 側の bind group で選び、シェーダーは共通1本。`line_mode` が視覚分岐(鉛筆=柔エッジ・紙目粒状・筆圧→濃さ / ペン=硬エッジ・筆圧→太さ)、`line_eraser` で減算
+- **描画経路**: 選択中ツールが `Tool::Raster` のとき `PaintApp::line_target()` が `Some(LineTarget)`(鉛筆/ペン/ハイライト)を返し、`CanvasCallback` がブラシ入力を `splat.wgsl` でなく `linesplat.wgsl` へ回す。対象テクスチャは Rust 側の bind group で選び、シェーダーは共通1本。`line_mode` が視覚分岐(鉛筆=柔エッジ・紙目粒状・筆圧→濃さ / ペン=硬エッジ・筆圧→太さ / ハイライト=硬めエッジの不透明白・筆圧→不透明度)、`line_eraser` で減算。ライブ描画は流体パスと別 compute パス(read_write と sampled の使用範囲衝突回避)
 - **蓄積モデル**: 目標濃度への `max`(1フレーム内で密にサンプルしても一定線濃度へ収束)。r32float の read_write storage で自己更新(ping-pong 不要)
-- **合成位置**: display.wgsl で色(紙→乾燥→湿)を合成した後、`apply_lines()` が鉛筆(グレー)→ ペン(濃色)の順にアルファ合成(アルファ = インク濃度)。`show_pencil`/`show_pen` で各レイヤーを非表示にできる。plan の合成順(紙→乾燥→湿→線画→ハイライト)の線画段
-- **記録との関係**: H5 のストローク記録は流体ツールのみ対象(ラスタは `line_target` が Some の間 recorder をスキップ)。線画の多段 Undo/Redo は M4.5d で別系統に持つ
+- **合成位置**: display.wgsl で色(紙→乾燥→湿)を合成した後、`apply_lines()` が鉛筆(グレー)→ ペン(濃色)→ ハイライト(白)の順にアルファ合成。`show_pencil`/`show_pen`/`show_highlight` で各レイヤーを非表示にできる。plan の合成順(紙→乾燥→湿→線画→ハイライト)そのまま
+- **境界効果(M4.5b、透水率)**: 清書ペン濃度から `perm = 1 − line_block×ペン濃度` を出し、velocity(速度場・にじみ拡張)と diffuse(隣接流束)に掛ける。ブラシの直接スプラットには掛けない(線を跨ぐ筆使いなら越えられる)。`line_block=0` で従来どおり。ペン線画テクスチャを共通レイアウトの binding 10 で sampled として読む
+- **多段 Undo/Redo(M4.5d、[src/app/linehist.rs](../src/app/linehist.rs))**: 流体を通らないので決定論的に再ラスタライズできる。ストローク単位で生ポインタ点+実効 SimParams を `LineHistory` に保持し、Undo = 対象テクスチャを `clear_line` してから残りを `rasterize_line` で引き直す / Redo = 取り消し分を再適用(Ctrl+Z / Ctrl+Shift+Z、Redo は Ctrl+Y も)。保存済みパラメータで引き直すのでスライダーを変えても過去の線は不変。長い線は MAX_SPLATS 単位に分割して dispatch。湿レイヤー(水彩)は対象外(M6 の 1 段 undo)
+- **記録との関係**: H5 のストローク記録は流体ツールのみ対象(ラスタは `line_target` が Some の間 recorder をスキップ)
 
 ## 7. 入力の経路
 
