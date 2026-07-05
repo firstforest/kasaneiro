@@ -9,35 +9,11 @@ use crate::preset;
 use crate::replay::{self, Player, Recorder, Recording};
 use paint_core::brush::StrokeState;
 use paint_core::sim::{CANVAS_SIZE, SimParams, Splat};
+use paint_core::tool::{Tool, ToolInfo, WetTool};
 use pigment::PIGMENTS;
 use eframe::egui;
 use eframe::egui_wgpu;
 use std::path::{Path, PathBuf};
-
-/// ブラシツール(M3/M4)。値は SimParams::tool / splat.wgsl の分岐と対応。
-const TOOLS: [(u32, &str, &str); 5] = [
-    (0, "描画", "水+顔料を置く(M1)"),
-    (
-        1,
-        "リフト(削り)",
-        "再湿潤して沈着顔料を浮遊層へ戻す。ステイニング顔料(ω)は残り、紙の凸部から先に剥がれる(M3)",
-    ),
-    (
-        2,
-        "消去",
-        "湿レイヤーの水・顔料を機械的にゼロへ(紙の白まで戻す完全消去。M3)",
-    ),
-    (
-        3,
-        "水筆",
-        "水を置き、ブラシ下の顔料を近傍平均へ均す(顔料は注入しない)。①大きな領域を先に濡らして顔料筆を滑らかに広げる ②境界をなでて均一な塗りに馴染ませる(質量保存の均しなので濃くならない。均し強度で調整)(M4)",
-    ),
-    (
-        4,
-        "ならし",
-        "濃くなった箇所に置くと、その顔料が周囲へ拡散して領域が均一に伸びていく。総顔料をブラシスケールで近傍平均へ均す(質量保存なので濃くならない)。水筆より広い範囲の均一化に。ならし強度で調整(M4)",
-    ),
-];
 
 /// レイヤー合成方式(M3)。値は SimParams::compose_mode / display.wgsl の分岐と対応。
 const COMPOSE_MODES: [(u32, &str, &str); 2] = [
@@ -93,6 +69,10 @@ fn install_japanese_font(ctx: &egui::Context) {
 pub struct PaintApp {
     render_state: egui_wgpu::RenderState,
     params: SimParams,
+    /// 選択中ツール(R2)。トップレベルの分岐が描画経路の分岐。wet ツールは
+    /// `WetTool::gpu_id()` を `params.tool` へ同期して GPU の splat 分岐に渡す。
+    /// ラスタツール(M4.5)は流体経路に流れない
+    tool: Tool,
     stroke: StrokeState,
     /// M1.5: ペン入力(egui Touch 経由、筆圧付き)。接地中はマウスより優先される
     pen: PenSource,
@@ -153,6 +133,7 @@ impl PaintApp {
         Self {
             render_state,
             params: SimParams::default(),
+            tool: Tool::Wet(WetTool::Paint),
             stroke: StrokeState::default(),
             pen: PenSource::default(),
             mouse: MouseSource,
@@ -392,13 +373,24 @@ impl PaintApp {
 
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("水ブラシ");
-        // ツール選択(M3): 描画 / リフト(削り) / 消去。splat.wgsl が params.tool で分岐する
+        // ツール選択(R2): WetTool を回してボタン化する。ラベル・文言・GPU 値は
+        // enum の impl に一元化されている(TOOLS 定数表は廃止)。選択したら
+        // gpu_id を params.tool へ同期して splat.wgsl の分岐に渡す
         ui.horizontal(|ui| {
-            for (value, label, hover) in TOOLS {
-                ui.selectable_value(&mut self.params.tool, value, label)
-                    .on_hover_text(hover);
+            for wt in WetTool::ALL {
+                let selected = self.tool == Tool::Wet(wt);
+                if ui
+                    .selectable_label(selected, wt.label())
+                    .on_hover_text(wt.hint())
+                    .clicked()
+                {
+                    self.tool = Tool::Wet(wt);
+                }
             }
         });
+        if let Some(wt) = self.tool.wet() {
+            self.params.tool = wt.gpu_id();
+        }
         // 顔料セレクタ(M1c): ブラシが注入する顔料スロットを選ぶ。ホバーで顔料個性(M3)を表示
         ui.horizontal(|ui| {
             for (i, pigment) in PIGMENTS.iter().enumerate() {

@@ -10,3 +10,4 @@ pub mod brush;
 pub mod paper;
 pub mod replay;
 pub mod sim;
+pub mod tool;

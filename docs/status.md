@@ -12,7 +12,7 @@
 
 **M5〜M8 を計画に追加(2026-07-05、plan.md §3)**: パレット(顔料の作成・編集・スポイト、M5)→ スケールする土台(アクティブタイル・パン/ズーム・undo 1段、M6)→ 作品保存(M7)→ キャンバス 2048²(M8)。M4 の任意項目のうち保存・undo・アクティブタイル・解像度引き上げを具体化・昇格したもの。同時顔料数の 8ch 化は不採用(レイヤーごとパレット記録 M5c で実質多色化できるため。再検討トリガーは plan.md §4)。
 
-**リファクタリング計画を作成(2026-07-05、[refactoring.md](refactoring.md))**: M4.5 以降を見据えた構造改善 R1〜R9(workspace 3 crate 化・Tool の階層 enum 化・パイプラインのテーブル化・app.rs の UI 分割・顔料バッファのフィールド化ほか)を計画。M4.5 着手前に R1〜R4 を先に適用する方針(plan.md §3 M4.5 に明記)。**R1(workspace 化)適用済み(2026-07-05)** — km / pigment / paint-core の 3 crate + バイナリ crate に分割し、mixbox 依存を pigment crate に隔離。cargo test --workspace(全19件)・clippy・naga 検証通過。実施メモは refactoring.md §2。**R2〜R4 は未着手**。plan.md §2 の「単一クレート」は workspace 分割へ更新済み。
+**リファクタリング計画を作成(2026-07-05、[refactoring.md](refactoring.md))**: M4.5 以降を見据えた構造改善 R1〜R9(workspace 3 crate 化・Tool の階層 enum 化・パイプラインのテーブル化・app.rs の UI 分割・顔料バッファのフィールド化ほか)を計画。M4.5 着手前に R1〜R4 を先に適用する方針(plan.md §3 M4.5 に明記)。**R1・R2 適用済み(2026-07-05)** — R1: km / pigment / paint-core の 3 crate + バイナリ crate に分割し mixbox 依存を pigment crate に隔離。R2: ツールを階層 enum `Tool`(Wet/Raster)+ `ToolInfo` trait 化([crates/paint-core/src/tool.rs](../crates/paint-core/src/tool.rs))。`TOOLS` 定数表を廃止し、ラベル・文言・GPU 値・経路を enum の impl に一元化。ラスタツール(M4.5)は型階層だけ先置き。cargo test --workspace(全21件)・clippy・naga 検証通過。実施メモは refactoring.md §2/§3。**R3〜R4 は未着手**。plan.md §2 の「単一クレート」は workspace 分割へ更新済み。
 
 **M4.5 線画とハイライトを計画に追加(2026-07-05、plan.md §3)**: 下書き鉛筆・清書ペン(ラスタ、各 r32float)+清書ペンが水の境界になる透水率方式(明示的に跨げば越えられる)+最上段の白ハイライトレイヤー(不透明ブラシ・流体なし)+線画・ハイライトの多段 Undo/Redo(ストローク履歴の決定論的再ラスタライズ。湿レイヤーは M6 の1段 undo のまま)。M7 の保存形式が決まる前にデータ構成を確定させるため M5 より先に置く。設計判断(境界=清書のみ / 合成位置=色より上固定 / ハイライト=流体なし / ベクター化先送り)は plan.md §4 参照。
 

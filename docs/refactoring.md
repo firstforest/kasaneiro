@@ -19,7 +19,7 @@ R1 は挙動不変のファイル移動が主なので**最初**にやる(後に
 | # | 項目 | 効く先 | 規模 | 状態 |
 |---|---|---|---|---|
 | R1 | workspace 化(km / pigment / paint-core の切り出し) | 全体。mixbox 隔離の構造化・テスト反復の高速化 | 中 | ✅ 完了(2026-07-05) |
-| R2 | Tool の階層 enum 化(`Tool::Wet` / `Tool::Raster`) | M4.5 全般 | 小 | ⬜ 未着手 |
+| R2 | Tool の階層 enum 化(`Tool::Wet` / `Tool::Raster`) | M4.5 全般 | 小 | ✅ 完了(2026-07-05) |
 | R3 | パイプラインのテーブル駆動化+エラー行番号補正 | M4.5、日々のシェーダー反復 | 小〜中 | ⬜ 未着手 |
 | R4 | app.rs の UI 分割と状態のグループ化 | M4.5 / M5 | 中 | ⬜ 未着手 |
 | R5 | 顔料バッファのフィールド化+ Palette 状態化の準備 | M5b | 極小 | ⬜ 未着手 |
@@ -103,6 +103,13 @@ pub trait ToolInfo {
 - replay の保存形式は互換のため on-disk では `u32` のまま残し、`TryFrom<u32>` で enum へ変換(不正値はエラー)
 
 これで `TOOLS` 定数表は消え、ラベル・文言・GPU 値・経路が enum の impl に一元化される。
+
+**実施メモ(2026-07-05 完了)**:
+
+- [../crates/paint-core/src/tool.rs](../crates/paint-core/src/tool.rs) に `Tool` / `WetTool` / `RasterTool` / `ToolInfo` を実装。`RasterTool` と `Tool::Raster` は型階層だけ先に用意し `#[allow(dead_code)]`(M4.5a で UI・実装を足すときに allow を外す)。
+- app は `PaintApp.tool: Tool` を選択の正典に持ち、`Tool::wet()` が `Some(WetTool)` のとき `wt.gpu_id()` を `params.tool` へ同期して splat.wgsl の分岐に渡す(ラスタツールは `wet()==None` で流体経路に流れない)。`TOOLS` 定数表は廃止し、ツールバーは `WetTool::ALL` を回して `label()`/`hint()` で描く。
+- replay は on-disk 互換のため `RecordedStroke.tool: u32` のまま(GPU 境界も u32 なので変換不要)。enum への変換が要る箇所(M4.5 / R7)向けに `WetTool::from_gpu_id` / `TryFrom<u32>` を用意しテスト済み。
+- 網羅性チェックは M4.5 でラスタ経路を実装するとき(`Tool` を `match` する箇所)に効く。R2 時点では app は `wet()` の Option 経由なので `Tool::Raster` 追加は既存コードを壊さない。
 
 ## 4. R3 — パイプラインのテーブル駆動化+エラー行番号補正
 

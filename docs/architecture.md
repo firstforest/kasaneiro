@@ -29,11 +29,12 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │  ├─ pigment/src/lib.rs  顔料パレット定義・mixbox latent / 物性 uniform(mixbox 隔離点)
 │  └─ paint-core/         CPU 純粋部(依存は bytemuck + serde のみ)
 │     └─ src/
-│        ├─ lib.rs        crate ルート(sim / brush / paper / replay を公開)
+│        ├─ lib.rs        crate ルート(sim / brush / paper / replay / tool を公開)
 │        ├─ sim.rs        SimParams(全パラメータの唯一の置き場)・Splat・CANVAS_SIZE
 │        ├─ brush.rs      ストローク → splat 列(位置補間、筆圧の線形補間)
 │        ├─ paper.rs      紙ハイトテクスチャの CPU 生成(値ノイズ3成分)
-│        └─ replay.rs     ストローク記録・再生モデル(H5。Recorder / Player)
+│        ├─ replay.rs     ストローク記録・再生モデル(H5。Recorder / Player)
+│        └─ tool.rs       ツールの階層 enum(R2。Tool = Wet/Raster、gpu_id、ToolInfo)
 ├─ src/                   バイナリ crate(egui / wgpu / naga はここだけ)
 │  ├─ main.rs             eframe 起動
 │  ├─ app.rs              egui UI(スライダー・ツール選択・レイヤーパネル・デバッグ表示・日本語フォント)
