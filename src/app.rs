@@ -5,7 +5,7 @@
 use crate::brush::StrokeState;
 use crate::gpu::hot_reload::{ShaderWatcher, shader_dir};
 use crate::gpu::{CanvasCallback, GpuCanvas};
-use crate::input::{MouseSource, PointerEvent, PointerPhase, PointerSource, TabletSource};
+use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase, PointerSource};
 use crate::pigment::PIGMENTS;
 use crate::preset;
 use crate::replay::{self, Player, Recorder, Recording};
@@ -59,8 +59,8 @@ pub struct PaintApp {
     render_state: egui_wgpu::RenderState,
     params: SimParams,
     stroke: StrokeState,
-    /// M1.5: ペン入力(octotablet、筆圧)。接続失敗時はマウスのみで動く
-    tablet: TabletSource,
+    /// M1.5: ペン入力(egui Touch 経由、筆圧付き)。接地中はマウスより優先される
+    pen: PenSource,
     mouse: MouseSource,
     /// ストローク中(Down〜Up の間)。キャンバス外で Down したときは立たない
     painting: bool,
@@ -119,7 +119,7 @@ impl PaintApp {
             render_state,
             params: SimParams::default(),
             stroke: StrokeState::default(),
-            tablet: TabletSource::new(cc),
+            pen: PenSource::default(),
             mouse: MouseSource,
             painting: false,
             watcher: ShaderWatcher::new(&dir),
@@ -282,20 +282,15 @@ impl PaintApp {
 
         ui.separator();
         ui.heading("筆圧 (M1.5)");
-        match self.tablet.error() {
-            None => match self.tablet.last_pressure() {
-                Some(p) => {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(64, 160, 64),
-                        format!("ペン検知中(筆圧 {p:.2})"),
-                    );
-                }
-                None => {
-                    ui.label("ペン接続 OK(検知範囲外)");
-                }
-            },
-            Some(e) => {
-                ui.label("ペン未接続(マウスのみ)").on_hover_text(e);
+        match self.pen.last_pressure() {
+            Some(p) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(64, 160, 64),
+                    format!("ペン接地中(筆圧 {p:.2})"),
+                );
+            }
+            None => {
+                ui.label("ペンでキャンバスに触れると筆圧が表示されます(マウスは 1.0 固定)");
             }
         }
         ui.add(egui::Slider::new(&mut self.params.pressure_radius, 0.0..=1.0).text("筆圧→半径の効き"));
@@ -540,12 +535,12 @@ impl PaintApp {
             egui::Sense::drag(),
         );
 
-        // M1.5: ペン(octotablet)は毎フレーム pump する。ペンが検知範囲内にいる間は
-        // ペンを採用しマウスは無視する(Windows Ink のペンは OS がカーソルも動かすため、
-        // 両方を処理すると二重ストロークになる)
-        let tablet_events = self.tablet.poll(&response);
-        let events = if self.tablet.is_active() || !tablet_events.is_empty() {
-            tablet_events
+        // M1.5: ペン(egui Touch、筆圧付き)を優先し、接地中はマウスを無視する
+        // (egui-winit は Touch からポインタもエミュレートするため、両方を処理すると
+        // 二重ストロークになる)
+        let pen_events = self.pen.poll(&response);
+        let events = if self.pen.is_active() || !pen_events.is_empty() {
+            pen_events
         } else {
             self.mouse.poll(&response)
         };
@@ -616,11 +611,6 @@ impl PaintApp {
 }
 
 impl eframe::App for PaintApp {
-    /// ウィンドウ破棄前にタブレット接続を切る(TabletSource::new の安全条件)
-    fn on_exit(&mut self) {
-        self.tablet.disconnect();
-    }
-
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // H1: .wgsl が保存されたら再ビルド(失敗しても落とさない)
         if self.watcher.take_dirty() {

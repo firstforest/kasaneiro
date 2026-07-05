@@ -1,10 +1,15 @@
 //! 入力抽象(plan.md §2 の input.rs)。ポインタ入力を PointerEvent に正規化する。
 //!
-//! ソースは2つ(M1.5): egui 経由のマウス(MouseSource)と octotablet 経由の
-//! ペン(TabletSource、Windows Ink。筆圧が取れる)。ペンが検知範囲内にいる間は
-//! TabletSource を優先する — Windows Ink のペンは OS がマウスカーソルも動かすため、
-//! 両方を処理すると二重ストロークになる。将来の入力(wasm Pointer 等)は
-//! PointerSource の実装を足す(plan.md §4: trait 抽象だけ維持)。
+//! ソースは2つ(M1.5): egui ドラッグのマウス(MouseSource)と、egui の Touch
+//! イベントを読むペン(PenSource)。筆圧の経路は
+//! ペン → Windows Ink(WM_POINTER)→ winit が GetPointerPenInfo で筆圧を取得し
+//! Touch{force} を送出 → egui-winit が egui::Event::Touch{force} に変換、で
+//! **egui だけで完結する**(octotablet は Windows でメッセージループがデッドロック
+//! する既知バグがあり不採用: https://github.com/Fuzzyzilla/octotablet/issues/18)。
+//!
+//! egui-winit は Touch から通常のポインタ(カーソル移動+左ボタン)もエミュレート
+//! するため、ペン接地中は PenSource を優先し MouseSource を無視する(二重ストローク
+//! 防止)。将来の入力(wasm Pointer 等)は PointerSource の実装を足す(plan.md §4)。
 
 use eframe::egui;
 
@@ -15,14 +20,12 @@ pub enum PointerPhase {
     Up,
 }
 
-/// 正規化されたポインタイベント。
-/// 座標はウィンドウ左上基準の論理ピクセル(egui のポイントと同じ空間。
-/// octotablet の Pose.position も同じ空間で届く)。
+/// 正規化されたポインタイベント。座標は egui のポイント(ウィンドウ論理ピクセル)
 #[derive(Clone, Copy, Debug)]
 pub struct PointerEvent {
     pub phase: PointerPhase,
     pub pos: egui::Pos2,
-    /// 筆圧 0..1。筆圧のないソース(マウス)は常に 1.0
+    /// 筆圧 0..1。筆圧のないソース(マウス・筆圧非対応タッチ)は 1.0
     pub pressure: f32,
 }
 
@@ -31,7 +34,7 @@ pub trait PointerSource {
     /// canvas はキャンバス領域の Response(マウス実装がドラッグ状態を読む)
     fn poll(&mut self, canvas: &egui::Response) -> Vec<PointerEvent>;
 
-    /// このソースが現在入力を担っているか(ペンが検知範囲内など)。
+    /// このソースが現在入力を担っているか(ペンが接地中など)。
     /// true のソースがマウスより優先される
     fn is_active(&self) -> bool;
 }
@@ -74,137 +77,81 @@ impl PointerSource for MouseSource {
     }
 }
 
-/// octotablet(Windows Ink)のペン入力(M1.5)。
-/// 接続に失敗してもアプリは動く(マウスへフォールバック。状態は error() で UI に出す)
-pub struct TabletSource {
-    /// Err = 接続失敗の理由(UI 表示用)。disconnect() 後も Err になる
-    manager: Result<octotablet::Manager, String>,
-    /// ペンが検知範囲内(In〜Out の間)
-    in_range: bool,
-    /// ペンが接地中(Down〜Up の間)
-    down: bool,
-    /// 直近の Pose 位置(Down/Up イベント自体は座標を持たないため保持する)
-    last_pos: egui::Pos2,
-    /// 直近の筆圧(ホバー中は 0 付近。UI のデバッグ表示にも使う)
-    last_pressure: f32,
+/// egui の Touch イベントからペン(筆圧付き)/タッチ入力を拾う(M1.5)。
+/// 最初に接地した1本だけを追跡し、接地中の他のタッチは無視する(パーム対策を兼ねる)
+#[derive(Default)]
+pub struct PenSource {
+    /// 追跡中のタッチ ID(接地〜離れるまで安定)
+    active_id: Option<egui::TouchId>,
+    /// 直近の筆圧(UI のデバッグ表示用。接地中のみ Some)
+    last_pressure: Option<f32>,
 }
 
-impl TabletSource {
-    /// eframe の CreationContext(HasWindowHandle + HasDisplayHandle)から接続する。
-    ///
-    /// build_raw の安全条件: ウィンドウ・ディスプレイのハンドルが Manager より
-    /// 長生きすること。Manager は PaintApp が保持し、ウィンドウ破棄前の
-    /// on_exit で disconnect() するので満たされる。
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let manager = unsafe {
-            octotablet::builder::Builder::new()
-                // マウスをツール扱いしない: マウスは egui 経由の MouseSource が担当
-                .emulate_tool_from_mouse(false)
-                .build_raw(cc)
-        }
-        .map_err(|e| e.to_string());
-        if let Err(e) = &manager {
-            log::warn!("タブレット API に接続できません(マウスのみで続行): {e}");
-        }
-        Self {
-            manager,
-            in_range: false,
-            down: false,
-            last_pos: egui::Pos2::ZERO,
-            last_pressure: 0.0,
-        }
-    }
-
-    /// 接続失敗の理由(接続できていれば None)
-    pub fn error(&self) -> Option<&str> {
-        self.manager.as_ref().err().map(String::as_str)
-    }
-
-    /// 直近の筆圧(ペンが検知範囲内のときだけ Some)
+impl PenSource {
+    /// 直近の筆圧(ペンが接地中のときだけ Some。UI の状態表示用)
     pub fn last_pressure(&self) -> Option<f32> {
-        self.in_range.then_some(self.last_pressure)
-    }
-
-    /// アプリ終了時に呼ぶ。ウィンドウ破棄前に接続を切る(build_raw の安全条件)
-    pub fn disconnect(&mut self) {
-        self.manager = Err("切断済み".to_owned());
-        self.in_range = false;
-        self.down = false;
+        self.last_pressure
     }
 }
 
-impl PointerSource for TabletSource {
-    fn poll(&mut self, _canvas: &egui::Response) -> Vec<PointerEvent> {
+impl PointerSource for PenSource {
+    fn poll(&mut self, canvas: &egui::Response) -> Vec<PointerEvent> {
         let mut out = Vec::new();
-        let Ok(manager) = &mut self.manager else {
-            return out;
-        };
-        // Windows(Ink)では PumpError は発生しない(空 enum)が、
-        // 将来 Wayland 等でビルドしても動くよう match で処理する
-        let events = match manager.pump() {
-            Ok(events) => events,
-            Err(e) => {
-                log::warn!("タブレットイベントの取得に失敗: {e}");
-                return out;
+        canvas.ctx.input(|input| {
+            for event in &input.events {
+                let egui::Event::Touch {
+                    id,
+                    phase,
+                    pos,
+                    force,
+                    ..
+                } = *event
+                else {
+                    continue;
+                };
+                // 筆圧非対応(指タッチ等)は 1.0 = マウスと同じ扱い
+                let pressure = force.unwrap_or(1.0);
+                match phase {
+                    egui::TouchPhase::Start => {
+                        if self.active_id.is_none() {
+                            self.active_id = Some(id);
+                            self.last_pressure = Some(pressure);
+                            out.push(PointerEvent {
+                                phase: PointerPhase::Down,
+                                pos,
+                                pressure,
+                            });
+                        }
+                    }
+                    // ペンのホバー(接地前)でも Move は届くが、追跡中でなければ無視
+                    egui::TouchPhase::Move => {
+                        if self.active_id == Some(id) {
+                            self.last_pressure = Some(pressure);
+                            out.push(PointerEvent {
+                                phase: PointerPhase::Move,
+                                pos,
+                                pressure,
+                            });
+                        }
+                    }
+                    egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                        if self.active_id == Some(id) {
+                            self.active_id = None;
+                            self.last_pressure = None;
+                            out.push(PointerEvent {
+                                phase: PointerPhase::Up,
+                                pos,
+                                pressure,
+                            });
+                        }
+                    }
+                }
             }
-        };
-        for event in events {
-            use octotablet::events::{Event, ToolEvent};
-            let Event::Tool { event, .. } = event else {
-                continue;
-            };
-            match event {
-                ToolEvent::In { .. } => self.in_range = true,
-                ToolEvent::Pose(pose) => {
-                    self.last_pos = egui::pos2(pose.position[0], pose.position[1]);
-                    if let Some(p) = pose.pressure.get() {
-                        self.last_pressure = p;
-                    }
-                    if self.down {
-                        out.push(PointerEvent {
-                            phase: PointerPhase::Move,
-                            pos: self.last_pos,
-                            pressure: self.last_pressure,
-                        });
-                    }
-                }
-                ToolEvent::Down => {
-                    self.down = true;
-                    out.push(PointerEvent {
-                        phase: PointerPhase::Down,
-                        pos: self.last_pos,
-                        pressure: self.last_pressure,
-                    });
-                }
-                ToolEvent::Up => {
-                    if self.down {
-                        out.push(PointerEvent {
-                            phase: PointerPhase::Up,
-                            pos: self.last_pos,
-                            pressure: self.last_pressure,
-                        });
-                    }
-                    self.down = false;
-                }
-                ToolEvent::Out | ToolEvent::Removed => {
-                    // 接地したまま検知範囲を抜けた場合もストロークを閉じる
-                    if self.down {
-                        out.push(PointerEvent {
-                            phase: PointerPhase::Up,
-                            pos: self.last_pos,
-                            pressure: self.last_pressure,
-                        });
-                        self.down = false;
-                    }
-                    self.in_range = false;
-                }
-                _ => {}
-            }
-        }
+        });
         out
     }
 
     fn is_active(&self) -> bool {
-        self.in_range
+        self.active_id.is_some()
     }
 }
