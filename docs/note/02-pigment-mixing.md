@@ -149,3 +149,18 @@ R_mix(λ) = Πᵢ Rᵢ(λ)^cᵢ    (Σcᵢ = 1)
 **推奨**: まず `mixbox_lerp` をブラシの色補間・スミア・グラデーションに差し替えて効果を体感(非商用なら即日)。商用化やOSS(GPL)化を視野に入れるなら spectral.js 方式を自前実装。層の重なり(グレーズ)まで表現したくなったら Curtis 1997 のRGB3チャンネルK-M層合成([03](03-layering-glazing-lifting.md))を追加するのが次の一手。
 
 なお、**流体シミュレーション内での顔料表現を最初から「顔料濃度チャンネル」にしておけば**(RGBではなく)、混色は濃度の加算で自然に済み、表示時にのみ K-M/Mixbox でRGBへ変換する構成になる。これが最も物理に忠実で、Mixboxの潜在空間はまさにこの設計をRGBワークフローに後付けするためのもの。
+
+## 7. 実装メモ: 濃度→発色のチューニングは実質1自由度(このプロジェクト)
+
+本実装は上記の「顔料濃度チャンネル+表示時変換」構成を採用している。濃度から被覆率(下地の隠れ具合)への変換は Beer-Lambert 風の飽和([display.wgsl](../../assets/shaders/display.wgsl) `render_conc`、[bake.wgsl](../../assets/shaders/bake.wgsl) も同式):
+
+```
+cover = 1 − exp(−pigment_density × 総顔料量)
+```
+
+パラメータを追う際に効いてくる非自明な性質を記録しておく(2026-07-05 に顔料量デフォルト調整で判明):
+
+- **画面の濃さは `pigment_density × brush_pigment` の積だけで決まる**。他の顔料系パラメータ(deposit_rate / lift / pigment_diffuse / evap)は濃度に対する比率・拡散なのでスケール不変で、絶対量には効かない。よって発色の濃淡調整は**実質1自由度**で、片方のスライダーだけ動かせば追い込める。
+- 表示は濃度**総和**を使うので、ストロークの splat 重なりがそのまま効く。`spacing = 半径 × 0.25`([app.rs](../../src/app.rs) `add_motion` 呼び出し)だと**中心線の1テクセルに coverage 総和 ≈ 6.3 個分**の顔料が積まれる。「1 splat あたりの `brush_pigment`」の体感濃度はこの倍率込みで考える。
+- したがってフルストローク1回の光学的濃度は `D ≈ pigment_density × 6.3 × brush_pigment`、N回重ねで `cover = 1 − exp(−D·N)`。狙いの重なりカーブから逆算するのが早い(cover≈0.5/回 なら D≈0.7)。
+- 初期値 `brush_pigment 0.6 / pigment_density 3.0` は D≈11.3 で1回で完全不透明だった。中間狙い(1回 cover≈0.5)で `brush_pigment 0.11 / pigment_density 1.0`(D≈0.70)に変更。プリセットは [assets/presets/default.json](../../assets/presets/default.json)、既定値は [src/sim/mod.rs](../../src/sim/mod.rs) の `SimParams::default`。

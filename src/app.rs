@@ -420,7 +420,7 @@ impl PaintApp {
         );
         ui.add(egui::Slider::new(&mut self.params.brush_water, 0.0..=2.0).text("水量"));
         ui.add(egui::Slider::new(&mut self.params.brush_velocity, 0.0..=2.0).text("初速"));
-        ui.add(egui::Slider::new(&mut self.params.brush_pigment, 0.0..=2.0).text("顔料量(0=水筆)"));
+        ui.add(egui::Slider::new(&mut self.params.brush_pigment, 0.0..=1.0).text("顔料量(0=水筆)"));
         ui.add(
             egui::Slider::new(&mut self.params.lift_strength, 0.0..=1.0)
                 .text("リフト強度(削りツール)"),
