@@ -14,8 +14,8 @@ use eframe::egui;
 use eframe::egui_wgpu;
 use std::path::{Path, PathBuf};
 
-/// ブラシツール(M3)。値は SimParams::tool / splat.wgsl の分岐と対応。
-const TOOLS: [(u32, &str, &str); 3] = [
+/// ブラシツール(M3/M4)。値は SimParams::tool / splat.wgsl の分岐と対応。
+const TOOLS: [(u32, &str, &str); 5] = [
     (0, "描画", "水+顔料を置く(M1)"),
     (
         1,
@@ -26,6 +26,16 @@ const TOOLS: [(u32, &str, &str); 3] = [
         2,
         "消去",
         "湿レイヤーの水・顔料を機械的にゼロへ(紙の白まで戻す完全消去。M3)",
+    ),
+    (
+        3,
+        "水筆",
+        "水を置き、ブラシ下の顔料を近傍平均へ均す(顔料は注入しない)。①大きな領域を先に濡らして顔料筆を滑らかに広げる ②境界をなでて均一な塗りに馴染ませる(質量保存の均しなので濃くならない。均し強度で調整)(M4)",
+    ),
+    (
+        4,
+        "ならし",
+        "濃くなった箇所に置くと、その顔料が周囲へ拡散して領域が均一に伸びていく。総顔料をブラシスケールで近傍平均へ均す(質量保存なので濃くならない)。水筆より広い範囲の均一化に。ならし強度で調整(M4)",
     ),
 ];
 
@@ -424,6 +434,14 @@ impl PaintApp {
         ui.add(
             egui::Slider::new(&mut self.params.lift_strength, 0.0..=1.0)
                 .text("リフト強度(削りツール)"),
+        );
+        ui.add(
+            egui::Slider::new(&mut self.params.water_lift, 0.0..=1.0)
+                .text("水筆の均し強度(均一さ)"),
+        );
+        ui.add(
+            egui::Slider::new(&mut self.params.smear_rate, 0.0..=1.0)
+                .text("ならし強度(濃い山を伸ばす)"),
         );
 
         ui.separator();

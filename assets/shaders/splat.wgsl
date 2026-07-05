@@ -33,6 +33,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var vel = cell.gb;
     var wet = cell.a;
     let h = textureLoad(paper_tex, ip, 0).r;
+    // 水筆(tool=3)の均し用: このセルにかかったブラシの最大効き(カバレッジ×筆圧)。ループ後に使う
+    var wb_w = 0.0;
 
     for (var i = 0u; i < splat_buf.count; i++) {
         let s = splat_buf.splats[i];
@@ -71,6 +73,27 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 dep[c] -= lifted;
                 susp[c] += lifted;
             }
+        } else if (params.tool == 3u) {
+            // 水筆(M4): 水と濡れマスクを置き、顔料の「均し」を行う(顔料・初速は注入しない)。
+            //   用途1: 大きな領域を先に濡らす → 後で置いた顔料筆が拡散で滑らかに広がる
+            //   用途2: 境界をなでる → ブラシ下の顔料を近傍平均へ寄せ、均一な塗りに馴染ませる
+            // 均し本体はループ後(近傍を読むため)。ここでは水位を上げて濡らし、効きを wb_w に集約する。
+            // 水は「足す」のではなく目標水位まで「上げる」(max)。なでても水位が積み上がらない。
+            let target_water = coverage * params.brush_water * mix(1.0, press, params.pressure_water);
+            water = max(water, target_water);
+            if (dist < radius) {
+                wet = 1.0;
+            }
+            wb_w = max(wb_w, coverage * press);
+        } else if (params.tool == 4u) {
+            // ならし(M4): 濃いところに置くと、その顔料を周囲へ均一に均しながら伸ばす。
+            // 均し本体はループ後(ブラシスケールの近傍平均を取るため)。ここでは水位を上げ効きを集約。
+            let target_water = coverage * params.brush_water * mix(1.0, press, params.pressure_water);
+            water = max(water, target_water);
+            if (dist < radius) {
+                wet = 1.0;
+            }
+            wb_w = max(wb_w, coverage * press);
         } else {
             // 描画(既定): 水+初速+顔料の注入
             water += coverage * params.brush_water * mix(1.0, press, params.pressure_water);
@@ -83,6 +106,50 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 wet = 1.0;
             }
         }
+    }
+
+    // 水筆の均し(M4): ブラシ下の顔料(浮遊+沈着)を近傍平均へ寄せる質量保存の箱ぼかし。
+    //   ・ぼかしは近傍の最大値を超えないので、なでても濃くならない(旧: 再浮遊→流体まかせは縁に濃縮した)
+    //   ・繰り返すほど均一へ収束する = なでたあと綺麗に均一な塗りになる
+    //   ・沈着顔料を直接均すので流れて縁に溜まらない(浮遊させないので移流に運ばれない)
+    // 効き k = water_lift × ブラシの効き。1フレーム1回の緩和なので、ストロークを重ねて滑らかにする。
+    if (params.tool == 3u && wb_w > 0.0) {
+        let radius = 2;
+        var ssum = vec4f(0.0);
+        var dsum = vec4f(0.0);
+        var n = 0.0;
+        for (var dy = -radius; dy <= radius; dy++) {
+            for (var dx = -radius; dx <= radius; dx++) {
+                ssum += load_clamped(src_susp, ip + vec2i(dx, dy));
+                dsum += load_clamped(src_dep, ip + vec2i(dx, dy));
+                n += 1.0;
+            }
+        }
+        let k = clamp(params.water_lift * wb_w, 0.0, 1.0);
+        susp = mix(susp, ssum / n, k);
+        dep = mix(dep, dsum / n, k);
+    }
+
+    // ならしの均し(M4): 水筆と同じ質量保存の箱ぼかしだが、近傍半径をブラシ半径に応じて広げる。
+    //   ・濃いところに置いて保持すると、山の顔料が周囲へ拡散して(質量保存=周囲が少し濃くなる)
+    //     ブラシ範囲が均一に「伸びていく」。ぼかしは近傍最大を超えないので濃くはならない。
+    //   ・水筆(半径2固定=細かい局所ならし)に対し、ならしは広い範囲を均一化する用途。
+    // 半径はブラシ半径の 1/4(2..10 にクランプ、性能のため上限)。反復は 1フレーム1回=保持で伸びる。
+    if (params.tool == 4u && wb_w > 0.0) {
+        let smr = clamp(i32(params.brush_radius * 0.25), 2, 10);
+        var ssum = vec4f(0.0);
+        var dsum = vec4f(0.0);
+        var n = 0.0;
+        for (var dy = -smr; dy <= smr; dy++) {
+            for (var dx = -smr; dx <= smr; dx++) {
+                ssum += load_clamped(src_susp, ip + vec2i(dx, dy));
+                dsum += load_clamped(src_dep, ip + vec2i(dx, dy));
+                n += 1.0;
+            }
+        }
+        let k = clamp(params.smear_rate * wb_w, 0.0, 1.0);
+        susp = mix(susp, ssum / n, k);
+        dep = mix(dep, dsum / n, k);
     }
 
     // 安定性: 水量は非負、速度は CFL 的上限でクランプ

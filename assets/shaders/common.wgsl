@@ -50,9 +50,13 @@ struct SimParams {
     dry_gran: f32,
     dry_edge: f32,
     rewet_water: f32,
-    tool: u32,           // M3: 0=描画 / 1=リフト(削り) / 2=消去
+    tool: u32,           // M3: 0=描画 / 1=リフト(削り) / 2=消去 / 3=水筆(M4) / 4=ならし(M4)
     lift_strength: f32,  // M3: リフトの基準強度
     compose_mode: u32,   // M3: 0=multiply / 1=KM(R/T 光学合成)
+    water_lift: f32,     // 水筆(tool=3): ブラシ下の顔料を近傍平均へ均す緩和率(半径2固定)
+    smear_rate: f32,     // ならし(tool=4): 総顔料をブラシスケールで均す緩和率(濃い山を周囲へ伸ばす)
+    _pad1: f32,
+    _pad2: f32,
 };
 
 // 筆圧 0..1 → 応答カーブ γ を通した補間係数(M1.5)。
