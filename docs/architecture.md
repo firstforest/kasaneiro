@@ -2,7 +2,7 @@
 
 実装の構造と設計判断をまとめる。要件は [requirements.md](requirements.md)、パラメータの意味は [parameters.md](parameters.md)、現在地は [status.md](status.md) が正典。
 
-最終更新: 2026-07-07(M5 完了・M6 進行中=undo 1段/パン・ズーム/アクティブタイル を実装)
+最終更新: 2026-07-07(M6 完了。ビューにキャンバス回転を追加=パン/ズーム/回転)
 
 ## 1. 技術スタック
 
@@ -96,9 +96,9 @@ compute の binding は種別ごとに5レイアウト(R3 の `ComputeLayout`):
 - **tilescan**(M6、tilescan.wgsl): `0/1/2` 水/浮遊/沈着(read。current 側を parity 別 bind group で)、`3` SimParams、`4` splat storage、`5` raw_active(write)
 - **tiledilate**(M6、tiledilate.wgsl): `0` raw_active(read)、`1` active(write)、`2` SimParams(common.wgsl の pressure_curve が参照するため束ねるだけ・未使用)
 
-display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 latent、`5` 紙ハイト、`6` 乾燥レイヤー array、`7` LayerUniform、`8/9` 線画(鉛筆/ペン、M4.5a)、`10` ハイライト(M4.5c)、`11` ViewUniform(M6、パン/ズーム)、`12` アクティブタイル有効フラグ(M6、storage read。表示モード7の可視化)。
+display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 latent、`5` 紙ハイト、`6` 乾燥レイヤー array、`7` LayerUniform、`8/9` 線画(鉛筆/ペン、M4.5a)、`10` ハイライト(M4.5c)、`11` ViewUniform(M6、パン/ズーム/回転)、`12` アクティブタイル有効フラグ(M6、storage read。表示モード7の可視化)。
 
-**ビューポート変換(binding 11、M6)**: `ViewUniform { offset: vec2f, scale: f32 }`。fs_main が画面 uv → キャンバス uv を `canvas_uv = offset + 画面uv × scale`(`scale = 1/zoom`)で写してからサンプルするため、拡大/パンが全サンプル(水/浮遊/沈着/紙/乾燥/線画)に一括で効く。SimParams とは分けた display 専用 uniform で(プリセット H3・記録 H5 を汚さない)、`CanvasCallback` がフレームごとに `write_buffer`。app 側で `zoom ∈ [1, 32]`・`offset ∈ [0, 1−1/zoom]` にクランプするので表示窓は常にキャンバス内(範囲外背景処理は不要)。ポインタ→テクセル変換(描画・スポイト)も同じ写像 `PaintApp::screen_to_texel` を通す。
+**ビューポート変換(binding 11、M6)**: `ViewUniform { center: vec2f, span: f32, cos_t: f32, sin_t: f32, _pad×3 }`(32B。WGSL の末尾パディングは vec3f だと align 16 で 48B に膨らむため f32×3 で詰めて Rust 側と一致させる)。fs_main が画面 uv → キャンバス uv を `canvas_uv = center + R(θ)·(画面uv − 0.5)·span`(`span = 1/zoom`、`R(θ)` は表示中心まわりの回転)で写してからサンプルするため、拡大/パン/**回転**が全サンプル(水/浮遊/沈着/紙/乾燥/線画)に一括で効く。SimParams とは分けた display 専用 uniform で(プリセット H3・記録 H5 を汚さない)、`CanvasCallback` がフレームごとに `write_buffer`。app 側で `zoom ∈ [1, 32]`。**回転で窓の隅がキャンバス外に出るぶん(`canvas_uv` が [0,1] の外)は `BG_COLOR`(紙の周りの机)で塗る**。クランプは回転なしなら窓をキャンバス内に(`center` を各軸 `[half, 1−half]`)、回転時は `center` のみ `[0,1]` に留める。ポインタ→テクセル変換(描画・スポイト)も同じ写像 `PaintApp::screen_to_texel`(逆回転込み)を通す。**スポイト(M5e)の snapshot 読み戻しは画面 uv で索引する**(snapshot は display と同じビュー変換込みで焼くため。テクセル索引では拡大・回転時にズレる)。回転操作は Shift+ホイールで15°刻み・「ビュー」パネルのスライダーで自由角。パン は中ボタンまたはスペース+左ドラッグ。
 
 **顔料 latent(binding 4)のレイアウト(M5c、`array<vec4f, LATENT_TOTAL=78>`)**: 先頭 `GLOBAL_LATENTS=6` vec4 = パレット非依存のグローバル光学(`[0,1]`紙 / `[2,3]`白 R_w / `[4,5]`黒 R_b)。以降は**パレット枠**を `PALETTE_SLOTS = MAX_LAYERS+1 = 9` 個並べ、各枠 `PIGMENT_LATENTS=8` vec4(顔料4種 × c0..c3/RGB残差)。枠 `0..MAX_LAYERS-1` は乾燥レイヤーのスロット別、枠 `LIVE_PALETTE=MAX_LAYERS` は現行(湿レイヤー)のパレット。**乾かすと現行パレットの色を対応スロット枠へ焼き込む**(`GpuCanvas::record_layer_palette`)ため、顔料を後から編集しても乾燥済みレイヤーの色は変わらない。編集時は `set_palette` が physics(ρ/ω/γ、全レイヤー共通)と live 枠だけを `write_buffer`(パイプライン再構築不要)。定数は [crates/pigment](../crates/pigment/src/lib.rs) と [src/gpu/mod.rs](../src/gpu/mod.rs)、WGSL の `pal_base()` が対応。
 

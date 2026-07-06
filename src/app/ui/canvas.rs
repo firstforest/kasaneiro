@@ -18,31 +18,58 @@ impl PaintApp {
             egui::Sense::drag(),
         );
 
-        // M6: パン/ズーム。ホイールでカーソル中心に拡大、中ボタンドラッグでパン。
-        // ポインタ状態はグローバル(ウィジェットの Sense に依らない)なので input から直接読む
-        let (scroll_y, middle_down, ptr_delta, hover) = ui.input(|i| {
-            (
-                i.smooth_scroll_delta.y,
-                i.pointer.middle_down(),
-                i.pointer.delta(),
-                i.pointer.hover_pos(),
-            )
-        });
+        // M6: パン/ズーム/回転。ホイール=カーソル中心に拡大、Shift+ホイール=15°ずつ回転、
+        // 中ボタン or スペース+左ドラッグ=パン。ポインタ状態はグローバル(ウィジェットの Sense に
+        // 依らない)なので input から直接読む。回転は離散させたいので MouseWheel イベント(未平滑)で拾う
+        // 名前入力欄などにフォーカス中はスペースを奪わない
+        let typing = ui.ctx().egui_wants_keyboard_input();
+        let (scroll_y, wheel_notch, shift, space, middle_down, primary_down, ptr_delta, hover) =
+            ui.input(|i| {
+                let wheel_notch: f32 = i
+                    .events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                        _ => None,
+                    })
+                    .sum();
+                (
+                    i.smooth_scroll_delta.y,
+                    wheel_notch,
+                    i.modifiers.shift,
+                    i.key_down(egui::Key::Space),
+                    i.pointer.middle_down(),
+                    i.pointer.primary_down(),
+                    i.pointer.delta(),
+                    i.pointer.hover_pos(),
+                )
+            });
         let over_canvas = hover.is_some_and(|p| rect.contains(p));
-        if over_canvas
+        if over_canvas && shift && wheel_notch != 0.0 {
+            // Shift+ホイール: 1ノッチ 15°(上=反時計回り / 下=時計回り)
+            self.rotate_view(wheel_notch.signum() * std::f32::consts::FRAC_PI_8 * 1.5);
+        } else if over_canvas
             && scroll_y != 0.0
             && let Some(cursor) = hover
         {
             // ホイール量を対数スケールで拡大率に。上スクロール=拡大 / 下=縮小
             self.zoom_at(cursor, rect, (scroll_y * 0.0015).exp());
         }
-        // パンは拡大中(zoom>1)のみ意味を持つ。中ボタンをキャンバス上で押している間に移動量を反映
-        let panning = middle_down && over_canvas && self.view_zoom > 1.0;
-        if panning {
+        // パン: 中ボタンドラッグ、または スペース押下中の左ドラッグ(いずれもキャンバス上)。
+        // スペース押下中は「パン意図」とみなし描画を抑止する(下の apply_pointer_events を飛ばす)。
+        // 実際の移動は zoom>1 か回転ありのときだけ(全体表示・無回転では窓を動かす余地がない)
+        let space_hold = space && !typing;
+        let panning = (middle_down || (space_hold && primary_down)) && over_canvas;
+        let can_move = self.view_zoom > 1.0 || self.view_angle != 0.0;
+        if panning && can_move {
             let span = 1.0 / self.view_zoom;
-            self.view_offset -= (ptr_delta / rect.width().max(1.0)) * span;
+            // 画面ドラッグと逆にキャンバス中心を動かす(回転込みで写す)
+            let d = ptr_delta / rect.width().max(1.0);
+            self.view_center -= self.view_rotate(d) * span;
             self.clamp_view();
         }
+        // スペース押下中(左ドラッグでのパン意図)は描画を抑止する
+        let panning = panning || (space_hold && over_canvas);
 
         // M1.5: ペン(egui Touch、筆圧付き)を優先し、接地中はマウスを無視する
         // (egui-winit は Touch からポインタもエミュレートするため、両方を処理すると

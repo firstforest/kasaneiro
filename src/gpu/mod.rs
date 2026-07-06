@@ -160,25 +160,32 @@ pub struct DriedLayer {
     pub visible: bool,
 }
 
-/// display.wgsl の ViewUniform と同レイアウト(16 バイト)。パン/ズーム(M6)。
-/// 画面 uv → キャンバス uv の写像 canvas_uv = offset + uv * scale を display へ渡す。
+/// display.wgsl の ViewUniform と同レイアウト(32 バイト)。パン/ズーム/回転(M6)。
+/// 画面 uv → キャンバス uv の写像 canvas_uv = center + R(θ)·(uv − 0.5)·span を display へ渡す。
+/// center = 画面中心に来るキャンバス uv、span = 1/zoom、R(θ) = 表示中心まわりの回転。
 /// SimParams とは分けて display 専用 uniform にしている(プリセット H3・記録 H5 を汚さない)。
+/// 回転で窓の隅がキャンバス外に出るぶんは display が背景色で塗る。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ViewUniform {
-    /// 左上に表示するキャンバス uv(0..1)
-    pub offset: [f32; 2],
+    /// 画面中心(uv=0.5,0.5)に来るキャンバス uv(0..1)
+    pub center: [f32; 2],
     /// 表示窓の幅(キャンバス uv 単位)= 1/zoom。1.0 で全体、小さいほど拡大
-    pub scale: f32,
-    pub _pad: f32,
+    pub span: f32,
+    /// 表示回転 θ の cos/sin(画面中心まわり。app 側で保持する角度から算出)
+    pub cos_t: f32,
+    pub sin_t: f32,
+    pub _pad: [f32; 3],
 }
 
 impl Default for ViewUniform {
     fn default() -> Self {
         Self {
-            offset: [0.0, 0.0],
-            scale: 1.0,
-            _pad: 0.0,
+            center: [0.5, 0.5],
+            span: 1.0,
+            cos_t: 1.0,
+            sin_t: 0.0,
+            _pad: [0.0; 3],
         }
     }
 }

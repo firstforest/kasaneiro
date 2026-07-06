@@ -102,17 +102,42 @@ impl PaintApp {
         ui.heading("ビュー (M6)");
         ui.horizontal(|ui| {
             ui.label(format!("拡大 {:.0}%", self.view_zoom * 100.0));
+            let rotated = self.view_zoom > 1.0 || self.view_angle != 0.0;
             if ui
-                .add_enabled(self.view_zoom > 1.0, egui::Button::new("全体表示に戻す"))
+                .add_enabled(rotated, egui::Button::new("全体表示に戻す"))
                 .clicked()
             {
                 self.reset_view();
             }
         });
+        // 回転(表示中心まわり)。スライダーは自由角、ボタンは 15°スナップ
+        ui.horizontal(|ui| {
+            ui.label("回転");
+            let mut deg = self.view_angle.to_degrees();
+            if ui
+                .add(egui::Slider::new(&mut deg, -180.0..=180.0).suffix("°"))
+                .changed()
+            {
+                self.view_angle = deg.to_radians();
+                self.clamp_view();
+            }
+            if ui.small_button("−15°").clicked() {
+                self.rotate_view(-std::f32::consts::FRAC_PI_8 * 1.5);
+            }
+            if ui.small_button("+15°").clicked() {
+                self.rotate_view(std::f32::consts::FRAC_PI_8 * 1.5);
+            }
+            if ui.small_button("0°").clicked() {
+                self.view_angle = 0.0;
+                self.clamp_view();
+            }
+        });
         ui.label(
-            egui::RichText::new("ホイール=カーソル中心に拡大 / 中ボタンドラッグ=パン")
-                .weak()
-                .small(),
+            egui::RichText::new(
+                "ホイール=拡大 / Shift+ホイール=15°回転 / 中ボタン・スペース+左ドラッグ=パン",
+            )
+            .weak()
+            .small(),
         );
     }
 

@@ -71,15 +71,23 @@ struct LayerUniform {
 @group(0) @binding(9) var pen_tex: texture_2d<f32>;
 // ハイライト(M4.5c): r32float 1枚。r = 不透明度 0..1。合成の最後に白として重ねる(最上段)
 @group(0) @binding(10) var highlight_tex: texture_2d<f32>;
-// ビューポート変換(M6): 画面 uv → キャンバス uv。canvas_uv = offset + uv * scale。
-//   scale = 1/zoom(1.0=キャンバス全体、<1.0=拡大)、offset = 左上に表示するキャンバス uv。
-// zoom は app 側で 1..32 にクランプ済み(scale ≤ 1、offset ∈ [0, 1-scale])なので、
-// 表示窓は常にキャンバス内に収まる(範囲外サンプルの背景処理は不要)。
+// ビューポート変換(M6): 画面 uv → キャンバス uv。
+//   canvas_uv = center + R(θ)·(uv − 0.5)·span。
+//   center = 画面中心に来るキャンバス uv、span = 1/zoom(1.0=全体、<1.0=拡大)、
+//   R(θ) = 表示中心まわりの回転(cos_t/sin_t)。回転で窓の隅がキャンバス外に
+//   出るぶん(canvas_uv が [0,1] の外)は BG_COLOR で塗る(下の fs_main 末尾)。
 struct ViewUniform {
-    offset: vec2f,
-    scale: f32,
-    _pad: f32,
+    center: vec2f,
+    span: f32,
+    cos_t: f32,
+    sin_t: f32,
+    // f32 スカラーで詰める(vec3f は align 16 で 48B に膨らみ Rust 側 32B と食い違う)
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
 };
+// キャンバス外(回転・パンではみ出した領域)を塗る背景色(紙の周りの机)
+const BG_COLOR: vec3f = vec3f(0.16, 0.16, 0.17);
 @group(0) @binding(11) var<uniform> view: ViewUniform;
 // アクティブタイル(M6): 各タイルの計算有効フラグ(1=計算中)。表示モード 7 の可視化に使う
 @group(0) @binding(12) var<storage, read> tile_active: array<u32>;
@@ -282,9 +290,15 @@ fn apply_lines(color_in: vec3f, p: vec2f) -> vec3f {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
     let dims = vec2f(textureDimensions(water_tex));
-    // M6: 画面 uv をビューポート変換でキャンバス uv に写してからテクセル座標へ。
-    // 以降の全サンプル(水/浮遊/沈着/紙/乾燥/線画)がこの p を共有する
-    let cuv = view.offset + in.uv * view.scale;
+    // M6: 画面 uv をビューポート変換(パン/ズーム/回転)でキャンバス uv に写してから
+    // テクセル座標へ。以降の全サンプル(水/浮遊/沈着/紙/乾燥/線画)がこの p を共有する。
+    //   canvas_uv = center + R(θ)·(uv − 0.5)·span
+    let d = in.uv - vec2f(0.5);
+    let dr = vec2f(d.x * view.cos_t - d.y * view.sin_t,
+                   d.x * view.sin_t + d.y * view.cos_t);
+    let cuv = view.center + dr * view.span;
+    // 回転・パンでキャンバス外に出たテクセルは背景色(紙の周りの机)で塗る
+    let outside = any(cuv < vec2f(0.0)) || any(cuv > vec2f(1.0));
     let p = cuv * dims;
     let cell = load_bilinear(water_tex, p);
     let susp = load_bilinear(susp_tex, p);
@@ -347,5 +361,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
             color = apply_lines(compose(water, susp, dep, p), p);
         }
     }
-    return vec4f(color, 1.0);
+    // キャンバス外(回転・パンのはみ出し)は背景色で塗りつぶす
+    return vec4f(select(color, BG_COLOR, outside), 1.0);
 }

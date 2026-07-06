@@ -117,11 +117,14 @@ pub struct PaintApp {
     /// M5d/e: パレット・ライブラリ(保存/読込一覧)とスポイト待機の UI 状態
     palette_ui: PaletteUi,
     /// M6: ビューの拡大率。1.0=キャンバス全体がキャンバス枠に収まる、上げるほど拡大。
-    /// [1.0, MAX_ZOOM] にクランプ。表示窓は常にキャンバス内に収める(view_offset で調整)
+    /// [1.0, MAX_ZOOM] にクランプ。
     view_zoom: f32,
-    /// M6: 表示窓の左上に来るキャンバス uv(0..1)。ホイールで拡大、中ボタンドラッグでパン。
-    /// クランプ範囲は各軸 [0, 1 - 1/zoom](窓がキャンバスからはみ出さない)
-    view_offset: egui::Vec2,
+    /// M6: 画面中心(uv=0.5,0.5)に来るキャンバス uv(0..1)。ホイールで拡大、
+    /// 中ボタン/スペース+左ドラッグでパン。回転が絡むので左上でなく中心を保持する。
+    /// 回転なしのときは窓をキャンバス内に収め、回転時は中心のみ [0,1] に留める(隅は背景)
+    view_center: egui::Vec2,
+    /// M6: 表示回転(ラジアン、画面中心まわり)。Shift+ホイールで15°刻み、パネルで自由角。
+    view_angle: f32,
 }
 
 /// M6: ビューの最大拡大率(テクセルが潰れない範囲の実用上限)
@@ -185,53 +188,81 @@ impl PaintApp {
                 eyedropper: false,
             },
             view_zoom: 1.0,
-            view_offset: egui::Vec2::ZERO,
+            view_center: egui::vec2(0.5, 0.5),
+            view_angle: 0.0,
         }
     }
 
-    /// M6: 現在のビュー状態を display 用 uniform へ(canvas_uv = offset + 画面uv × scale)。
-    /// scale = 1/zoom。CanvasCallback へ渡してフレームごとに反映する
+    /// M6: 現在のビュー状態を display 用 uniform へ。
+    /// canvas_uv = center + R(θ)·(画面uv − 0.5)·span、span = 1/zoom。
+    /// CanvasCallback へ渡してフレームごとに反映する
     fn view_uniform(&self) -> crate::gpu::ViewUniform {
+        let (sin_t, cos_t) = self.view_angle.sin_cos();
         crate::gpu::ViewUniform {
-            offset: [self.view_offset.x, self.view_offset.y],
-            scale: 1.0 / self.view_zoom,
-            _pad: 0.0,
+            center: [self.view_center.x, self.view_center.y],
+            span: 1.0 / self.view_zoom,
+            cos_t,
+            sin_t,
+            _pad: [0.0; 3],
         }
     }
 
-    /// M6: 表示窓がキャンバスからはみ出さないよう view_offset を収める。
-    /// 窓の幅 = 1/zoom。各軸のオフセットを [0, 1-幅] にクランプ(zoom=1 では 0 固定)
+    /// M6: 画面 uv からのオフセット(画面中心基準)を回転・スケールしてキャンバス uv 差分へ。
+    /// screen_to_texel と zoom/pan で共有する display と同じ写像の芯
+    fn view_rotate(&self, d: egui::Vec2) -> egui::Vec2 {
+        let (s, c) = self.view_angle.sin_cos();
+        egui::vec2(d.x * c - d.y * s, d.x * s + d.y * c)
+    }
+
+    /// M6: ビューを健全な範囲に収める。回転なしなら窓をキャンバス内に(従来挙動)、
+    /// 回転時は隅がはみ出す前提で中心のみ [0,1] に留める(はみ出しは display が背景色)
     fn clamp_view(&mut self) {
         self.view_zoom = self.view_zoom.clamp(1.0, MAX_ZOOM);
-        let span = 1.0 / self.view_zoom;
-        let max = (1.0 - span).max(0.0);
-        self.view_offset.x = self.view_offset.x.clamp(0.0, max);
-        self.view_offset.y = self.view_offset.y.clamp(0.0, max);
+        let half = 0.5 / self.view_zoom; // 窓の半幅(キャンバス uv 単位)
+        let (lo, hi) = if self.view_angle == 0.0 {
+            (half.min(0.5), (1.0 - half).max(0.5))
+        } else {
+            (0.0, 1.0)
+        };
+        self.view_center.x = self.view_center.x.clamp(lo, hi);
+        self.view_center.y = self.view_center.y.clamp(lo, hi);
     }
 
-    /// M6: ビューを初期状態(全体表示)に戻す
+    /// M6: ビューを初期状態(全体表示・回転なし)に戻す
     fn reset_view(&mut self) {
         self.view_zoom = 1.0;
-        self.view_offset = egui::Vec2::ZERO;
+        self.view_center = egui::vec2(0.5, 0.5);
+        self.view_angle = 0.0;
     }
 
     /// M6: カーソル位置(画面座標)を中心に据えたまま拡大率を factor 倍する。
-    /// キャンバス uv の「カーソル下の点」を固定して zoom を変え、offset を解き直す
+    /// カーソル下のキャンバス uv を固定して zoom を変え、center を解き直す(回転込み)
     fn zoom_at(&mut self, cursor: egui::Pos2, rect: egui::Rect, factor: f32) {
-        let su = (cursor - rect.min) / rect.width().max(1.0); // 画面 uv(正方形なので x/y 同スケール)
+        let d = (cursor - rect.min) / rect.width().max(1.0) - egui::vec2(0.5, 0.5); // 画面中心からのオフセット
+        let dr = self.view_rotate(d);
         let old_span = 1.0 / self.view_zoom;
-        let anchor = self.view_offset + su * old_span; // カーソル下のキャンバス uv(固定したい点)
+        let anchor = self.view_center + dr * old_span; // カーソル下のキャンバス uv(固定したい点)
         self.view_zoom = (self.view_zoom * factor).clamp(1.0, MAX_ZOOM);
         let new_span = 1.0 / self.view_zoom;
-        self.view_offset = anchor - su * new_span;
+        self.view_center = anchor - dr * new_span;
         self.clamp_view();
     }
 
-    /// M6: 画面座標(キャンバス枠内)をキャンバステクセル座標へ写す。ビュー変換込み。
-    /// texel = (offset + 画面uv × (1/zoom)) × CANVAS_SIZE。描画・スポイトの共通経路
+    /// M6: 表示回転を delta ラジアン変える(画面中心まわり。中心・拡大率は保持)
+    fn rotate_view(&mut self, delta: f32) {
+        // [-π, π] に正規化(スライダー表示と往復のため)
+        let mut a = self.view_angle + delta;
+        let two_pi = std::f32::consts::TAU;
+        a = (a + std::f32::consts::PI).rem_euclid(two_pi) - std::f32::consts::PI;
+        self.view_angle = a;
+        self.clamp_view();
+    }
+
+    /// M6: 画面座標(キャンバス枠内)をキャンバステクセル座標へ写す。ビュー変換(パン/ズーム/回転)込み。
+    /// texel = (center + R(θ)·(画面uv − 0.5)·span) × CANVAS_SIZE。描画・スポイトの共通経路
     fn screen_to_texel(&self, pos: egui::Pos2, rect: egui::Rect) -> egui::Vec2 {
-        let su = (pos - rect.min) / rect.width().max(1.0);
-        let cuv = self.view_offset + su * (1.0 / self.view_zoom);
+        let d = (pos - rect.min) / rect.width().max(1.0) - egui::vec2(0.5, 0.5);
+        let cuv = self.view_center + self.view_rotate(d) * (1.0 / self.view_zoom);
         cuv * CANVAS_SIZE as f32
     }
 
@@ -530,10 +561,12 @@ impl PaintApp {
     /// snapshot() の読み戻し(display と同じ発色)から該当テクセルの RGB を取り出す。
     /// 表示色版なので「混ざってできた見た目の色」がそのまま顔料の基本色になる(§4 の先送り表)
     fn pick_color(&mut self, pos: egui::Pos2, rect: egui::Rect) {
-        // M6: ビュー変換込みでカーソル下のテクセルを求める(ズーム中も正しい画素を拾う)
-        let t = self.screen_to_texel(pos, rect);
-        let x = (t.x as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
-        let y = (t.y as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
+        // M6: snapshot は display と同じビュー変換(パン/ズーム/回転)込みで焼くので、
+        // 画面 uv でそのまま索引する(= カーソル下に見えている画素)。screen_to_texel は
+        // キャンバステクセルなので拡大・回転時にはズレる(zoom=1・無回転でのみ一致)
+        let su = (pos - rect.min) / rect.width().max(1.0);
+        let x = ((su.x * CANVAS_SIZE as f32) as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
+        let y = ((su.y * CANVAS_SIZE as f32) as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
         let data = {
             let renderer = self.render_state.renderer.read();
             match renderer.callback_resources.get::<GpuCanvas>() {
