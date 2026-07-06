@@ -95,6 +95,27 @@ impl PaintApp {
         }
     }
 
+    /// ビュー(M6): 拡大率の表示・全体表示に戻す・操作ヒント。
+    /// 拡大/パンの実操作はキャンバス上のホイール・中ボタンドラッグで行う(canvas.rs)
+    pub(in crate::app) fn view_panel(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("ビュー (M6)");
+        ui.horizontal(|ui| {
+            ui.label(format!("拡大 {:.0}%", self.view_zoom * 100.0));
+            if ui
+                .add_enabled(self.view_zoom > 1.0, egui::Button::new("全体表示に戻す"))
+                .clicked()
+            {
+                self.reset_view();
+            }
+        });
+        ui.label(
+            egui::RichText::new("ホイール=カーソル中心に拡大 / 中ボタンドラッグ=パン")
+                .weak()
+                .small(),
+        );
+    }
+
     /// シェーダー(H1): 監視ディレクトリとコンパイル状態の表示
     pub(in crate::app) fn shader_status(&mut self, ui: &mut egui::Ui) {
         ui.separator();

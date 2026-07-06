@@ -5,7 +5,7 @@
 //! bind group、pipeline layout をまとめて確保して `GpuCanvas` を組み立てる。パイプライン本体は
 //! WGSL の実行時ロード(H1)に委ねるため、ここでは `pipelines: None` で始める。
 
-use super::{GpuCanvas, LayerUniform, MAX_LAYERS, PAPER_SEED, SIM_FORMAT, TEX_KINDS};
+use super::{GpuCanvas, LayerUniform, MAX_LAYERS, PAPER_SEED, SIM_FORMAT, TEX_KINDS, ViewUniform};
 use paint_core::paper;
 use paint_core::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::wgpu;
@@ -247,6 +247,16 @@ impl GpuCanvas {
         });
         queue.write_buffer(&physics_buffer, 0, bytemuck::cast_slice(&physics));
 
+        // パン/ズーム(M6): display 専用のビューポート変換 uniform。既定は全体表示(zoom=1)。
+        // フレームごとに CanvasCallback が現在のビュー状態を書き込む
+        let view_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("view_transform"),
+            size: std::mem::size_of::<ViewUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&view_buffer, 0, bytemuck::bytes_of(&ViewUniform::default()));
+
         let sampled_entry = |binding: u32, visibility: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
             binding,
             visibility,
@@ -353,6 +363,12 @@ impl GpuCanvas {
                 sampled_entry(9, wgpu::ShaderStages::FRAGMENT),
                 // ハイライト(M4.5c): 不透明白。合成の最後に mix(色, 白, ハイライト)
                 sampled_entry(10, wgpu::ShaderStages::FRAGMENT),
+                // ビューポート変換(M6): パン/ズーム。fs_main が画面 uv → キャンバス uv に使う
+                buffer_entry(
+                    11,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BufferBindingType::Uniform,
+                ),
             ],
         });
 
@@ -490,6 +506,11 @@ impl GpuCanvas {
                 binding: 10,
                 resource: wgpu::BindingResource::TextureView(&line_views[2]),
             });
+            // ビューポート変換(M6): パン/ズーム
+            entries.push(wgpu::BindGroupEntry {
+                binding: 11,
+                resource: view_buffer.as_entire_binding(),
+            });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("display_bg"),
                 layout: &display_bgl,
@@ -564,6 +585,7 @@ impl GpuCanvas {
             splat_buffer,
             latents_buffer,
             physics_buffer,
+            view_buffer,
             live_pigment_latents,
             compute_layout,
             display_layout,

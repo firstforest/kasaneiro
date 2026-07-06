@@ -70,6 +70,16 @@ struct LayerUniform {
 @group(0) @binding(9) var pen_tex: texture_2d<f32>;
 // ハイライト(M4.5c): r32float 1枚。r = 不透明度 0..1。合成の最後に白として重ねる(最上段)
 @group(0) @binding(10) var highlight_tex: texture_2d<f32>;
+// ビューポート変換(M6): 画面 uv → キャンバス uv。canvas_uv = offset + uv * scale。
+//   scale = 1/zoom(1.0=キャンバス全体、<1.0=拡大)、offset = 左上に表示するキャンバス uv。
+// zoom は app 側で 1..32 にクランプ済み(scale ≤ 1、offset ∈ [0, 1-scale])なので、
+// 表示窓は常にキャンバス内に収まる(範囲外サンプルの背景処理は不要)。
+struct ViewUniform {
+    offset: vec2f,
+    scale: f32,
+    _pad: f32,
+};
+@group(0) @binding(11) var<uniform> view: ViewUniform;
 
 // 黒 → 青 → シアン → 白 のヒートマップ
 fn heatmap(x: f32) -> vec3f {
@@ -269,7 +279,10 @@ fn apply_lines(color_in: vec3f, p: vec2f) -> vec3f {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
     let dims = vec2f(textureDimensions(water_tex));
-    let p = in.uv * dims;
+    // M6: 画面 uv をビューポート変換でキャンバス uv に写してからテクセル座標へ。
+    // 以降の全サンプル(水/浮遊/沈着/紙/乾燥/線画)がこの p を共有する
+    let cuv = view.offset + in.uv * view.scale;
+    let p = cuv * dims;
     let cell = load_bilinear(water_tex, p);
     let susp = load_bilinear(susp_tex, p);
     let dep = load_bilinear(dep_tex, p);

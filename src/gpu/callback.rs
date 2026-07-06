@@ -4,7 +4,7 @@
 //! prepare で compute パス(splat → シミュレーション本体)を積み、paint で表示する。
 //! パス実行順(prepare 内)はシミュレーションの心臓部で、ここがその正典(R3)。
 
-use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS};
+use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, ViewUniform};
 use paint_core::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
 
@@ -17,6 +17,8 @@ pub struct CanvasCallback {
     /// ラスタ線画ツール(M4.5a)選択中の描画先。Some のときは splat を流体でなく
     /// 対応する線画テクスチャへ linesplat.wgsl で直描きする(水は注入しない)
     pub line_target: Option<LineTarget>,
+    /// パン/ズーム(M6): display の画面 uv → キャンバス uv 変換。毎フレーム反映する
+    pub view: ViewUniform,
 }
 
 impl egui_wgpu::CallbackTrait for CanvasCallback {
@@ -32,6 +34,8 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
             return Vec::new();
         };
         queue.write_buffer(&canvas.params_buffer, 0, bytemuck::bytes_of(&self.params));
+        // M6: パン/ズームの変換を display 用 uniform へ(compute には影響しない)
+        queue.write_buffer(&canvas.view_buffer, 0, bytemuck::bytes_of(&self.view));
 
         let splat_count = self.splats.len().min(MAX_SPLATS);
         if splat_count > 0 {

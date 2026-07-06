@@ -116,7 +116,16 @@ pub struct PaintApp {
     palette: pigment::Palette,
     /// M5d/e: パレット・ライブラリ(保存/読込一覧)とスポイト待機の UI 状態
     palette_ui: PaletteUi,
+    /// M6: ビューの拡大率。1.0=キャンバス全体がキャンバス枠に収まる、上げるほど拡大。
+    /// [1.0, MAX_ZOOM] にクランプ。表示窓は常にキャンバス内に収める(view_offset で調整)
+    view_zoom: f32,
+    /// M6: 表示窓の左上に来るキャンバス uv(0..1)。ホイールで拡大、中ボタンドラッグでパン。
+    /// クランプ範囲は各軸 [0, 1 - 1/zoom](窓がキャンバスからはみ出さない)
+    view_offset: egui::Vec2,
 }
+
+/// M6: ビューの最大拡大率(テクセルが潰れない範囲の実用上限)
+const MAX_ZOOM: f32 = 32.0;
 
 impl PaintApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -175,7 +184,55 @@ impl PaintApp {
                 store: NamedStore::new(palette_store::list()),
                 eyedropper: false,
             },
+            view_zoom: 1.0,
+            view_offset: egui::Vec2::ZERO,
         }
+    }
+
+    /// M6: 現在のビュー状態を display 用 uniform へ(canvas_uv = offset + 画面uv × scale)。
+    /// scale = 1/zoom。CanvasCallback へ渡してフレームごとに反映する
+    fn view_uniform(&self) -> crate::gpu::ViewUniform {
+        crate::gpu::ViewUniform {
+            offset: [self.view_offset.x, self.view_offset.y],
+            scale: 1.0 / self.view_zoom,
+            _pad: 0.0,
+        }
+    }
+
+    /// M6: 表示窓がキャンバスからはみ出さないよう view_offset を収める。
+    /// 窓の幅 = 1/zoom。各軸のオフセットを [0, 1-幅] にクランプ(zoom=1 では 0 固定)
+    fn clamp_view(&mut self) {
+        self.view_zoom = self.view_zoom.clamp(1.0, MAX_ZOOM);
+        let span = 1.0 / self.view_zoom;
+        let max = (1.0 - span).max(0.0);
+        self.view_offset.x = self.view_offset.x.clamp(0.0, max);
+        self.view_offset.y = self.view_offset.y.clamp(0.0, max);
+    }
+
+    /// M6: ビューを初期状態(全体表示)に戻す
+    fn reset_view(&mut self) {
+        self.view_zoom = 1.0;
+        self.view_offset = egui::Vec2::ZERO;
+    }
+
+    /// M6: カーソル位置(画面座標)を中心に据えたまま拡大率を factor 倍する。
+    /// キャンバス uv の「カーソル下の点」を固定して zoom を変え、offset を解き直す
+    fn zoom_at(&mut self, cursor: egui::Pos2, rect: egui::Rect, factor: f32) {
+        let su = (cursor - rect.min) / rect.width().max(1.0); // 画面 uv(正方形なので x/y 同スケール)
+        let old_span = 1.0 / self.view_zoom;
+        let anchor = self.view_offset + su * old_span; // カーソル下のキャンバス uv(固定したい点)
+        self.view_zoom = (self.view_zoom * factor).clamp(1.0, MAX_ZOOM);
+        let new_span = 1.0 / self.view_zoom;
+        self.view_offset = anchor - su * new_span;
+        self.clamp_view();
+    }
+
+    /// M6: 画面座標(キャンバス枠内)をキャンバステクセル座標へ写す。ビュー変換込み。
+    /// texel = (offset + 画面uv × (1/zoom)) × CANVAS_SIZE。描画・スポイトの共通経路
+    fn screen_to_texel(&self, pos: egui::Pos2, rect: egui::Rect) -> egui::Vec2 {
+        let su = (pos - rect.min) / rect.width().max(1.0);
+        let cuv = self.view_offset + su * (1.0 / self.view_zoom);
+        cuv * CANVAS_SIZE as f32
     }
 
     /// M5: 現行パレット(self.palette)を GPU へ反映する。色・ρ/ω/γ を編集したあとに呼ぶ。
@@ -368,7 +425,6 @@ impl PaintApp {
         rect: egui::Rect,
         splats: &mut Vec<Splat>,
     ) {
-        let scale = CANVAS_SIZE as f32 / rect.width();
         // H5 の記録は流体ストロークだけを対象にする(記録は params.tool = WetTool の gpu_id を
         // 前提に再生するため)。ラスタ線画(M4.5)は line_history に別系統で履歴を持つ(M4.5d)
         let recordable = self.tool.wet().is_some();
@@ -426,7 +482,8 @@ impl PaintApp {
             if !self.painting {
                 continue;
             }
-            let px = (ev.pos - rect.min) * scale;
+            // M6: ビュー変換込みでキャンバステクセルへ写す(ズーム中は拡大領域の座標になる)
+            let px = self.screen_to_texel(ev.pos, rect);
             // サンプル間隔は筆圧を反映した実効半径から(細い筆入れでも隙間を作らない)。
             // ラスタ線画は鉛筆/ペン/ハイライトの独立半径を使う(brush_radius と切り離す)
             let base = self.active_base_radius();
@@ -473,9 +530,10 @@ impl PaintApp {
     /// snapshot() の読み戻し(display と同じ発色)から該当テクセルの RGB を取り出す。
     /// 表示色版なので「混ざってできた見た目の色」がそのまま顔料の基本色になる(§4 の先送り表)
     fn pick_color(&mut self, pos: egui::Pos2, rect: egui::Rect) {
-        let scale = CANVAS_SIZE as f32 / rect.width();
-        let x = (((pos.x - rect.min.x) * scale) as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
-        let y = (((pos.y - rect.min.y) * scale) as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
+        // M6: ビュー変換込みでカーソル下のテクセルを求める(ズーム中も正しい画素を拾う)
+        let t = self.screen_to_texel(pos, rect);
+        let x = (t.x as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
+        let y = (t.y as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
         let data = {
             let renderer = self.render_state.renderer.read();
             match renderer.callback_resources.get::<GpuCanvas>() {
@@ -555,6 +613,7 @@ impl PaintApp {
         self.linework_panel(ui);
         self.layers_panel(ui);
         self.tuning_panel(ui);
+        self.view_panel(ui);
         self.preset_panel(ui);
         self.replay_panel(ui);
         self.shader_status(ui);

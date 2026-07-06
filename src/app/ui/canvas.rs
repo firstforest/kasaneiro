@@ -18,6 +18,32 @@ impl PaintApp {
             egui::Sense::drag(),
         );
 
+        // M6: パン/ズーム。ホイールでカーソル中心に拡大、中ボタンドラッグでパン。
+        // ポインタ状態はグローバル(ウィジェットの Sense に依らない)なので input から直接読む
+        let (scroll_y, middle_down, ptr_delta, hover) = ui.input(|i| {
+            (
+                i.smooth_scroll_delta.y,
+                i.pointer.middle_down(),
+                i.pointer.delta(),
+                i.pointer.hover_pos(),
+            )
+        });
+        let over_canvas = hover.is_some_and(|p| rect.contains(p));
+        if over_canvas
+            && scroll_y != 0.0
+            && let Some(cursor) = hover
+        {
+            // ホイール量を対数スケールで拡大率に。上スクロール=拡大 / 下=縮小
+            self.zoom_at(cursor, rect, (scroll_y * 0.0015).exp());
+        }
+        // パンは拡大中(zoom>1)のみ意味を持つ。中ボタンをキャンバス上で押している間に移動量を反映
+        let panning = middle_down && over_canvas && self.view_zoom > 1.0;
+        if panning {
+            let span = 1.0 / self.view_zoom;
+            self.view_offset -= (ptr_delta / rect.width().max(1.0)) * span;
+            self.clamp_view();
+        }
+
         // M1.5: ペン(egui Touch、筆圧付き)を優先し、接地中はマウスを無視する
         // (egui-winit は Touch からポインタもエミュレートするため、両方を処理すると
         // 二重ストロークになる)
@@ -39,7 +65,8 @@ impl PaintApp {
                 self.pick_color(pos, rect);
                 self.palette_ui.eyedropper = false;
             }
-        } else {
+        } else if !panning {
+            // M6: パン中(中ボタンドラッグ)は描画イベントを流さない(ビュー操作専念)
             self.apply_pointer_events(&events, rect, &mut splats);
         }
 
@@ -69,6 +96,7 @@ impl PaintApp {
                 splats,
                 sim_steps,
                 line_target: self.line_target(),
+                view: self.view_uniform(),
             },
         ));
         ui.painter().rect_stroke(

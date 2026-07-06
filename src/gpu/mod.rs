@@ -146,6 +146,29 @@ pub struct DriedLayer {
     pub visible: bool,
 }
 
+/// display.wgsl の ViewUniform と同レイアウト(16 バイト)。パン/ズーム(M6)。
+/// 画面 uv → キャンバス uv の写像 canvas_uv = offset + uv * scale を display へ渡す。
+/// SimParams とは分けて display 専用 uniform にしている(プリセット H3・記録 H5 を汚さない)。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ViewUniform {
+    /// 左上に表示するキャンバス uv(0..1)
+    pub offset: [f32; 2],
+    /// 表示窓の幅(キャンバス uv 単位)= 1/zoom。1.0 で全体、小さいほど拡大
+    pub scale: f32,
+    pub _pad: f32,
+}
+
+impl Default for ViewUniform {
+    fn default() -> Self {
+        Self {
+            offset: [0.0, 0.0],
+            scale: 1.0,
+            _pad: 0.0,
+        }
+    }
+}
+
 /// display.wgsl の LayerUniform と同レイアウト(48 バイト)
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -178,6 +201,8 @@ pub struct GpuCanvas {
     latents_buffer: wgpu::Buffer,
     /// 顔料個性 ρ/ω/γ(M3)。compute の binding 9。M5 で set_palette がランタイム書き替え
     physics_buffer: wgpu::Buffer,
+    /// パン/ズーム(M6)。display の binding 11。フレームごとに CanvasCallback が書き替える
+    view_buffer: wgpu::Buffer,
     /// 現行(live)パレットの顔料 latent ブロック。乾かすとき dried スロットへ焼き込む(M5c)
     live_pigment_latents: [[f32; 4]; pigment::PIGMENT_LATENTS],
     compute_layout: wgpu::PipelineLayout,

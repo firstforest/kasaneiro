@@ -92,7 +92,9 @@ compute の binding は種別ごとに3レイアウト(R3 の `ComputeLayout`):
 - **bake**: 共通の `0..6, 8` + `9` = 乾燥レイヤーの書き込みスライス(splats なし)
 - **raster**(M4.5a/c、linesplat.wgsl): `0` 対象の線画テクスチャ(read_write r32float)、`1` SimParams、`2` splat storage、`3` 紙ハイト。描画先(鉛筆/ペン/ハイライト)は bind group を差し替えて選ぶ(パイプラインは1本)。ライブ描画は流体パスがペン線を sampled で読むため `linesplat` を専用 compute パスに分ける(同一パス内で read_write と sampled を兼ねると使用範囲が衝突するため)
 
-display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 latent、`5` 紙ハイト、`6` 乾燥レイヤー array、`7` LayerUniform、`8/9` 線画(鉛筆/ペン、M4.5a)、`10` ハイライト(M4.5c)。
+display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 latent、`5` 紙ハイト、`6` 乾燥レイヤー array、`7` LayerUniform、`8/9` 線画(鉛筆/ペン、M4.5a)、`10` ハイライト(M4.5c)、`11` ViewUniform(M6、パン/ズーム)。
+
+**ビューポート変換(binding 11、M6)**: `ViewUniform { offset: vec2f, scale: f32 }`。fs_main が画面 uv → キャンバス uv を `canvas_uv = offset + 画面uv × scale`(`scale = 1/zoom`)で写してからサンプルするため、拡大/パンが全サンプル(水/浮遊/沈着/紙/乾燥/線画)に一括で効く。SimParams とは分けた display 専用 uniform で(プリセット H3・記録 H5 を汚さない)、`CanvasCallback` がフレームごとに `write_buffer`。app 側で `zoom ∈ [1, 32]`・`offset ∈ [0, 1−1/zoom]` にクランプするので表示窓は常にキャンバス内(範囲外背景処理は不要)。ポインタ→テクセル変換(描画・スポイト)も同じ写像 `PaintApp::screen_to_texel` を通す。
 
 **顔料 latent(binding 4)のレイアウト(M5c、`array<vec4f, LATENT_TOTAL=78>`)**: 先頭 `GLOBAL_LATENTS=6` vec4 = パレット非依存のグローバル光学(`[0,1]`紙 / `[2,3]`白 R_w / `[4,5]`黒 R_b)。以降は**パレット枠**を `PALETTE_SLOTS = MAX_LAYERS+1 = 9` 個並べ、各枠 `PIGMENT_LATENTS=8` vec4(顔料4種 × c0..c3/RGB残差)。枠 `0..MAX_LAYERS-1` は乾燥レイヤーのスロット別、枠 `LIVE_PALETTE=MAX_LAYERS` は現行(湿レイヤー)のパレット。**乾かすと現行パレットの色を対応スロット枠へ焼き込む**(`GpuCanvas::record_layer_palette`)ため、顔料を後から編集しても乾燥済みレイヤーの色は変わらない。編集時は `set_palette` が physics(ρ/ω/γ、全レイヤー共通)と live 枠だけを `write_buffer`(パイプライン再構築不要)。定数は [crates/pigment](../crates/pigment/src/lib.rs) と [src/gpu/mod.rs](../src/gpu/mod.rs)、WGSL の `pal_base()` が対応。
 
