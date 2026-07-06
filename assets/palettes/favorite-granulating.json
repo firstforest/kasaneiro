@@ -1,0 +1,32 @@
+{
+  "pigments": [
+    {
+      "name": "コバルトターコイズ",
+      "rgb": [0, 152, 164],
+      "density": 1.5,
+      "staining": 0.35,
+      "granulation": 0.75
+    },
+    {
+      "name": "ピロールレッド",
+      "rgb": [228, 32, 34],
+      "density": 1.0,
+      "staining": 0.6,
+      "granulation": 0.05
+    },
+    {
+      "name": "ペインズグレー",
+      "rgb": [42, 56, 74],
+      "density": 1.1,
+      "staining": 0.5,
+      "granulation": 0.45
+    },
+    {
+      "name": "バーントシェンナ",
+      "rgb": [138, 64, 28],
+      "density": 1.4,
+      "staining": 0.25,
+      "granulation": 0.7
+    }
+  ]
+}
