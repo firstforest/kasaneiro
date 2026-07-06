@@ -4,7 +4,7 @@
 //! prepare で compute パス(splat → シミュレーション本体)を積み、paint で表示する。
 //! パス実行順(prepare 内)はシミュレーションの心臓部で、ここがその正典(R3)。
 
-use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, ViewUniform};
+use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, TILES_PER_SIDE, ViewUniform};
 use paint_core::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
 
@@ -77,6 +77,20 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
                 label: Some("sim_pass"),
                 timestamp_writes: None,
             });
+
+            // アクティブタイル(M6): シミュ本体より前にタイル有効フラグを作る。
+            // tilescan(濡れ+ブラシ→raw_active)→ tiledilate(1タイル膨張→active)。
+            // 以降の splat / sim 各パスは active を読み、非アクティブなタイルを素通しする。
+            // active_tiles=0 のときは tilescan が全タイルを有効化するので全面計算に戻る。
+            // 同一パス内の storage RAW ハザードは wgpu が自動バリアで解決する(テクスチャ ping-pong と同様)
+            let tile_workgroups = TILES_PER_SIDE.div_ceil(8);
+            pass.set_pipeline(pipelines.compute("tilescan.wgsl"));
+            pass.set_bind_group(0, &canvas.tilescan_bind_groups[current], &[]);
+            pass.dispatch_workgroups(tile_workgroups, tile_workgroups, 1);
+            pass.set_pipeline(pipelines.compute("tiledilate.wgsl"));
+            pass.set_bind_group(0, &canvas.tiledilate_bind_group, &[]);
+            pass.dispatch_workgroups(tile_workgroups, tile_workgroups, 1);
+
             // 1 dispatch = current を読み、もう片方へ書き、反転(ping-pong)
             let mut run = |pass: &mut wgpu::ComputePass, pipeline: &wgpu::ComputePipeline| {
                 pass.set_pipeline(pipeline);

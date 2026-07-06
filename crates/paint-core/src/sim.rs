@@ -159,9 +159,11 @@ pub struct SimParams {
     pub highlight_strength: f32,
     /// ハイライトレイヤーの表示(M4.5c): 0=非表示 / 1=表示。合成の最後に白を重ねる
     pub show_highlight: u32,
-    /// uniform の 16B 整列用パディング(52フィールド=208B)。プリセット JSON には出さない
-    #[serde(skip)]
-    pub _pad_line: f32,
+    /// アクティブタイル最適化(M6): 0=無効(全面計算)/ 1=有効(濡れ+ブラシ近傍のタイルだけ計算)。
+    /// tilescan/tiledilate が濡れ面積+ブラシからタイル有効フラグを作り、各シミュパスは非アクティブな
+    /// タイルを素通しして計算を省く。0 で従来どおり全面計算に戻せる(A/B・不具合時の退避)。
+    /// SimParams 末尾で 16B 境界を担う(52フィールド=208B)
+    pub active_tiles: u32,
 }
 
 impl SimParams {
@@ -235,7 +237,7 @@ impl Default for SimParams {
             highlight_radius: 6.0,    // M4.5c: ハイライトは中太
             highlight_strength: 0.85, // M4.5c: 白の不透明度
             show_highlight: 1,
-            _pad_line: 0.0,
+            active_tiles: 1, // M6: 既定で有効(濡れ面積に比例。0 で全面計算へ戻せる)
         }
     }
 }

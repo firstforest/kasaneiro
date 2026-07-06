@@ -5,7 +5,7 @@ use crate::app::PaintApp;
 use eframe::egui;
 
 /// デバッグ表示モード(H4)。値は SimParams::display_mode / display.wgsl の分岐と対応。
-const DISPLAY_MODES: [(u32, &str); 7] = [
+const DISPLAY_MODES: [(u32, &str); 8] = [
     (0, "通常(顔料を表示)"),
     (1, "水量ヒートマップ"),
     (2, "速度場(色相=方向)"),
@@ -13,6 +13,7 @@ const DISPLAY_MODES: [(u32, &str); 7] = [
     (4, "浮遊顔料ヒートマップ"),
     (5, "沈着顔料ヒートマップ"),
     (6, "紙ハイト(白=山)"),
+    (7, "アクティブタイル(計算中=緑)"),
 ];
 
 impl PaintApp {
@@ -128,6 +129,21 @@ impl PaintApp {
                         .logarithmic(true)
                         .text("表示ゲイン"),
                 );
+
+                ui.separator();
+                ui.label("アクティブタイル (M6)");
+                let mut active = self.params.active_tiles != 0;
+                if ui
+                    .checkbox(&mut active, "アクティブタイル最適化(濡れ面積に比例)")
+                    .on_hover_text(
+                        "濡れているタイル+ブラシ近傍だけシミュレーションを走らせる。\
+                         オフにすると全面計算に戻る(A/B・不具合時の退避)。\
+                         「アクティブタイル」表示モードで計算中の範囲を確認できる",
+                    )
+                    .changed()
+                {
+                    self.params.active_tiles = active as u32;
+                }
             });
 
         ui.separator();

@@ -70,8 +70,21 @@ struct SimParams {
     highlight_radius: f32, // M4.5c: ハイライト(不透明白)の半径
     highlight_strength: f32, // M4.5c: ハイライトの不透明度基準
     show_highlight: u32,   // M4.5c: ハイライトレイヤーの表示 0/1
-    _pad_line: f32,        // 16B 整列パディング(52フィールド=208B)
+    active_tiles: u32,     // M6: アクティブタイル最適化 0=全面計算 / 1=濡れ+ブラシのタイルだけ計算
 };
+
+// アクティブタイル(M6): シミュレーションを「濡れているタイル+ブラシ近傍」だけに絞る土台。
+// tilescan がタイルごとに濡れ/顔料/ブラシ有無を判定し、tiledilate が1タイル分ふくらませて
+// active フラグ(binding 11 = array<u32>)を作る。各シミュパスは非アクティブなタイルを素通しする。
+// TILE_SIZE = 1タイルの1辺テクセル数、TILES_PER_SIDE = キャンバス1辺のタイル数。
+// gpu/mod.rs の TILE_SIZE / TILES_PER_SIDE と一致させること(CANVAS_SIZE=512 前提。M8 で要更新)。
+const TILE_SIZE: u32 = 16u;
+const TILES_PER_SIDE: u32 = 32u;
+
+// テクセル座標 → タイルの線形 index(active 配列の添字)
+fn tile_index_of(p: vec2u) -> u32 {
+    return (p.y / TILE_SIZE) * TILES_PER_SIDE + (p.x / TILE_SIZE);
+}
 
 // 筆圧 0..1 → 応答カーブ γ を通した補間係数(M1.5)。
 // 実効値 = 基準値 × mix(1, 筆圧^γ, 効き)。マウス(筆圧 1.0)は常に 1

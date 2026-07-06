@@ -257,6 +257,24 @@ impl GpuCanvas {
         });
         queue.write_buffer(&view_buffer, 0, bytemuck::bytes_of(&ViewUniform::default()));
 
+        // アクティブタイル(M6): タイルごとの計算有効フラグ(u32 × NUM_TILES)。
+        // raw = tilescan の生フラグ、active = tiledilate で1タイル膨張した最終フラグ。
+        // シミュ各パス(binding 11)と display(binding 12)が active を読む。
+        // 毎フレーム tilescan が全要素を書き直すので初期値は問わない(zero 初期化のまま)
+        let tile_flags_size = (super::NUM_TILES as usize * std::mem::size_of::<u32>()) as u64;
+        let raw_active_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tile_raw_active"),
+            size: tile_flags_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let active_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tile_active"),
+            size: tile_flags_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let sampled_entry = |binding: u32, visibility: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
             binding,
             visibility,
@@ -321,6 +339,12 @@ impl GpuCanvas {
                     wgpu::BufferBindingType::Uniform,
                 ),
                 sampled_entry(10, wgpu::ShaderStages::COMPUTE),
+                // アクティブタイル(M6): タイル有効フラグ。各シミュパスが読み、非アクティブを素通しする
+                buffer_entry(
+                    11,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
             ],
         });
 
@@ -368,6 +392,12 @@ impl GpuCanvas {
                     11,
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::BufferBindingType::Uniform,
+                ),
+                // アクティブタイル(M6): 表示モード 7 の可視化でタイル有効フラグを読む
+                buffer_entry(
+                    12,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BufferBindingType::Storage { read_only: true },
                 ),
             ],
         });
@@ -422,6 +452,55 @@ impl GpuCanvas {
             ],
         });
 
+        // アクティブタイル走査(M6、tilescan): 水/浮遊/沈着(read)+ params + splats +
+        // raw_active(write)。current テクスチャを src として読むので bind group は parity 別
+        let tilescan_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("tilescan_bgl"),
+            entries: &[
+                sampled_entry(0, wgpu::ShaderStages::COMPUTE),
+                sampled_entry(1, wgpu::ShaderStages::COMPUTE),
+                sampled_entry(2, wgpu::ShaderStages::COMPUTE),
+                buffer_entry(
+                    3,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+                buffer_entry(
+                    4,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
+                buffer_entry(
+                    5,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Storage { read_only: false },
+                ),
+            ],
+        });
+
+        // アクティブタイル膨張(M6、tiledilate): raw_active(read)→ active(write)
+        let tiledilate_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("tiledilate_bgl"),
+            entries: &[
+                buffer_entry(
+                    0,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Storage { read_only: true },
+                ),
+                buffer_entry(
+                    1,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Storage { read_only: false },
+                ),
+                // common.wgsl の pressure_curve が params を参照するため束ねる(このパスでは未使用)
+                buffer_entry(
+                    2,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+            ],
+        });
+
         // src=current / dst=もう片方 の2方向分
         let make_compute_bg = |src: usize, dst: usize| {
             let mut entries = Vec::new();
@@ -456,6 +535,11 @@ impl GpuCanvas {
             entries.push(wgpu::BindGroupEntry {
                 binding: 10,
                 resource: wgpu::BindingResource::TextureView(&line_views[1]),
+            });
+            // アクティブタイル(M6): タイル有効フラグ。src/dst に依らず固定
+            entries.push(wgpu::BindGroupEntry {
+                binding: 11,
+                resource: active_buffer.as_entire_binding(),
             });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("sim_bg"),
@@ -511,6 +595,11 @@ impl GpuCanvas {
                 binding: 11,
                 resource: view_buffer.as_entire_binding(),
             });
+            // アクティブタイル(M6): 表示モード 7 の可視化
+            entries.push(wgpu::BindGroupEntry {
+                binding: 12,
+                resource: active_buffer.as_entire_binding(),
+            });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("display_bg"),
                 layout: &display_bgl,
@@ -551,6 +640,62 @@ impl GpuCanvas {
             make_raster_bg(2, "raster_highlight_bg"),
         ];
 
+        // アクティブタイル走査(M6): current テクスチャ(parity 別)を読んで raw_active を書く。
+        // 水[0]/浮遊[1]/沈着[2] の各 parity ビューを 0/1/2 に、params/splats/raw を 3/4/5 に
+        let make_tilescan_bg = |i: usize| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("tilescan_bg"),
+                layout: &tilescan_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&sim_views[0][i]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&sim_views[1][i]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&sim_views[2][i]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: splat_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: raw_active_buffer.as_entire_binding(),
+                    },
+                ],
+            })
+        };
+        let tilescan_bind_groups = [make_tilescan_bg(0), make_tilescan_bg(1)];
+
+        // アクティブタイル膨張(M6): raw_active → active(バッファ固定なので1つ)
+        let tiledilate_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tiledilate_bg"),
+            layout: &tiledilate_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: raw_active_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: active_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         let compute_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("sim_pipeline_layout"),
             bind_group_layouts: &[Some(&compute_bgl)],
@@ -569,6 +714,16 @@ impl GpuCanvas {
         let raster_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("raster_pipeline_layout"),
             bind_group_layouts: &[Some(&raster_bgl)],
+            immediate_size: 0,
+        });
+        let tilescan_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("tilescan_pipeline_layout"),
+            bind_group_layouts: &[Some(&tilescan_bgl)],
+            immediate_size: 0,
+        });
+        let tiledilate_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("tiledilate_pipeline_layout"),
+            bind_group_layouts: &[Some(&tiledilate_bgl)],
             immediate_size: 0,
         });
 
@@ -596,6 +751,10 @@ impl GpuCanvas {
             line_textures,
             raster_bind_groups,
             raster_layout,
+            tilescan_bind_groups,
+            tiledilate_bind_group,
+            tilescan_layout,
+            tiledilate_layout,
             layers: Vec::new(),
             pipelines: None,
             current: 0,

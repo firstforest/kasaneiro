@@ -22,6 +22,8 @@ fn all_shaders_compile() {
         "fastdry.wgsl",
         "rewet.wgsl",
         "linesplat.wgsl",
+        "tilescan.wgsl",
+        "tiledilate.wgsl",
         "display.wgsl",
     ] {
         let src = std::fs::read_to_string(dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));

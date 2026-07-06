@@ -18,11 +18,21 @@
 @group(0) @binding(8) var paper_tex: texture_2d<f32>;
 // 顔料個性(M3): [i] = (密度 ρ, ステイニング ω, 粒状感 γ, 予備)
 @group(0) @binding(9) var<uniform> pigment: array<vec4f, 4>;
+// アクティブタイル(M6): タイル有効フラグ。非アクティブなタイルは素通しして計算を省く
+@group(0) @binding(11) var<storage, read> tile_active: array<u32>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
     let dims = textureDimensions(src_water);
     if (gid.x >= dims.x || gid.y >= dims.y) {
+        return;
+    }
+    // アクティブタイル(M6): 非アクティブなら 3 テクスチャを素通し(ping-pong 一貫性)して return
+    if (tile_active[tile_index_of(gid.xy)] == 0u) {
+        let cp = vec2i(gid.xy);
+        textureStore(dst_water, cp, textureLoad(src_water, cp, 0));
+        textureStore(dst_susp, cp, textureLoad(src_susp, cp, 0));
+        textureStore(dst_dep, cp, textureLoad(src_dep, cp, 0));
         return;
     }
     let ip = vec2i(gid.xy);

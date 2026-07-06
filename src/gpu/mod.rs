@@ -70,6 +70,13 @@ const MAX_RELAX_ITERS: u32 = 64;
 /// 顔料拡散の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_DIFFUSE_ITERS: u32 = 32;
 
+/// アクティブタイル(M6): 1タイルの1辺テクセル数。common.wgsl の TILE_SIZE と一致させること
+const TILE_SIZE: u32 = 16;
+/// キャンバス1辺あたりのタイル数(= CANVAS_SIZE / TILE_SIZE)。common.wgsl の TILES_PER_SIDE と一致
+const TILES_PER_SIDE: u32 = CANVAS_SIZE / TILE_SIZE;
+/// アクティブタイルのフラグ数(タイル総数 = active/raw バッファの要素数)
+const NUM_TILES: u32 = TILES_PER_SIDE * TILES_PER_SIDE;
+
 /// compute シェーダーのバインドグループレイアウト種別(R3)。
 /// ほとんどは共通レイアウト、bake だけ専用(乾燥レイヤースライス binding 9)。
 #[derive(Clone, Copy)]
@@ -78,6 +85,10 @@ enum ComputeLayout {
     Bake,
     /// ラスタ線画(M4.5a): 対象の線画テクスチャ(read_write)+ params + splats + 紙ハイト
     Raster,
+    /// アクティブタイル走査(M6、tilescan): 水/浮遊/沈着(read)+ params + splats + raw_active(write)
+    TileScan,
+    /// アクティブタイル膨張(M6、tiledilate): raw_active(read)→ active(write)
+    TileDilate,
 }
 
 /// ラスタ線画(M4.5a/c)の描画先テクスチャ。Tool::Raster の種別と対応。
@@ -116,6 +127,9 @@ const COMPUTE_SHADERS: &[(&str, ComputeLayout)] = &[
     ("fastdry.wgsl", ComputeLayout::Common),
     ("rewet.wgsl", ComputeLayout::Common),
     ("linesplat.wgsl", ComputeLayout::Raster),
+    // アクティブタイル(M6): シミュ本体より前にタイル有効フラグを作る2パス
+    ("tilescan.wgsl", ComputeLayout::TileScan),
+    ("tiledilate.wgsl", ComputeLayout::TileDilate),
 ];
 
 struct Pipelines {
@@ -218,6 +232,14 @@ pub struct GpuCanvas {
     /// linesplat.wgsl 用の描画先別 bind group([鉛筆, ペン, ハイライト]。LineTarget::index の順)
     raster_bind_groups: [wgpu::BindGroup; 3],
     raster_layout: wgpu::PipelineLayout,
+    /// アクティブタイル(M6): タイル走査/膨張の bind group。実体のバッファ
+    /// (raw_active / active、array<u32, NUM_TILES>)は bind group が保持する。
+    /// tilescan の bind group は current テクスチャを読むので ping-pong parity 別に2つ
+    tilescan_bind_groups: [wgpu::BindGroup; 2],
+    /// tiledilate の bind group(raw→active。バッファ固定なので1つ)
+    tiledilate_bind_group: wgpu::BindGroup,
+    tilescan_layout: wgpu::PipelineLayout,
+    tiledilate_layout: wgpu::PipelineLayout,
     /// 乾燥レイヤーの重ね順とメタ情報(先頭が最下層)。UI(app.rs)から直接編集し、
     /// 変更後に sync_layers() で uniform へ反映する
     pub layers: Vec<DriedLayer>,
@@ -590,6 +612,9 @@ impl GpuCanvas {
                 ComputeLayout::Bake => &self.bake_layout,
                 // ラスタ線画(M4.5a): 線画テクスチャ(read_write)専用レイアウト
                 ComputeLayout::Raster => &self.raster_layout,
+                // アクティブタイル(M6): タイル走査・膨張の専用レイアウト
+                ComputeLayout::TileScan => &self.tilescan_layout,
+                ComputeLayout::TileDilate => &self.tiledilate_layout,
             };
             let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(name),

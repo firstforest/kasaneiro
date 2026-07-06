@@ -7,6 +7,7 @@
 //   4 = 浮遊顔料ヒートマップ(4チャンネル合計)
 //   5 = 沈着顔料ヒートマップ(4チャンネル合計)
 //   6 = 紙ハイト(グレースケール。白=山 / 黒=谷)
+//   7 = アクティブタイル(M6。計算中のタイル=緑 / 素通しのタイル=暗く + タイル格子)
 // 先頭に common.wgsl が連結される。
 //
 // 通常表示の混色(M1c): 4顔料の濃度(浮遊+沈着)と紙を mixbox の latent 空間で
@@ -80,6 +81,8 @@ struct ViewUniform {
     _pad: f32,
 };
 @group(0) @binding(11) var<uniform> view: ViewUniform;
+// アクティブタイル(M6): 各タイルの計算有効フラグ(1=計算中)。表示モード 7 の可視化に使う
+@group(0) @binding(12) var<storage, read> tile_active: array<u32>;
 
 // 黒 → 青 → シアン → 白 のヒートマップ
 fn heatmap(x: f32) -> vec3f {
@@ -320,6 +323,23 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
             // 紙ハイト(M1d): 白=山 / 黒=谷
             let h = load_bilinear(paper_tex, p).r;
             color = vec3f(clamp(h * params.display_gain, 0.0, 1.0));
+        }
+        case 7u: {
+            // アクティブタイル(M6): 通常表示にタイル格子を重ね、計算中のタイルを緑、
+            // 素通し(非アクティブ)のタイルを暗く沈める。コストが濡れ面積比例かを目視できる
+            color = apply_lines(compose(water, susp, dep, p), p);
+            let tp = vec2u(clamp(p, vec2f(0.0), dims - 1.0));
+            let on = tile_active[tile_index_of(tp)] != 0u;
+            if (on) {
+                color = mix(color, vec3f(0.15, 0.95, 0.30), 0.22);
+            } else {
+                color *= 0.45;
+            }
+            // タイル境界にうっすら格子線(TILE_SIZE テクセルごと)
+            let inpx = tp % TILE_SIZE;
+            if (inpx.x == 0u || inpx.y == 0u) {
+                color = mix(color, vec3f(0.0), 0.35);
+            }
         }
         default: {
             // 通常: multiply(M2) か KM(M3) で湿+乾燥レイヤーを合成(params.compose_mode)し、
