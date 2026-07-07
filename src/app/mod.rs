@@ -15,7 +15,7 @@ use crate::gpu::DriedLayer;
 use crate::gpu::GpuCanvas;
 use crate::gpu::LineTarget;
 use linehist::{LineHistory, stroke_splats};
-use crate::gpu::hot_reload::{ShaderWatcher, shader_dir};
+use crate::gpu::hot_reload::{ScreenshotWatcher, ShaderWatcher, screenshots_dir, shader_dir};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase};
 use crate::palette_store;
 use crate::preset;
@@ -159,6 +159,13 @@ pub struct PaintApp {
     pending_canvas_size: u32,
     /// H1/M8: シェーダーディレクトリ(GpuCanvas の作り直しで再利用する)
     shader_dir: PathBuf,
+    /// UI スクショ(AI レビュー用): egui の Screenshot コマンドを送った後、
+    /// 次フレーム以降に届く `Event::Screenshot` を待っている間 true。
+    /// 受け取ったら固定パス screenshots/ui-latest.png へ上書き保存する
+    screenshot_pending: bool,
+    /// UI スクショ(AI レビュー用): screenshots/request-shot の作成/変更を監視し、
+    /// AI(外部 Bash)からの撮影指示をフレームループで拾う。ボタン撮影とは別経路
+    shot_watcher: ScreenshotWatcher,
 }
 
 /// M6: ビューの最大拡大率(テクセルが潰れない範囲の実用上限)
@@ -234,6 +241,8 @@ impl PaintApp {
             canvas_size: DEFAULT_CANVAS_SIZE,
             pending_canvas_size: DEFAULT_CANVAS_SIZE,
             shader_dir: dir,
+            screenshot_pending: false,
+            shot_watcher: ScreenshotWatcher::new(&screenshots_dir()),
         }
     }
 
@@ -757,6 +766,57 @@ impl PaintApp {
         });
     }
 
+    /// UI スクショ(AI レビュー用): 画面全体(egui のパネル込み。キャンバスだけの
+    /// H6 PNG スナップショットと違い、UI レイアウトそのものを撮る)を撮る要求を出す。
+    /// egui は次フレーム以降に `Event::Screenshot` で結果を返すので、ここでは要求だけ立て、
+    /// 実際の保存は `poll_ui_screenshot` が受け取ってから行う。
+    fn request_ui_screenshot(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+        self.screenshot_pending = true;
+        self.status_msg = Some("UI スクショを撮影中…".to_owned());
+    }
+
+    /// UI スクショの結果(`Event::Screenshot`)が届いていれば固定パスへ保存する(毎フレーム呼ぶ)。
+    /// AI が「最新の UI」を常に同じパスから読めるよう、タイムスタンプでなく上書き保存にする
+    /// (screenshots/ui-latest.png)。UI 改善ループでこのファイルを読んで見た目を確認する。
+    fn poll_ui_screenshot(&mut self, ctx: &egui::Context) {
+        if !self.screenshot_pending {
+            return;
+        }
+        // 要求は自分だけが出すので、届いた Screenshot イベントは自分の要求への返答
+        let image = ctx.input(|i| {
+            i.raw.events.iter().rev().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        let Some(image) = image else {
+            return; // まだ届いていない(撮影は数フレーム遅れる)
+        };
+        self.screenshot_pending = false;
+        let result = (|| -> Result<PathBuf, String> {
+            let dir = screenshots_dir();
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("{} を作れません: {e}", dir.display()))?;
+            let path = dir.join("ui-latest.png");
+            let [w, h] = image.size;
+            // ColorImage::as_raw は RGBA8 の行連続(画面はスクショなので α=255)
+            image::save_buffer(
+                &path,
+                image.as_raw(),
+                w as u32,
+                h as u32,
+                image::ExtendedColorType::Rgba8,
+            )
+            .map_err(|e| format!("PNG の書き出しに失敗: {e}"))?;
+            Ok(path)
+        })();
+        self.status_msg = Some(match result {
+            Ok(path) => format!("UI スクショ保存(AI 用): {}", path.display()),
+            Err(e) => e,
+        });
+    }
+
     /// M7: 現在の全状態(湿レイヤー・乾燥レイヤー・線画・レイヤーごとパレット・レイヤー構成・
     /// 現行パレット・SimParams)を1ファイルへ保存する。GPU から読み戻して work::save へ渡す。
     /// 描きかけ(湿った絵の具含む)から翌日続けられるようにするのが目的
@@ -867,6 +927,13 @@ impl eframe::App for PaintApp {
 
         // M4.5d/M6: 統一 Undo/Redo(Ctrl+Z / Ctrl+Shift+Z)。線画・水彩の両方を振り分ける
         self.handle_undo_shortcuts(ui.ctx());
+
+        // UI スクショ(AI 用): 外部(AI の Bash)が request-shot を書いたら撮影要求を出す。
+        // 続けて、撮影要求済みなら結果イベントを受け取って固定パスへ保存する
+        if self.shot_watcher.take_request() {
+            self.request_ui_screenshot(ui.ctx());
+        }
+        self.poll_ui_screenshot(ui.ctx());
 
         egui::Panel::left("tools")
             .default_size(280.0)

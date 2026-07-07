@@ -173,6 +173,17 @@ impl PaintApp {
                 self.save_snapshot();
             }
         });
+        if ui
+            .button("📷 UI スクショ (AI 用)")
+            .on_hover_text(
+                "画面全体(パネル込みの UI レイアウト)を screenshots/ui-latest.png へ上書き保存する。\
+                 キャンバスだけの PNG スナップショットと違い、UI の見た目そのものを撮る。\
+                 AI が同じパスから最新の UI を読めるので、UI 改善ループで使う",
+            )
+            .clicked()
+        {
+            self.request_ui_screenshot(ui.ctx());
+        }
 
         // キャンバスサイズ(M8): 正方形 512/1024/2048。テクセル密度は据え置き=「広い紙」
         // (ブラシ・にじみの見た目スケールは変わらない)。変更は新規キャンバスの作り直しなので、

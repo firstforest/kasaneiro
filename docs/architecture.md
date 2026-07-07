@@ -130,7 +130,7 @@ paint:
   display.wgsl でフルスクリーン三角形を描画(合成・発色・デバッグ表示)
 ```
 
-ボタン駆動の単発パス: **bake**(乾かす=焼き込み)/ **fastdry**(水だけ除去)/ **rewet**(全面再湿潤)。PNG スナップショット(H6)は display と同じシェーダーでオフスクリーンに焼いて読み戻す。
+ボタン駆動の単発パス: **bake**(乾かす=焼き込み)/ **fastdry**(水だけ除去)/ **rewet**(全面再湿潤)。PNG スナップショット(H6)は display と同じシェーダーでオフスクリーンに焼いて読み戻す。**UI スクショ(H6、AI レビュー用)**は GPU でなく egui 経路: `ViewportCommand::Screenshot` で画面全体(パネル込み)の撮影を要求し、eframe が次フレーム以降に返す `Event::Screenshot`(`Arc<ColorImage>`)を `poll_ui_screenshot`([app/mod.rs](../src/app/mod.rs))が受け取って固定パス `screenshots/ui-latest.png` へ上書き保存する。AI が同じパスから最新 UI を読めるようにするのが目的で、キャンバス PNG(タイムスタンプ命名)と別物。撮影のトリガーは2経路 — UI ボタンと、**外部ファイル監視**(`ScreenshotWatcher`([gpu/hot_reload.rs](../src/gpu/hot_reload.rs))が `screenshots/request-shot` の作成/変更を notify で拾う。AI が Bash からこのファイルを書けば実行中アプリに撮影させられる。自身が書く `ui-latest.png` はファイル名で除外し撮影ループを防ぐ)。
 
 **作品保存(M7)のファイル形式**: プリセット等の軽い JSON と違い、作品は数十 MB の生 f32 テクスチャを含むため独自バイナリ1ファイル `works/*.mpaint`(git 管理外)にする。先頭に `MAGIC "MPW1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成 `[slot, visible]`・canvas_size・layer_count)を置き、続けて生 f32 ブロブを固定順(湿レイヤー3 → 乾燥レイヤー → 線画3 → 顔料 latent)で並べる([src/work.rs](../src/work.rs) の `encode`/`decode`)。**読込時は canvas_size(メタで `CANVAS_SIZES` を検証)が現在と違えば、そのサイズでキャンバスを作り直してから復元する**(M8。作品ファイルはサイズをまたいで持ち運べる)。線画の Undo 履歴(ストローク列)はテクスチャがあれば復元不要なので保存しない(読込直後の Undo/水彩1段 undo は効かない=履歴を破棄)。ファイル入出力を1モジュールに閉じ、将来 Web 版で保存先を差し替える余地を残す(plan §4)。
 
