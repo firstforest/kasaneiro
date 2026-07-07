@@ -115,7 +115,7 @@ impl PaintApp {
         if let Some(player) = &mut self.replay_ui.player
             && !player.advance(&mut self.params, &mut splats)
         {
-            self.replay_ui.player = None;
+            self.stop_replay();
         }
 
         // H6: 一時停止中は 0 ステップ(1ステップボタンが押されていれば 1)

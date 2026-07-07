@@ -97,7 +97,7 @@ impl PaintApp {
             }
             if self.replay_ui.player.is_some() {
                 if ui.button("■ 再生停止").clicked() {
-                    self.replay_ui.player = None;
+                    self.stop_replay();
                 }
                 ui.colored_label(egui::Color32::from_rgb(64, 160, 64), "再生中…");
             }

@@ -217,6 +217,7 @@ impl PaintApp {
                 recorder: None,
                 pending_recording: None,
                 player: None,
+                saved_channel: None,
             },
             status_msg: None,
             line_history: LineHistory::default(),
@@ -549,7 +550,21 @@ impl PaintApp {
             self.palette = palette;
             self.apply_palette();
         }
+        // 再生前の顔料スロットを退避(再生終了時に stop_replay が戻す)。
+        // 再生中の再開でも最初の値を保つよう、既に退避済みなら上書きしない
+        self.replay_ui.saved_channel.get_or_insert(self.params.brush_channel);
         self.replay_ui.player = Some(Player::new(recording));
+    }
+
+    /// 再生を止め、再生前に選択していた顔料スロットへ戻す。
+    /// Player::advance が params.brush_channel を記録値で上書きするため、戻さないと
+    /// 再生後に選択顔料が最後のストロークの色へ飛ぶ(params.tool は毎フレーム
+    /// self.tool から再同期されるので復元不要 — tools.rs)。
+    fn stop_replay(&mut self) {
+        self.replay_ui.player = None;
+        if let Some(channel) = self.replay_ui.saved_channel.take() {
+            self.params.brush_channel = channel;
+        }
     }
 
     /// 正規化ポインタイベント(input.rs)をストローク・記録(H5)・splat 列へ反映する。

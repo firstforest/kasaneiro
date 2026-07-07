@@ -120,4 +120,7 @@ pub struct ReplayUi {
     pub pending_recording: Option<Recording>,
     /// 再生中の状態(Some の間は記録済み入力を毎フレーム流し込む)
     pub player: Option<Player>,
+    /// 再生開始前に選択していた顔料スロット(再生終了時に戻す)。
+    /// Player::advance が params.brush_channel を記録値で上書きするため
+    pub saved_channel: Option<u32>,
 }
