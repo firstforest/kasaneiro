@@ -76,10 +76,9 @@ struct SimParams {
 // アクティブタイル(M6): シミュレーションを「濡れているタイル+ブラシ近傍」だけに絞る土台。
 // tilescan がタイルごとに濡れ/顔料/ブラシ有無を判定し、tiledilate が1タイル分ふくらませて
 // active フラグ(binding 11 = array<u32>)を作る。各シミュパスは非アクティブなタイルを素通しする。
-// TILE_SIZE = 1タイルの1辺テクセル数、TILES_PER_SIDE = キャンバス1辺のタイル数。
-// gpu/mod.rs の TILE_SIZE / TILES_PER_SIDE と一致させること(CANVAS_SIZE=512 前提。M8 で要更新)。
-const TILE_SIZE: u32 = 16u;
-const TILES_PER_SIDE: u32 = 32u;
+// TILE_SIZE(1タイルの1辺テクセル数)と TILES_PER_SIDE(キャンバス1辺のタイル数)は
+// キャンバスサイズ依存(M8)のため、このファイルではなく Rust 側(gpu/mod.rs の
+// shader_prelude)が const 2行を生成して本ファイルのさらに前に連結する。
 
 // テクセル座標 → タイルの線形 index(active 配列の添字)
 fn tile_index_of(p: vec2u) -> u32 {

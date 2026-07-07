@@ -173,5 +173,41 @@ impl PaintApp {
                 self.save_snapshot();
             }
         });
+
+        // キャンバスサイズ(M8): 正方形 512/1024/2048。テクセル密度は据え置き=「広い紙」
+        // (ブラシ・にじみの見た目スケールは変わらない)。変更は新規キャンバスの作り直しなので、
+        // 描きかけは作品保存(M7)してから
+        ui.horizontal(|ui| {
+            ui.label("キャンバスサイズ");
+            egui::ComboBox::from_id_salt("canvas_size")
+                .selected_text(format!("{0}×{0}", self.pending_canvas_size))
+                .show_ui(ui, |ui| {
+                    for s in paint_core::sim::CANVAS_SIZES {
+                        ui.selectable_value(&mut self.pending_canvas_size, s, format!("{s}×{s}"));
+                    }
+                });
+            if ui
+                .button("新規キャンバス")
+                .on_hover_text(
+                    "現在のキャンバスを破棄して選択サイズで作り直す(広い紙。テクセル密度は同じ)。\
+                     保存していない絵は消えるので、残すなら先に作品保存 (M7) を",
+                )
+                .clicked()
+            {
+                let size = self.pending_canvas_size;
+                self.recreate_canvas(size);
+                self.status_msg = Some(format!("新規キャンバス: {size}×{size}"));
+            }
+        });
+        if self.pending_canvas_size != self.canvas_size {
+            ui.label(
+                egui::RichText::new(format!(
+                    "現在 {0}×{0}(「新規キャンバス」で切り替え)",
+                    self.canvas_size
+                ))
+                .weak()
+                .small(),
+            );
+        }
     }
 }

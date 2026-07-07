@@ -5,11 +5,10 @@
 //! の保存/復元)で汎用 readback が要るようになったら R8 でここを一般化する。
 
 use super::GpuCanvas;
-use paint_core::sim::CANVAS_SIZE;
 use eframe::egui_wgpu::wgpu;
 
 impl GpuCanvas {
-    /// 現在のキャンバス表示を RGBA8(行連続、CANVAS_SIZE²)で読み戻す(H6 PNG スナップショット)。
+    /// 現在のキャンバス表示を RGBA8(行連続、size²)で読み戻す(H6 PNG スナップショット)。
     /// display と同じシェーダー・同じ表示モードで焼くため、画面に見えているものがそのまま残る。
     /// GPU 完了を同期で待つ(手動ボタン操作なので 1 フレームの停止は許容)。
     pub fn snapshot(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Vec<u8>, String> {
@@ -49,13 +48,14 @@ impl GpuCanvas {
                 buffer: &self.snapshot_buffer,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(CANVAS_SIZE * 4),
+                    // CANVAS_SIZES は 64 の倍数なので 256B 整列を満たす(M8)
+                    bytes_per_row: Some(self.size * 4),
                     rows_per_image: None,
                 },
             },
             wgpu::Extent3d {
-                width: CANVAS_SIZE,
-                height: CANVAS_SIZE,
+                width: self.size,
+                height: self.size,
                 depth_or_array_layers: 1,
             },
         );

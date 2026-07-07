@@ -22,7 +22,7 @@ use crate::preset;
 use crate::replay::{self, Player, Recording};
 use crate::work;
 use paint_core::brush::StrokeState;
-use paint_core::sim::{CANVAS_SIZE, SimParams, Splat};
+use paint_core::sim::{DEFAULT_CANVAS_SIZE, SimParams, Splat};
 use paint_core::tool::{RasterTool, Tool, WetTool};
 use ui::{NamedStore, PaletteUi, PresetUi, ReplayUi, WorkUi};
 use eframe::egui;
@@ -152,6 +152,13 @@ pub struct PaintApp {
     view_center: egui::Vec2,
     /// M6: 表示回転(ラジアン、画面中心まわり)。Shift+ホイールで15°刻み、パネルで自由角。
     view_angle: f32,
+    /// M8: 現在のキャンバス1辺(GpuCanvas::size の写し。座標変換・保存が毎フレーム使うため
+    /// renderer ロックなしで読めるよう app 側にも持つ)。変更は recreate_canvas 経由のみ
+    canvas_size: u32,
+    /// M8: UI のサイズ選択(コンボボックス)。「新規キャンバス」で canvas_size へ反映される
+    pending_canvas_size: u32,
+    /// H1/M8: シェーダーディレクトリ(GpuCanvas の作り直しで再利用する)
+    shader_dir: PathBuf,
 }
 
 /// M6: ビューの最大拡大率(テクセルが潰れない範囲の実用上限)
@@ -172,6 +179,7 @@ impl PaintApp {
             &render_state.queue,
             render_state.target_format,
             dir.clone(),
+            DEFAULT_CANVAS_SIZE,
         );
         let shader_error = canvas.rebuild_pipelines(&render_state.device).err();
         if let Some(e) = &shader_error {
@@ -222,6 +230,43 @@ impl PaintApp {
             view_zoom: 1.0,
             view_center: egui::vec2(0.5, 0.5),
             view_angle: 0.0,
+            canvas_size: DEFAULT_CANVAS_SIZE,
+            pending_canvas_size: DEFAULT_CANVAS_SIZE,
+            shader_dir: dir,
+        }
+    }
+
+    /// M8: キャンバスを指定サイズで作り直す(現在の絵・履歴・ビューは破棄)。
+    /// テクスチャ・タイルバッファ・bind group が全てサイズ依存のため、GpuCanvas を丸ごと
+    /// 生成し直して callback_resources を差し替える(部分的な作り直しより単純で安全。
+    /// 旧キャンバスは差し替えで drop され VRAM が返る)。現行パレット・SimParams は引き継ぐ
+    fn recreate_canvas(&mut self, size: u32) {
+        let mut canvas = GpuCanvas::new(
+            &self.render_state.device,
+            &self.render_state.queue,
+            self.render_state.target_format,
+            self.shader_dir.clone(),
+            size,
+        );
+        self.shader_error = canvas.rebuild_pipelines(&self.render_state.device).err();
+        // 新キャンバスは既定パレットで生成されるので、現行パレットを書き直して引き継ぐ
+        canvas.set_palette(&self.render_state.queue, &self.palette);
+        self.render_state
+            .renderer
+            .write()
+            .callback_resources
+            .insert(canvas);
+        self.canvas_size = size;
+        self.pending_canvas_size = size;
+        // 旧キャンバス由来の状態は全て無効: 履歴・ストローク・ビューを初期化し、
+        // 消えた乾燥レイヤーを選択していたら水彩へ戻す
+        self.line_history.clear();
+        self.undo_stack.clear();
+        self.stroke.end();
+        self.painting = false;
+        self.reset_view();
+        if matches!(self.active_layer, ActiveLayer::Dried(_)) {
+            self.select_layer(ActiveLayer::Wet);
         }
     }
 
@@ -291,11 +336,11 @@ impl PaintApp {
     }
 
     /// M6: 画面座標(キャンバス枠内)をキャンバステクセル座標へ写す。ビュー変換(パン/ズーム/回転)込み。
-    /// texel = (center + R(θ)·(画面uv − 0.5)·span) × CANVAS_SIZE。描画・スポイトの共通経路
+    /// texel = (center + R(θ)·(画面uv − 0.5)·span) × キャンバス1辺。描画・スポイトの共通経路
     fn screen_to_texel(&self, pos: egui::Pos2, rect: egui::Rect) -> egui::Vec2 {
         let d = (pos - rect.min) / rect.width().max(1.0) - egui::vec2(0.5, 0.5);
         let cuv = self.view_center + self.view_rotate(d) * (1.0 / self.view_zoom);
-        cuv * CANVAS_SIZE as f32
+        cuv * self.canvas_size as f32
     }
 
     /// レイヤー選択(右のレイヤーパネル)。レイヤーごとにツール系統が決まっているため、
@@ -623,9 +668,10 @@ impl PaintApp {
         // M6: snapshot は display と同じビュー変換(パン/ズーム/回転)込みで焼くので、
         // 画面 uv でそのまま索引する(= カーソル下に見えている画素)。screen_to_texel は
         // キャンバステクセルなので拡大・回転時にはズレる(zoom=1・無回転でのみ一致)
+        let size = self.canvas_size;
         let su = (pos - rect.min) / rect.width().max(1.0);
-        let x = ((su.x * CANVAS_SIZE as f32) as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
-        let y = ((su.y * CANVAS_SIZE as f32) as i32).clamp(0, CANVAS_SIZE as i32 - 1) as u32;
+        let x = ((su.x * size as f32) as i32).clamp(0, size as i32 - 1) as u32;
+        let y = ((su.y * size as f32) as i32).clamp(0, size as i32 - 1) as u32;
         let data = {
             let renderer = self.render_state.renderer.read();
             match renderer.callback_resources.get::<GpuCanvas>() {
@@ -642,8 +688,8 @@ impl PaintApp {
                 return;
             }
         };
-        // snapshot は RGBA8 の行連続(bytes_per_row = CANVAS_SIZE*4、パディングなし)
-        let idx = ((y * CANVAS_SIZE + x) * 4) as usize;
+        // snapshot は RGBA8 の行連続(bytes_per_row = キャンバス1辺×4、パディングなし)
+        let idx = ((y * size + x) * 4) as usize;
         let rgb = [data[idx], data[idx + 1], data[idx + 2]];
         let slot = self.params.brush_channel.min(3) as usize;
         self.palette.pigments[slot].rgb = rgb;
@@ -683,8 +729,8 @@ impl PaintApp {
             image::save_buffer(
                 &path,
                 &data,
-                CANVAS_SIZE,
-                CANVAS_SIZE,
+                self.canvas_size,
+                self.canvas_size,
                 image::ExtendedColorType::Rgba8,
             )
             .map_err(|e| format!("PNG の書き出しに失敗: {e}"))?;
@@ -717,6 +763,8 @@ impl PaintApp {
                 })
                 .collect();
             work::WorkFile {
+                // GpuCanvas の実寸を直接読む(app 側ミラー canvas_size との取り違え防止)
+                canvas_size: canvas.size(),
                 params: self.params,
                 palette: self.palette.clone(),
                 layers,
@@ -736,6 +784,11 @@ impl PaintApp {
                 return;
             }
         };
+        // M8: 保存時のサイズが現在と違えば、そのサイズでキャンバスを作り直してから復元する
+        // (テクスチャ寸法が一致しないと書き戻せない。サイズは decode 済み = CANVAS_SIZES 検証済み)
+        if file.canvas_size != self.canvas_size {
+            self.recreate_canvas(file.canvas_size);
+        }
         // GPU 側(テクスチャ・レイヤー・パレット)を復元
         let result: Result<(), String> = {
             let mut renderer = self.render_state.renderer.write();

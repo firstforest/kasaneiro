@@ -5,25 +5,33 @@
 //! bind group、pipeline layout をまとめて確保して `GpuCanvas` を組み立てる。パイプライン本体は
 //! WGSL の実行時ロード(H1)に委ねるため、ここでは `pipelines: None` で始める。
 
-use super::{GpuCanvas, LayerUniform, MAX_LAYERS, PAPER_SEED, SIM_FORMAT, TEX_KINDS, ViewUniform};
+use super::{GpuCanvas, LayerUniform, MAX_LAYERS, PAPER_SEED, SIM_FORMAT, TEX_KINDS, TILE_SIZE, ViewUniform};
 use paint_core::paper;
-use paint_core::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
+use paint_core::sim::{CANVAS_SIZES, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::wgpu;
 use std::path::PathBuf;
 
 impl GpuCanvas {
+    /// `size` = キャンバス1辺(M8。`CANVAS_SIZES` のいずれか)。全テクスチャ・バッファの
+    /// 寸法がここで固定されるため、サイズ変更はインスタンスの作り直しで行う
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target_format: wgpu::TextureFormat,
         shader_dir: PathBuf,
+        size: u32,
     ) -> Self {
+        // CANVAS_SIZES 以外は想定外(64 の倍数 = 読み戻し行の 256B 整列、TILE_SIZE の倍数が前提)
+        assert!(
+            CANVAS_SIZES.contains(&size),
+            "未対応のキャンバスサイズです: {size}(選択肢: {CANVAS_SIZES:?})"
+        );
         let make_texture = |label: &str| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
-                    width: CANVAS_SIZE,
-                    height: CANVAS_SIZE,
+                    width: size,
+                    height: size,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -56,8 +64,8 @@ impl GpuCanvas {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("wet_backup"),
                 size: wgpu::Extent3d {
-                    width: CANVAS_SIZE,
-                    height: CANVAS_SIZE,
+                    width: size,
+                    height: size,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -74,8 +82,8 @@ impl GpuCanvas {
         let dried_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("dried_layers"),
             size: wgpu::Extent3d {
-                width: CANVAS_SIZE,
-                height: CANVAS_SIZE,
+                width: size,
+                height: size,
                 depth_or_array_layers: MAX_LAYERS as u32,
             },
             mip_level_count: 1,
@@ -115,8 +123,8 @@ impl GpuCanvas {
         let paper_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("paper_height"),
             size: wgpu::Extent3d {
-                width: CANVAS_SIZE,
-                height: CANVAS_SIZE,
+                width: size,
+                height: size,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -126,7 +134,8 @@ impl GpuCanvas {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let heights = paper::generate(CANVAS_SIZE, PAPER_SEED);
+        // ノイズはテクセル座標基準なので、サイズを変えても紙目の細かさは不変(M8 の「広い紙」)
+        let heights = paper::generate(size, PAPER_SEED);
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &paper_texture,
@@ -137,12 +146,12 @@ impl GpuCanvas {
             bytemuck::cast_slice(&heights),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(CANVAS_SIZE * 4),
+                bytes_per_row: Some(size * 4),
                 rows_per_image: None,
             },
             wgpu::Extent3d {
-                width: CANVAS_SIZE,
-                height: CANVAS_SIZE,
+                width: size,
+                height: size,
                 depth_or_array_layers: 1,
             },
         );
@@ -154,8 +163,8 @@ impl GpuCanvas {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
-                    width: CANVAS_SIZE,
-                    height: CANVAS_SIZE,
+                    width: size,
+                    height: size,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -189,8 +198,8 @@ impl GpuCanvas {
         let snapshot_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("snapshot"),
             size: wgpu::Extent3d {
-                width: CANVAS_SIZE,
-                height: CANVAS_SIZE,
+                width: size,
+                height: size,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -201,10 +210,10 @@ impl GpuCanvas {
             view_formats: &[],
         });
         let snapshot_view = snapshot_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        // rgba8 1 行 = CANVAS_SIZE×4 バイト。512 なら 2048 で copy の 256 バイト整列を満たす
+        // rgba8 1 行 = size×4 バイト。CANVAS_SIZES は 64 の倍数なので copy の 256 バイト整列を満たす
         let snapshot_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("snapshot_readback"),
-            size: (CANVAS_SIZE * CANVAS_SIZE * 4) as u64,
+            size: (size * size * 4) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -266,11 +275,13 @@ impl GpuCanvas {
         });
         queue.write_buffer(&view_buffer, 0, bytemuck::bytes_of(&ViewUniform::default()));
 
-        // アクティブタイル(M6): タイルごとの計算有効フラグ(u32 × NUM_TILES)。
+        // アクティブタイル(M6): タイルごとの計算有効フラグ(u32 × タイル総数)。
         // raw = tilescan の生フラグ、active = tiledilate で1タイル膨張した最終フラグ。
         // シミュ各パス(binding 11)と display(binding 12)が active を読む。
         // 毎フレーム tilescan が全要素を書き直すので初期値は問わない(zero 初期化のまま)
-        let tile_flags_size = (super::NUM_TILES as usize * std::mem::size_of::<u32>()) as u64;
+        let tiles_per_side = size / TILE_SIZE;
+        let num_tiles = tiles_per_side * tiles_per_side;
+        let tile_flags_size = (num_tiles as usize * std::mem::size_of::<u32>()) as u64;
         let raw_active_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("tile_raw_active"),
             size: tile_flags_size,
@@ -739,6 +750,8 @@ impl GpuCanvas {
         let mut canvas = Self {
             shader_dir,
             target_format,
+            size,
+            tiles_per_side,
             textures,
             sim_views,
             wet_backup,

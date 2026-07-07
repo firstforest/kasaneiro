@@ -2,7 +2,7 @@
 
 実装の構造と設計判断をまとめる。要件は [requirements.md](requirements.md)、パラメータの意味は [parameters.md](parameters.md)、現在地は [status.md](status.md) が正典。
 
-最終更新: 2026-07-07(M6 完了。ビューにキャンバス回転を追加=パン/ズーム/回転)
+最終更新: 2026-07-07(M8 キャンバスサイズ可変化=512/1024/2048、R9 の値化と WGSL プレリュード連結)
 
 ## 1. 技術スタック
 
@@ -30,7 +30,7 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │  └─ paint-core/         CPU 純粋部(依存は bytemuck + serde のみ)
 │     └─ src/
 │        ├─ lib.rs        crate ルート(sim / brush / paper / replay / tool を公開)
-│        ├─ sim.rs        SimParams(全パラメータの唯一の置き場)・Splat・CANVAS_SIZE
+│        ├─ sim.rs        SimParams(全パラメータの唯一の置き場)・Splat・CANVAS_SIZES(M8)
 │        ├─ brush.rs      ストローク → splat 列(位置補間、筆圧の線形補間)
 │        ├─ paper.rs      紙ハイトテクスチャの CPU 生成(値ノイズ3成分)
 │        ├─ replay.rs     ストローク記録・再生モデル(H5。Recorder / Player)
@@ -77,7 +77,7 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 
 ## 3. GPU リソース
 
-キャンバス = シミュレーション解像度 512²(`CANVAS_SIZE`)。
+キャンバス = シミュレーション解像度。**M8 でサイズ可変化(R9 の値化)**: 選択肢は `CANVAS_SIZES = [512, 1024, 2048]`(正方形のみ)、既定は `DEFAULT_CANVAS_SIZE = 512`(試行錯誤は軽いサイズで回す)。実行時の値は `GpuCanvas.size` が正典で、全テクスチャ・dispatch・読み戻しの寸法がここから決まる。**サイズ変更 = GpuCanvas の作り直し**(`PaintApp::recreate_canvas`。テクスチャ・タイルバッファ・bind group が全てサイズ依存のため部分再構築より単純で安全。旧インスタンスは callback_resources の差し替えで drop)。UI は「制御 (H6)」のサイズ選択+「新規キャンバス」。64 の倍数に限定しているので読み戻し(snapshot/persist)の行バイト数は常に 256B 整列=パディング不要。用途は「広い紙」(テクセル密度据え置き)なので `diffuse_iters` 等のテクセル単位パラメータは再調整不要(plan §3 M8)。VRAM は 2048² で計 ~1.2GB(乾燥レイヤー8枚 512MB が支配的。窮屈なら `MAX_LAYERS` 削減)。
 
 | テクスチャ | 形式 | 内容 |
 |---|---|---|
@@ -89,11 +89,11 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 | 線画(M4.5a/c) | r32float × 3(鉛筆・ペン・ハイライト、静的な read_write) | r = インク濃度/不透明度 0..1。ping-pong せず `linesplat.wgsl` が read_write storage で直接蓄積。display は sampled で読み色の上に合成。清書ペンは compute 側も binding 10 で読む(M4.5b の透水率境界) |
 | 湿レイヤー退避(M6) | rgba32float × 3(水・浮遊・沈着、COPY のみ) | 水彩ストローク開始時に `current` の3テクスチャを GPU 間コピーで退避。Ctrl+Z(水彩=1段 undo)で `current` へ書き戻す。bind せずコピーの読み元/書き先にしかならない。最新1本ぶんだけ保持 |
 
-アクティブタイル(M6)は**テクスチャでなく storage バッファ**を2本持つ: `raw_active` / `active`(いずれも `array<u32, NUM_TILES>`、NUM_TILES = (512/16)² = 1024)。tilescan がタイルごとの生フラグを raw に書き、tiledilate が1タイル膨張して active を確定する。バッファ実体は bind group が保持する(GpuCanvas のフィールドには持たない)。
+アクティブタイル(M6)は**テクスチャでなく storage バッファ**を2本持つ: `raw_active` / `active`(いずれも `array<u32>`、要素数 = (size/16)²。512²で1024個・2048²で16384個)。tilescan がタイルごとの生フラグを raw に書き、tiledilate が1タイル膨張して active を確定する。バッファ実体は bind group が保持する(GpuCanvas のフィールドには持たない)。
 
 **作品保存の読み戻し用途(M7)**: 全状態を1ファイルに焼くため、乾燥レイヤー array・線画3枚・顔料 latent uniform に `COPY_SRC`(読み戻し)/ `COPY_DST`(書き戻し)を付けてある(湿レイヤーは M6 の undo 退避で既に COPY 付き)。乾燥レイヤーの実体テクスチャは従来スライスビューしか保持していなかったが、`copy_texture_to_buffer` に実体が要るため `dried_texture` フィールドを追加した。`export_state`/`import_state`([src/gpu/persist.rs](../src/gpu/persist.rs))が「GPU ⇄ f32 配列」を担い、parity は保存せず読込時に `current=0` へ正規化する(次フレームの sim が 0 を読んで 1 へ書くので ping-pong の一貫性は保たれる)。
 
-**ping-pong は3テクスチャまとめて単一の `current`** で管理する。各 compute パスは3枚の src を読み、3枚の dst を必ず全テクセル書いて(変更しない分は素通し)反転する。パスごとに index を分けるより単純で、512² では素通しコストは十分軽い。線画テクスチャ(M4.5a/c)は ping-pong せず read_write で自己更新するため `current` に依存しない。
+**ping-pong は3テクスチャまとめて単一の `current`** で管理する。各 compute パスは3枚の src を読み、3枚の dst を必ず全テクセル書いて(変更しない分は素通し)反転する。パスごとに index を分けるより単純で、素通しコストはアクティブタイル(M6)が濡れ面積比例に絞る。線画テクスチャ(M4.5a/c)は ping-pong せず read_write で自己更新するため `current` に依存しない。
 
 compute の binding は種別ごとに5レイアウト(R3 の `ComputeLayout`):
 - **共通**(splat 系ほか、[assets/shaders/common.wgsl](../assets/shaders/common.wgsl)): `0/1` 水 src/dst、`2/3` 浮遊 src/dst、`4/5` 沈着 src/dst、`6` SimParams uniform、`7` splat storage、`8` 紙ハイト、`9` 顔料個性 uniform、`10` 清書ペンの線画(M4.5b、透水率境界。読むのは velocity/diffuse だけで他パスは宣言せず素通し)、`11` アクティブタイル有効フラグ(M6、storage read。splat/velocity/relax/flowout/advect/diffuse/transfer が読み、非アクティブなタイルを素通しする。fastdry/rewet は宣言せず全面計算)
@@ -132,13 +132,13 @@ paint:
 
 ボタン駆動の単発パス: **bake**(乾かす=焼き込み)/ **fastdry**(水だけ除去)/ **rewet**(全面再湿潤)。PNG スナップショット(H6)は display と同じシェーダーでオフスクリーンに焼いて読み戻す。
 
-**作品保存(M7)のファイル形式**: プリセット等の軽い JSON と違い、作品は数十 MB の生 f32 テクスチャを含むため独自バイナリ1ファイル `works/*.mpaint`(git 管理外)にする。先頭に `MAGIC "MPW1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成 `[slot, visible]`・canvas_size・layer_count)を置き、続けて生 f32 ブロブを固定順(湿レイヤー3 → 乾燥レイヤー → 線画3 → 顔料 latent)で並べる([src/work.rs](../src/work.rs) の `encode`/`decode`)。読込時は canvas_size を現在の `CANVAS_SIZE` と照合(不一致はエラー。M8 のサイズ可変化に備える)。線画の Undo 履歴(ストローク列)はテクスチャがあれば復元不要なので保存しない(読込直後の Undo/水彩1段 undo は効かない=履歴を破棄)。ファイル入出力を1モジュールに閉じ、将来 Web 版で保存先を差し替える余地を残す(plan §4)。
+**作品保存(M7)のファイル形式**: プリセット等の軽い JSON と違い、作品は数十 MB の生 f32 テクスチャを含むため独自バイナリ1ファイル `works/*.mpaint`(git 管理外)にする。先頭に `MAGIC "MPW1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成 `[slot, visible]`・canvas_size・layer_count)を置き、続けて生 f32 ブロブを固定順(湿レイヤー3 → 乾燥レイヤー → 線画3 → 顔料 latent)で並べる([src/work.rs](../src/work.rs) の `encode`/`decode`)。**読込時は canvas_size(メタで `CANVAS_SIZES` を検証)が現在と違えば、そのサイズでキャンバスを作り直してから復元する**(M8。作品ファイルはサイズをまたいで持ち運べる)。線画の Undo 履歴(ストローク列)はテクスチャがあれば復元不要なので保存しない(読込直後の Undo/水彩1段 undo は効かない=履歴を破棄)。ファイル入出力を1モジュールに閉じ、将来 Web 版で保存先を差し替える余地を残す(plan §4)。
 
 ### シェーダー一覧(assets/shaders/)
 
 | ファイル | 役割 |
 |---|---|
-| common.wgsl | 共通定義(SimParams / Splat 構造体、濡れ判定、バイリニア補間)。Rust 側が各シェーダーの先頭に連結してコンパイル |
+| common.wgsl | 共通定義(SimParams / Splat 構造体、濡れ判定、バイリニア補間)。Rust 側が各シェーダーの先頭に連結してコンパイル。さらに前にキャンバスサイズ依存の const 2行(TILE_SIZE / TILES_PER_SIDE)を `shader_prelude`(gpu/mod.rs)が生成して連結する(M8) |
 | splat.wgsl | ブラシ入力。tool(描画/リフト/消去/水筆/ならし)で分岐 |
 | velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率 `perm` を速度場・にじみ拡張に掛ける(M4.5b) |
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
@@ -187,7 +187,7 @@ paint:
 - **ゲート**: 各シミュパス(splat/velocity/relax/flowout/advect/diffuse/transfer)は共通レイアウトの binding 11 で `active` を読み、**非アクティブなタイルは水/浮遊/沈着の3テクスチャを src→dst に素通しして return**(ping-pong の両バッファを常に一致させるため、計算を省いても必ず書く)。`tile_index_of`(common.wgsl)でテクセル→タイル添字に写す
 - **実行順とハザード**: sim_pass の先頭で tilescan → tiledilate → splat → sim ループを同一 compute パスに積む。tiledilate が書いた `active` を後続パスが読む storage RAW は、テクスチャ ping-pong と同様に wgpu が自動バリアで解決する
 - **退避と可視化**: `active_tiles=0` で tilescan が全タイルを有効化=従来どおり全面計算(A/B・不具合時の退避)。display のモード7が `active` を可視化(計算中=緑 / 素通し=暗く + タイル格子)して「コストが濡れ面積比例か」を目視できる
-- **SimParams とは別に view(パン/ズーム)を持つのと同じく、これは表示でなく計算範囲のノブ**。TILE_SIZE / TILES_PER_SIDE は common.wgsl と gpu/mod.rs で一致させる(CANVAS_SIZE=512 前提。M8 で要更新)
+- **SimParams とは別に view(パン/ズーム)を持つのと同じく、これは表示でなく計算範囲のノブ**。TILE_SIZE / TILES_PER_SIDE の WGSL 定数はキャンバスサイズ依存(M8)のため、gpu/mod.rs の `shader_prelude` が生成して連結する(Rust 側定義が唯一の正典。手動一致は不要になった)
 
 ## 7. 入力の経路
 
@@ -206,7 +206,7 @@ paint:
 
 - WGSL は `assets/shaders/` から実行時ロード。notify で監視し、保存で `rebuild_pipelines()`。コンパイルエラー時は `pipelines = None` にして描画をスキップ(クラッシュしない)+エラーオーバーレイ表示、直前の正常なパイプラインで続行
 - compute パイプラインは `COMPUTE_SHADERS` の表(WGSL ファイル名 → レイアウト種別)を回して作る(R3。**シェーダー追加 = 表に1行**)。名前引き `Pipelines::compute("splat.wgsl")` で参照し、パス実行順は `prepare()` のハードコードが正典。コンパイルエラーの行番号は common.wgsl 連結分ずれるので `remap_shader_error_lines` で補正して表示(R3。純関数、cargo test 対象)
-- SimParams / Splat の WGSL 構造体定義は common.wgsl に1箇所化し、Rust 側で各シェーダーの先頭に連結 — 「パラメータ追加 = WGSL 1行」をシェーダーが増えても維持
+- SimParams / Splat の WGSL 構造体定義は common.wgsl に1箇所化し、Rust 側で各シェーダーの先頭に連結 — 「パラメータ追加 = WGSL 1行」をシェーダーが増えても維持。**連結は3段**(M8): `shader_prelude`(キャンバスサイズ依存の const 2行を Rust が生成)+ common.wgsl + シェーダー本体。行番号補正(R3)はプレリュード込みのプレフィックス行数で行う
 - SimParams は毎フレーム uniform へ書くのでスライダーは即時反映。WGSL uniform 規則(16 バイト整列)に合わせ、末尾の `_pad` を置き換えてからフィールドを増やす
 
 ## 9. テスト戦略

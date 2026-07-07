@@ -35,7 +35,7 @@ mod snapshot;
 pub use callback::CanvasCallback;
 pub use persist::WorkTextures;
 
-use paint_core::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
+use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
 use shader_error::remap_shader_error_lines;
 use eframe::egui_wgpu::wgpu;
 use std::collections::HashMap;
@@ -73,12 +73,19 @@ const MAX_RELAX_ITERS: u32 = 64;
 /// 顔料拡散の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_DIFFUSE_ITERS: u32 = 32;
 
-/// アクティブタイル(M6): 1タイルの1辺テクセル数。common.wgsl の TILE_SIZE と一致させること
+/// アクティブタイル(M6): 1タイルの1辺テクセル数。WGSL 側の同名定数は
+/// `shader_prelude`(M8)が生成して連結するので、ここが唯一の定義
 const TILE_SIZE: u32 = 16;
-/// キャンバス1辺あたりのタイル数(= CANVAS_SIZE / TILE_SIZE)。common.wgsl の TILES_PER_SIDE と一致
-const TILES_PER_SIDE: u32 = CANVAS_SIZE / TILE_SIZE;
-/// アクティブタイルのフラグ数(タイル総数 = active/raw バッファの要素数)
-const NUM_TILES: u32 = TILES_PER_SIDE * TILES_PER_SIDE;
+
+/// キャンバスサイズ依存の WGSL 定数(M8)。common.wgsl より前に連結する。
+/// タイル数はキャンバス1辺から決まるため、ファイル(ホットリロード対象)でなく
+/// Rust が生成する。shader_compile テストは既定サイズ(512)相当の同じ2行で検証する
+fn shader_prelude(size: u32) -> String {
+    format!(
+        "const TILE_SIZE: u32 = {TILE_SIZE}u;\nconst TILES_PER_SIDE: u32 = {}u;\n",
+        size / TILE_SIZE
+    )
+}
 
 /// compute シェーダーのバインドグループレイアウト種別(R3)。
 /// ほとんどは共通レイアウト、bake だけ専用(乾燥レイヤースライス binding 9)。
@@ -208,6 +215,12 @@ struct LayerUniform {
 pub struct GpuCanvas {
     shader_dir: PathBuf,
     target_format: wgpu::TextureFormat,
+    /// キャンバス1辺(テクセル。M8 でサイズ可変化=R9 の値化)。全テクスチャ・dispatch・
+    /// 読み戻しの寸法がここから決まる。サイズ変更はキャンバスの作り直し(app::recreate_canvas)
+    size: u32,
+    /// キャンバス1辺あたりのタイル数(= size / TILE_SIZE。M6 アクティブタイル)。
+    /// WGSL 側の TILES_PER_SIDE(shader_prelude が生成)と一致する
+    tiles_per_side: u32,
     /// [水, 浮遊顔料, 沈着顔料] × ping-pong 2枚
     textures: [[wgpu::Texture; 2]; TEX_KINDS],
     /// textures と同順のビュー(bake の bind group をボタン押下時に組むため保持)
@@ -267,12 +280,18 @@ pub struct GpuCanvas {
 }
 
 impl GpuCanvas {
+    /// キャンバス1辺(テクセル。M8)。app 側の座標変換・保存が参照する
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
     /// キャンバスをリセット(水・速度・濡れマスク・顔料をゼロに = 乾いた白い紙)。
     /// 乾燥レイヤー(M2)も全て破棄する(スロットは焼き込み時に上書きされるため
     /// テクスチャ自体はクリア不要。count=0 で表示から消える)
     pub fn clear(&mut self, queue: &wgpu::Queue) {
+        let size = self.size;
         // rgba32float 1 テクセル = 16 バイト。全ゼロ = 水なし・顔料なし・全面乾燥
-        let zeros = vec![0u8; (CANVAS_SIZE * CANVAS_SIZE * 16) as usize];
+        let zeros = vec![0u8; (size * size * 16) as usize];
         for texture in self.textures.iter().flatten() {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
@@ -284,12 +303,12 @@ impl GpuCanvas {
                 &zeros,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(CANVAS_SIZE * 16),
+                    bytes_per_row: Some(size * 16),
                     rows_per_image: None,
                 },
                 wgpu::Extent3d {
-                    width: CANVAS_SIZE,
-                    height: CANVAS_SIZE,
+                    width: size,
+                    height: size,
                     depth_or_array_layers: 1,
                 },
             );
@@ -303,15 +322,15 @@ impl GpuCanvas {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                &zeros[..(CANVAS_SIZE * CANVAS_SIZE * 4) as usize],
+                &zeros[..(size * size * 4) as usize],
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(CANVAS_SIZE * 4),
+                    bytes_per_row: Some(size * 4),
                     rows_per_image: None,
                 },
                 wgpu::Extent3d {
-                    width: CANVAS_SIZE,
-                    height: CANVAS_SIZE,
+                    width: size,
+                    height: size,
                     depth_or_array_layers: 1,
                 },
             );
@@ -336,8 +355,8 @@ impl GpuCanvas {
     /// backup(current→退避)/ restore(退避→current)の共通実装。`backup=true` で退避方向。
     fn copy_wet(&self, device: &wgpu::Device, queue: &wgpu::Queue, label: &str, backup: bool) {
         let extent = wgpu::Extent3d {
-            width: CANVAS_SIZE,
-            height: CANVAS_SIZE,
+            width: self.size,
+            height: self.size,
             depth_or_array_layers: 1,
         };
         fn at(texture: &wgpu::Texture) -> wgpu::TexelCopyTextureInfo<'_> {
@@ -369,7 +388,7 @@ impl GpuCanvas {
     /// 線画テクスチャ1枚をゼロに戻す(M4.5d の Undo で対象を再ラスタライズする前に呼ぶ)。
     /// r32float = 4 バイト/テクセル
     pub fn clear_line(&self, queue: &wgpu::Queue, target: LineTarget) {
-        let zeros = vec![0u8; (CANVAS_SIZE * CANVAS_SIZE * 4) as usize];
+        let zeros = vec![0u8; (self.size * self.size * 4) as usize];
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.line_textures[target.index()],
@@ -380,12 +399,12 @@ impl GpuCanvas {
             &zeros,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(CANVAS_SIZE * 4),
+                bytes_per_row: Some(self.size * 4),
                 rows_per_image: None,
             },
             wgpu::Extent3d {
-                width: CANVAS_SIZE,
-                height: CANVAS_SIZE,
+                width: self.size,
+                height: self.size,
                 depth_or_array_layers: 1,
             },
         );
@@ -405,7 +424,7 @@ impl GpuCanvas {
     ) -> Result<(), String> {
         let pipelines = self.pipelines.as_ref().ok_or("シェーダーが未ビルドです")?;
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(params));
-        let workgroups = CANVAS_SIZE.div_ceil(8);
+        let workgroups = self.size.div_ceil(8);
         for chunk in splats.chunks(MAX_SPLATS) {
             let header = SplatHeader {
                 count: chunk.len() as u32,
@@ -536,7 +555,7 @@ impl GpuCanvas {
                 label: Some("bake_pass"),
                 timestamp_writes: None,
             });
-            let workgroups = CANVAS_SIZE.div_ceil(8);
+            let workgroups = self.size.div_ceil(8);
             pass.set_pipeline(pipelines.compute("bake.wgsl"));
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroups, workgroups, 1);
@@ -579,7 +598,7 @@ impl GpuCanvas {
                 label: Some(label),
                 timestamp_writes: None,
             });
-            let workgroups = CANVAS_SIZE.div_ceil(8);
+            let workgroups = self.size.div_ceil(8);
             pass.set_pipeline(pick(pipelines));
             pass.set_bind_group(0, &self.compute_bind_groups[self.current], &[]);
             pass.dispatch_workgroups(workgroups, workgroups, 1);
@@ -598,9 +617,11 @@ impl GpuCanvas {
             std::fs::read_to_string(&path)
                 .map_err(|e| format!("{} を読めません: {e}", path.display()))
         };
-        let common = read("common.wgsl")?;
-        // common.wgsl を先頭に連結する分、コンパイルエラーの行番号がずれる。
-        // 補正のため連結プレフィックス(common + "\n")が占める行数を数えておく(R3)
+        // キャンバスサイズ依存の定数(M8)を common.wgsl の前にさらに連結する。
+        // 各シェーダー = プレリュード + common.wgsl + 本体、の3段
+        let common = format!("{}{}", shader_prelude(self.size), read("common.wgsl")?);
+        // 連結プレフィックスの分、コンパイルエラーの行番号がずれる。
+        // 補正のため連結プレフィックス(プレリュード + common + "\n")の行数を数えておく(R3)
         let prefix_lines = common.matches('\n').count() + 1;
         let load = |name: &str| -> Result<String, String> { Ok(format!("{common}\n{}", read(name)?)) };
 

@@ -10,10 +10,9 @@
 
 use super::{GpuCanvas, LATENT_TOTAL, TEX_KINDS};
 use eframe::egui_wgpu::wgpu;
-use paint_core::sim::CANVAS_SIZE;
 
 /// エクスポート時に読み戻した全テクスチャ / latent の生データ(f32)。GPU 非依存の中間表現。
-/// 各ブロブは行連続(パディングなし)。CANVAS_SIZE² を単位に並ぶ。
+/// 各ブロブは行連続(パディングなし)。キャンバス1辺²(M8 で可変)を単位に並ぶ。
 #[derive(Clone, PartialEq)]
 pub struct WorkTextures {
     /// [水, 浮遊, 沈着] 各 CANVAS²·4 f32(rgba32float、現在表示中の parity)
@@ -75,7 +74,7 @@ impl GpuCanvas {
         queue: &wgpu::Queue,
         work: &WorkTextures,
     ) -> Result<(), String> {
-        let texels = (CANVAS_SIZE * CANVAS_SIZE) as usize;
+        let texels = (self.size * self.size) as usize;
         // 湿レイヤー(rgba32float)を parity 0 へ
         for kind in 0..TEX_KINDS {
             if work.wet[kind].len() != texels * RGBA as usize {
@@ -111,7 +110,7 @@ impl GpuCanvas {
 
     /// 2D テクスチャ(または array の1スライス)を f32 配列へ読み戻す。
     /// `components` = テクセルあたりの f32 数(rgba32float=4 / r32float=1)。
-    /// CANVAS_SIZE=512 では行バイト数が 256 の倍数なのでパディングは生じない
+    /// CANVAS_SIZES(64 の倍数)では行バイト数が 256 の倍数なのでパディングは生じない
     fn read_texture(
         &self,
         device: &wgpu::Device,
@@ -120,8 +119,8 @@ impl GpuCanvas {
         base_layer: u32,
         components: u32,
     ) -> Result<Vec<f32>, String> {
-        let bytes_per_row = CANVAS_SIZE * components * 4;
-        let size = (bytes_per_row * CANVAS_SIZE) as u64;
+        let bytes_per_row = self.size * components * 4;
+        let size = (bytes_per_row * self.size) as u64;
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("work_texture_readback"),
             size,
@@ -151,8 +150,8 @@ impl GpuCanvas {
                 },
             },
             wgpu::Extent3d {
-                width: CANVAS_SIZE,
-                height: CANVAS_SIZE,
+                width: self.size,
+                height: self.size,
                 depth_or_array_layers: 1,
             },
         );
@@ -219,7 +218,7 @@ impl GpuCanvas {
         components: u32,
         data: &[f32],
     ) {
-        let bytes_per_row = CANVAS_SIZE * components * 4;
+        let bytes_per_row = self.size * components * 4;
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture,
@@ -238,8 +237,8 @@ impl GpuCanvas {
                 rows_per_image: None,
             },
             wgpu::Extent3d {
-                width: CANVAS_SIZE,
-                height: CANVAS_SIZE,
+                width: self.size,
+                height: self.size,
                 depth_or_array_layers: 1,
             },
         );

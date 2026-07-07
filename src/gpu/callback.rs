@@ -4,8 +4,8 @@
 //! prepare で compute パス(splat → シミュレーション本体)を積み、paint で表示する。
 //! パス実行順(prepare 内)はシミュレーションの心臓部で、ここがその正典(R3)。
 
-use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, TILES_PER_SIDE, ViewUniform};
-use paint_core::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
+use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, ViewUniform};
+use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
 
 /// 1フレーム分の描画データ。app.rs で組み立てて PaintCallback として渡す。
@@ -54,7 +54,7 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
 
         let mut current = canvas.current;
         if let Some(pipelines) = &canvas.pipelines {
-            let workgroups = CANVAS_SIZE.div_ceil(8);
+            let workgroups = canvas.size.div_ceil(8);
 
             // ラスタ線画(M4.5a/c): 対象の線画テクスチャ(read_write)へ直描きする。
             // 流体パスが清書ペンの線を sampled で読む(M4.5b の透水率)ため、同一 compute パスに
@@ -83,7 +83,7 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
             // 以降の splat / sim 各パスは active を読み、非アクティブなタイルを素通しする。
             // active_tiles=0 のときは tilescan が全タイルを有効化するので全面計算に戻る。
             // 同一パス内の storage RAW ハザードは wgpu が自動バリアで解決する(テクスチャ ping-pong と同様)
-            let tile_workgroups = TILES_PER_SIDE.div_ceil(8);
+            let tile_workgroups = canvas.tiles_per_side.div_ceil(8);
             pass.set_pipeline(pipelines.compute("tilescan.wgsl"));
             pass.set_bind_group(0, &canvas.tilescan_bind_groups[current], &[]);
             pass.dispatch_workgroups(tile_workgroups, tile_workgroups, 1);

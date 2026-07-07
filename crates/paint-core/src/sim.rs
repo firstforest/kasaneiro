@@ -17,8 +17,14 @@
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
-/// キャンバス(=シミュレーション)解像度。plan.md の決定に従い 512²。
-pub const CANVAS_SIZE: u32 = 512;
+/// 選択できるキャンバス(=シミュレーション)1辺(M8)。正方形のみ。
+/// いずれも 64 の倍数(readback の行バイト数が 256B 整列になる = パディング計算が不要)かつ
+/// タイルサイズ 16 の倍数(アクティブタイル M6 の格子に割り切れる)。
+/// 実行時の値は GpuCanvas が持ち、ここは選択肢と既定値だけを定義する(R9 の値化)
+pub const CANVAS_SIZES: [u32; 3] = [512, 1024, 2048];
+
+/// 起動時のキャンバス1辺。試行錯誤は軽い 512² で回す(plan.md §3 M8 = 反復速度の原則)
+pub const DEFAULT_CANVAS_SIZE: u32 = 512;
 
 /// 1フレームで GPU に送る splat の上限(storage buffer の固定長)
 pub const MAX_SPLATS: usize = 1024;

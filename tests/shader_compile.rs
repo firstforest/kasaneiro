@@ -1,14 +1,22 @@
 //! assets/shaders/ の WGSL がコンパイル可能かの検査。
 //! シミュレーションの挙動はテストしない方針(デバッグ表示 H4 で診断)だが、
 //! 実行時ロードのため cargo build では捕まらない「壊れた WGSL のコミット」だけは防ぐ。
-//! 連結ルール(common.wgsl を先頭に足す)は src/gpu/mod.rs の rebuild_pipelines() と同じ。
+//! 連結ルール(プレリュード + common.wgsl を先頭に足す)は src/gpu/mod.rs の
+//! rebuild_pipelines() と同じ。プレリュードはキャンバスサイズ依存の定数(M8。
+//! gpu/mod.rs の shader_prelude が生成)で、ここでは既定サイズ 512 相当の値で検証する。
 
 use std::path::Path;
+
+/// gpu/mod.rs の shader_prelude(512)と同じ2行
+const PRELUDE: &str = "const TILE_SIZE: u32 = 16u;\nconst TILES_PER_SIDE: u32 = 32u;\n";
 
 #[test]
 fn all_shaders_compile() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/shaders");
-    let common = std::fs::read_to_string(dir.join("common.wgsl")).expect("common.wgsl");
+    let common = format!(
+        "{PRELUDE}{}",
+        std::fs::read_to_string(dir.join("common.wgsl")).expect("common.wgsl")
+    );
 
     for name in [
         "splat.wgsl",

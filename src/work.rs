@@ -12,7 +12,7 @@
 //! (plan §4 の「保存の trait 抽象を維持」)。
 
 use crate::gpu::WorkTextures;
-use paint_core::sim::CANVAS_SIZE;
+use paint_core::sim::CANVAS_SIZES;
 use pigment::Palette;
 use paint_core::sim::SimParams;
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,7 @@ pub struct StoredLayer {
 /// ファイル先頭のメタ情報(JSON)。生 f32 ブロブの並びを解釈するための寸法も持つ
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct WorkMeta {
-    /// 保存時のキャンバス1辺。読込時に現在の CANVAS_SIZE と一致するか検査(M8 でサイズ可変化)
+    /// 保存時のキャンバス1辺。読込時は app がこのサイズでキャンバスを作り直して復元する(M8)
     canvas_size: u32,
     /// 乾燥レイヤーのスライス数(生ブロブの個数を決める)
     layer_count: u32,
@@ -47,6 +47,9 @@ struct WorkMeta {
 /// 1作品分の全状態(メタ + GPU テクスチャの生データ)。
 /// app が GpuCanvas から集めて save に渡す / load が返して app が復元する
 pub struct WorkFile {
+    /// キャンバス1辺(M8)。保存時のサイズがブロブの寸法を決め、読込時は app が
+    /// このサイズでキャンバスを作り直してから復元する
+    pub canvas_size: u32,
     pub params: SimParams,
     pub palette: Palette,
     pub layers: Vec<StoredLayer>,
@@ -97,7 +100,7 @@ pub fn load(name: &str) -> Result<WorkFile, String> {
 /// WorkFile → バイト列。MAGIC + メタ長 + メタ JSON + 生 f32 ブロブ(固定順)
 fn encode(work: &WorkFile) -> Result<Vec<u8>, String> {
     let meta = WorkMeta {
-        canvas_size: CANVAS_SIZE,
+        canvas_size: work.canvas_size,
         layer_count: work.textures.dried.len() as u32,
         params: work.params,
         palette: work.palette.clone(),
@@ -122,7 +125,7 @@ fn encode(work: &WorkFile) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// バイト列 → WorkFile。ブロブの並びはメタの canvas_size / layer_count と CANVAS_SIZE から決まる
+/// バイト列 → WorkFile。ブロブの並びはメタの canvas_size / layer_count から決まる
 fn decode(bytes: &[u8]) -> Result<WorkFile, String> {
     let mut cur = 0usize;
     if bytes.len() < 8 || &bytes[0..4] != MAGIC {
@@ -139,14 +142,15 @@ fn decode(bytes: &[u8]) -> Result<WorkFile, String> {
         serde_json::from_slice(&bytes[cur..meta_end]).map_err(|e| e.to_string())?;
     cur = meta_end;
 
-    if meta.canvas_size != CANVAS_SIZE {
+    // 選択肢にないサイズは不正データ扱い(壊れたメタで巨大確保に走らないための検査。M8)
+    if !CANVAS_SIZES.contains(&meta.canvas_size) {
         return Err(format!(
-            "キャンバスサイズが違います(保存={} / 現在={CANVAS_SIZE})",
+            "未対応のキャンバスサイズです(保存={} / 選択肢={CANVAS_SIZES:?})",
             meta.canvas_size
         ));
     }
 
-    let texels = (CANVAS_SIZE * CANVAS_SIZE) as usize;
+    let texels = (meta.canvas_size * meta.canvas_size) as usize;
     let rgba = texels * 4;
     let latent_len = crate::gpu::LATENT_TOTAL * 4;
 
@@ -167,6 +171,7 @@ fn decode(bytes: &[u8]) -> Result<WorkFile, String> {
     let latents = take_f32(bytes, &mut cur, latent_len)?;
 
     Ok(WorkFile {
+        canvas_size: meta.canvas_size,
         params: meta.params,
         palette: meta.palette,
         layers: meta.layers,
@@ -199,45 +204,68 @@ mod tests {
     use super::*;
 
     /// 実寸のダミーデータで encode → decode の往復を検査(形式・ブロブ順の回帰チェック)。
-    /// 値はインデックス由来の決定論値にして、並びの取り違えも検出できるようにする
+    /// 値はインデックス由来の決定論値にして、並びの取り違えも検出できるようにする。
+    /// M8: サイズ可変化に伴い、既定以外のキャンバスサイズでも往復できることを検査する
     #[test]
     fn roundtrip() {
-        let texels = (CANVAS_SIZE * CANVAS_SIZE) as usize;
-        let ramp = |base: f32, n: usize| -> Vec<f32> {
-            (0..n).map(|i| base + i as f32 * 1e-4).collect()
-        };
-        let textures = WorkTextures {
-            wet: [ramp(1.0, texels * 4), ramp(2.0, texels * 4), ramp(3.0, texels * 4)],
-            dried: vec![ramp(4.0, texels * 4), ramp(5.0, texels * 4)],
-            lines: [ramp(6.0, texels), ramp(7.0, texels), ramp(8.0, texels)],
-            latents: ramp(9.0, crate::gpu::LATENT_TOTAL * 4),
-        };
-        let work = WorkFile {
-            params: SimParams {
-                brush_radius: 12.5,
-                ..Default::default()
-            },
-            palette: Palette::default_palette(),
-            layers: vec![
-                StoredLayer { slot: 0, visible: true },
-                StoredLayer { slot: 1, visible: false },
-            ],
-            textures: textures.clone(),
-        };
+        for canvas_size in [512u32, 1024] {
+            let texels = (canvas_size * canvas_size) as usize;
+            let ramp = |base: f32, n: usize| -> Vec<f32> {
+                (0..n).map(|i| base + i as f32 * 1e-4).collect()
+            };
+            let textures = WorkTextures {
+                wet: [ramp(1.0, texels * 4), ramp(2.0, texels * 4), ramp(3.0, texels * 4)],
+                dried: vec![ramp(4.0, texels * 4), ramp(5.0, texels * 4)],
+                lines: [ramp(6.0, texels), ramp(7.0, texels), ramp(8.0, texels)],
+                latents: ramp(9.0, crate::gpu::LATENT_TOTAL * 4),
+            };
+            let work = WorkFile {
+                canvas_size,
+                params: SimParams {
+                    brush_radius: 12.5,
+                    ..Default::default()
+                },
+                palette: Palette::default_palette(),
+                layers: vec![
+                    StoredLayer { slot: 0, visible: true },
+                    StoredLayer { slot: 1, visible: false },
+                ],
+                textures: textures.clone(),
+            };
 
-        let bytes = encode(&work).unwrap();
-        let back = decode(&bytes).unwrap();
-        assert_eq!(back.params, work.params);
-        assert_eq!(back.palette, work.palette);
-        assert_eq!(back.layers, work.layers);
-        // テクスチャは巨大なので assert_eq!(Debug ダンプ)を避け、等価判定だけ行う
-        assert!(back.textures == textures, "テクスチャの往復が一致しません");
+            let bytes = encode(&work).unwrap();
+            let back = decode(&bytes).unwrap();
+            assert_eq!(back.canvas_size, canvas_size);
+            assert_eq!(back.params, work.params);
+            assert_eq!(back.palette, work.palette);
+            assert_eq!(back.layers, work.layers);
+            // テクスチャは巨大なので assert_eq!(Debug ダンプ)を避け、等価判定だけ行う
+            assert!(back.textures == textures, "テクスチャの往復が一致しません");
+        }
     }
 
-    /// 壊れたデータ(識別子違い・サイズ不足)は Err になること
+    /// 壊れたデータ(識別子違い・サイズ不足・未対応キャンバスサイズ)は Err になること
     #[test]
     fn rejects_garbage() {
         assert!(decode(b"not a work file").is_err());
         assert!(decode(&[]).is_err());
+        // 未対応サイズのメタは巨大確保に進まず拒否される(M8)
+        let meta = serde_json::to_vec(&WorkMeta {
+            canvas_size: 123_456,
+            layer_count: 0,
+            params: SimParams::default(),
+            palette: Palette::default_palette(),
+            layers: Vec::new(),
+        })
+        .unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&meta);
+        // WorkFile は巨大バッファ持ちで Debug 未実装のため unwrap_err でなく match で検査
+        match decode(&bytes) {
+            Err(e) => assert!(e.contains("キャンバスサイズ"), "サイズ検査で拒否されるはず: {e}"),
+            Ok(_) => panic!("未対応サイズが受理されました"),
+        }
     }
 }

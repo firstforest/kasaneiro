@@ -26,7 +26,7 @@ R1 は挙動不変のファイル移動が主なので**最初**にやる(後に
 | R6 | LayerStack の抽出 | M4.5a / M5c | 小 | ⬜ 未着手 |
 | R7 | ストロークモデルの統一(replay と Undo 履歴) | M4.5d | 小 | ⬜ 未着手 |
 | R8 | 読み戻し(readback)ユーティリティの抽出 | M5e / M7 | 小 | ⬜ 未着手 |
-| R9 | CANVAS_SIZE の値化 | M6 / M8 | 中 | ⬜ 未着手 |
+| R9 | CANVAS_SIZE の値化 | M6 / M8 | 中 | ✅ 完了(2026-07-07、M8 と同時) |
 
 ## 2. R1 — workspace 化(クレート切り出し)
 
@@ -166,6 +166,8 @@ M4.5d の多段 Undo は「ストローク+**当時の実効パラメータ**」
 const `CANVAS_SIZE` は gpu/mod.rs(テクスチャ・dispatch・スナップショット)、app.rs(座標変換)、paper.rs に波及している。M8 で設定化するため、`GpuCanvas` のフィールド(+ app へ公開)へ先に変えておく。テクスチャが増える M4.5 以後にやるより今の方が安い。
 
 **注意**: snapshot の bytes_per_row は 512/1024/2048 なら偶然 256B 整列を満たすが、値化するときにパディング計算を入れる(R8 の readback 汎用化と整合)。
+
+**実施メモ(2026-07-07、M8 と同一コミットで適用)**: paint-core の const は `CANVAS_SIZES = [512, 1024, 2048]`(選択肢)+ `DEFAULT_CANVAS_SIZE = 512`(既定)に置き換え、実行時の値は `GpuCanvas.size`(+`tiles_per_side`)が正典。app は写し `PaintApp.canvas_size` を持つ(座標変換・保存が renderer ロックなしで毎フレーム読むため。変更は `recreate_canvas` 経由のみ)。**パディング計算は入れなかった**: サイズを CANVAS_SIZES(64 の倍数)に限定し `GpuCanvas::new` の assert で強制することで、readback の行バイト数が常に 256B 整列になる(計画の注意事項は「一般サイズ対応」でなく「サイズ制限」で満たした)。WGSL 側のタイル定数はサイズ依存になったため common.wgsl から外し、`shader_prelude`(gpu/mod.rs)が const 2行を生成して連結する(§M8・architecture.md §8 参照)。
 
 ## 11. 判断が要るもの(挙動変更を伴うため保留)
 
