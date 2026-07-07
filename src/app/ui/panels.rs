@@ -5,6 +5,7 @@ use crate::app::PaintApp;
 use crate::gpu::hot_reload::shader_dir;
 use crate::preset;
 use crate::replay::{self, Recorder, Recording};
+use crate::work;
 use eframe::egui;
 
 impl PaintApp {
@@ -28,6 +29,45 @@ impl PaintApp {
                 }
                 Err(e) => self.status_msg = Some(e),
             }
+        }
+    }
+
+    /// 作品保存(M7): 描きかけ(湿レイヤー含む)を1ファイルへ保存/読込。
+    /// 保存は GPU 読み戻し(&mut self)が要るので NamedStore.save_controls の closure に載せられず、
+    /// 名前欄+ボタンを直に描いてクリック時に self.save_work を呼ぶ(一覧の読込は list_rows を流用)
+    pub(in crate::app) fn work_panel(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("作品保存 (M7)");
+        let mut do_save = None;
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.work_ui.store.name)
+                    .hint_text("作品名")
+                    .desired_width(140.0),
+            );
+            let name = self.work_ui.store.name.trim().to_owned();
+            if ui
+                .add_enabled(!name.is_empty(), egui::Button::new("保存"))
+                .on_hover_text("描きかけの全状態(湿レイヤー・乾燥レイヤー・線画・パレット)を1ファイルに保存")
+                .clicked()
+            {
+                do_save = Some(name);
+            }
+            if ui.button("↻").on_hover_text("一覧を再読込").clicked() {
+                self.work_ui.store.list = work::list();
+            }
+        });
+        if let Some(name) = do_save {
+            self.status_msg = Some(match self.save_work(&name) {
+                Ok(path) => {
+                    self.work_ui.store.list = work::list();
+                    format!("保存: {}", path.display())
+                }
+                Err(e) => e,
+            });
+        }
+        if let Some(name) = self.work_ui.store.list_rows(ui, "読込") {
+            self.load_work(&name);
         }
     }
 

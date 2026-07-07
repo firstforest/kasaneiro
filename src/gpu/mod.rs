@@ -21,16 +21,19 @@
 //! - [`init`] — `GpuCanvas::new`(テクスチャ・バッファ・bind group の生成)
 //! - [`callback`] — `CanvasCallback`(フレーム描画。パス実行順の正典)
 //! - [`snapshot`] — `GpuCanvas::snapshot`(PNG 読み戻し。H6)
+//! - [`persist`] — `GpuCanvas::export_state` / `import_state`(作品保存の GPU 読み戻し/書き戻し。M7)
 //! - [`shader_error`] — WGSL エラーの行番号補正(R3 QoL)
 
 pub mod hot_reload;
 
 mod callback;
 mod init;
+mod persist;
 mod shader_error;
 mod snapshot;
 
 pub use callback::CanvasCallback;
+pub use persist::WorkTextures;
 
 use paint_core::sim::{CANVAS_SIZE, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use shader_error::remap_shader_error_lines;
@@ -228,7 +231,9 @@ pub struct GpuCanvas {
     live_pigment_latents: [[f32; 4]; pigment::PIGMENT_LATENTS],
     compute_layout: wgpu::PipelineLayout,
     display_layout: wgpu::PipelineLayout,
-    /// 乾燥レイヤー(M2): スライス = レイヤースロット、rgba = 4顔料濃度
+    /// 乾燥レイヤー(M2): スライス = レイヤースロット、rgba = 4顔料濃度。
+    /// 作品保存(M7)で全スライスを読み戻し/書き戻しするため実体テクスチャを保持する
+    dried_texture: wgpu::Texture,
     dried_slice_views: Vec<wgpu::TextureView>,
     layers_buffer: wgpu::Buffer,
     bake_bgl: wgpu::BindGroupLayout,

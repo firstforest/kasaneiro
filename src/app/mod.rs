@@ -11,6 +11,7 @@
 mod linehist;
 mod ui;
 
+use crate::gpu::DriedLayer;
 use crate::gpu::GpuCanvas;
 use crate::gpu::LineTarget;
 use linehist::{LineHistory, stroke_splats};
@@ -19,10 +20,11 @@ use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase};
 use crate::palette_store;
 use crate::preset;
 use crate::replay::{self, Player, Recording};
+use crate::work;
 use paint_core::brush::StrokeState;
 use paint_core::sim::{CANVAS_SIZE, SimParams, Splat};
 use paint_core::tool::{RasterTool, Tool, WetTool};
-use ui::{NamedStore, PaletteUi, PresetUi, ReplayUi};
+use ui::{NamedStore, PaletteUi, PresetUi, ReplayUi, WorkUi};
 use eframe::egui;
 use eframe::egui_wgpu;
 use std::path::{Path, PathBuf};
@@ -101,6 +103,8 @@ pub struct PaintApp {
     steps_per_frame: u32,
     /// H3: プリセットの UI 状態(名前入力+一覧。R4 で集約)
     preset_ui: PresetUi,
+    /// M7: 作品保存の UI 状態(名前入力+一覧)
+    work_ui: WorkUi,
     /// H5: ストローク記録・再生の UI 状態(名前+一覧+recorder/pending/player。R4 で集約)
     replay_ui: ReplayUi,
     /// H3/H5/H6 の操作結果の表示(保存先パスやエラー)
@@ -171,6 +175,9 @@ impl PaintApp {
             steps_per_frame: 1,
             preset_ui: PresetUi {
                 store: NamedStore::new(preset::list()),
+            },
+            work_ui: WorkUi {
+                store: NamedStore::new(work::list()),
             },
             replay_ui: ReplayUi {
                 store: NamedStore::new(replay::list()),
@@ -637,6 +644,85 @@ impl PaintApp {
         });
     }
 
+    /// M7: 現在の全状態(湿レイヤー・乾燥レイヤー・線画・レイヤーごとパレット・レイヤー構成・
+    /// 現行パレット・SimParams)を1ファイルへ保存する。GPU から読み戻して work::save へ渡す。
+    /// 描きかけ(湿った絵の具含む)から翌日続けられるようにするのが目的
+    fn save_work(&mut self, name: &str) -> Result<PathBuf, String> {
+        let file = {
+            let renderer = self.render_state.renderer.read();
+            let canvas = renderer
+                .callback_resources
+                .get::<GpuCanvas>()
+                .ok_or("キャンバスが初期化されていません")?;
+            let textures =
+                canvas.export_state(&self.render_state.device, &self.render_state.queue)?;
+            let layers = canvas
+                .layers
+                .iter()
+                .map(|l| work::StoredLayer {
+                    slot: l.slot,
+                    visible: l.visible,
+                })
+                .collect();
+            work::WorkFile {
+                params: self.params,
+                palette: self.palette.clone(),
+                layers,
+                textures,
+            }
+        };
+        work::save(name, &file)
+    }
+
+    /// M7: 保存済み作品を読み込んでキャンバス全体を差し替える。
+    /// テクスチャを書き戻し、レイヤー構成・パレット・パラメータを復元して「続きが描ける」状態にする
+    fn load_work(&mut self, name: &str) {
+        let file = match work::load(name) {
+            Ok(f) => f,
+            Err(e) => {
+                self.status_msg = Some(e);
+                return;
+            }
+        };
+        // GPU 側(テクスチャ・レイヤー・パレット)を復元
+        let result: Result<(), String> = {
+            let mut renderer = self.render_state.renderer.write();
+            match renderer.callback_resources.get_mut::<GpuCanvas>() {
+                Some(canvas) => {
+                    canvas
+                        .import_state(&self.render_state.queue, &file.textures)
+                        .map(|()| {
+                            canvas.layers = file
+                                .layers
+                                .iter()
+                                .map(|l| DriedLayer {
+                                    slot: l.slot,
+                                    visible: l.visible,
+                                })
+                                .collect();
+                            canvas.sync_layers(&self.render_state.queue);
+                            // physics(ρ/ω/γ)と live latent 枠を現行パレットで整える
+                            // (latent 本体は import_state が丸ごと復元済み。同値で上書き)
+                            canvas.set_palette(&self.render_state.queue, &file.palette);
+                        })
+                }
+                None => Err("キャンバスが初期化されていません".to_owned()),
+            }
+        };
+        if let Err(e) = result {
+            self.status_msg = Some(e);
+            return;
+        }
+        // app 側の状態を復元。読込後は履歴を破棄する(退避テクスチャ・線画履歴は旧キャンバスのもの)
+        self.params = file.params;
+        self.palette = file.palette;
+        self.line_history.clear();
+        self.undo_stack.clear();
+        self.stroke.end();
+        self.painting = false;
+        self.status_msg = Some(format!("読込: {name}"));
+    }
+
     /// 左パネルのスクロール内容。セクションごとのメソッドへ振り分けるだけ(R4)。
     /// 各セクションの実装は ui サブモジュール。M4.5/M5 でセクションが増えても
     /// このディスパッチャに1行足すだけで済む
@@ -648,6 +734,7 @@ impl PaintApp {
         self.tuning_panel(ui);
         self.view_panel(ui);
         self.preset_panel(ui);
+        self.work_panel(ui);
         self.replay_panel(ui);
         self.shader_status(ui);
     }

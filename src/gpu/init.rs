@@ -82,7 +82,11 @@ impl GpuCanvas {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: SIM_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            // COPY_SRC/DST は作品保存(M7)で乾燥レイヤーを読み戻し/書き戻しするため
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         // 表示用: 全スライスを 2d array で / 焼き込み用: スライスごとの 2d ビュー
@@ -160,6 +164,8 @@ impl GpuCanvas {
                 format: wgpu::TextureFormat::R32Float,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING
                     | wgpu::TextureUsages::STORAGE_BINDING
+                    // COPY_SRC は作品保存(M7)で線画を読み戻すため
+                    | wgpu::TextureUsages::COPY_SRC
                     | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             })
@@ -232,7 +238,10 @@ impl GpuCanvas {
         let latents_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pigment_latents"),
             size: std::mem::size_of_val(&latents) as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            // COPY_SRC は作品保存(M7)でレイヤーごとパレット(M5c)を読み戻すため
+            usage: wgpu::BufferUsages::UNIFORM
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         queue.write_buffer(&latents_buffer, 0, bytemuck::cast_slice(&latents));
@@ -744,6 +753,7 @@ impl GpuCanvas {
             live_pigment_latents,
             compute_layout,
             display_layout,
+            dried_texture,
             dried_slice_views,
             layers_buffer,
             bake_bgl,

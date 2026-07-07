@@ -9,6 +9,7 @@ mod input;
 mod palette_store;
 mod preset;
 mod replay;
+mod work;
 
 use eframe::egui;
 

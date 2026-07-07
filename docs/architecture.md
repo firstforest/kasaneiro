@@ -41,12 +41,12 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │  │  ├─ mod.rs           PaintApp の状態・ライフサイクル・ディスパッチャ tool_panel・App::ui(R4)
 │  │  ├─ linehist.rs      線画の多段 Undo/Redo 履歴(M4.5d。RasterStroke / LineHistory / 再ラスタライズ)
 │  │  └─ ui/              UI 状態 + パネル描画を per-file 分割(R4。impl PaintApp を分散)
-│  │     ├─ mod.rs        UI 状態(PresetUi / ReplayUi)+ 共通部品 NamedStore
+│  │     ├─ mod.rs        UI 状態(PresetUi / WorkUi / PaletteUi / ReplayUi)+ 共通部品 NamedStore
 │  │     ├─ tools.rs      乾燥ボタン・水ブラシ・線画・線画 Undo/Redo(dry_controls / brush_panel / linework_panel / line_history_controls)
 │  │     ├─ palette.rs    顔料パレット編集(palette_panel。M5。色・ρ/ω/γ を編集し apply_palette で反映)
 │  │     ├─ layers.rs     レイヤー可視性・並べ替え・合成方式(layer_panel / layers_panel)
 │  │     ├─ tuning.rs     乾燥・筆圧・味付け・診断・シミュ制御(tuning_panel)
-│  │     ├─ panels.rs     プリセット/記録再生/シェーダー状態(preset/replay/shader_status)
+│  │     ├─ panels.rs     プリセット/作品保存/記録再生/シェーダー状態(preset/work/replay/shader_status。M7)
 │  │     └─ canvas.rs     キャンバス描画とエラーオーバーレイ(canvas_ui / error_overlay)
 │  ├─ gpu/                GpuCanvas。リソース定義と型・実行時メソッドを持ち、長い処理は分離
 │  │  ├─ mod.rs           型定義(GpuCanvas / Pipelines / DriedLayer)・COMPUTE_SHADERS 表・
@@ -54,12 +54,14 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │  │  ├─ init.rs          GpuCanvas::new(テクスチャ・バッファ・bind group の生成)
 │  │  ├─ callback.rs      CanvasCallback(フレーム描画。パス実行順の正典)
 │  │  ├─ snapshot.rs      GpuCanvas::snapshot(PNG 読み戻し。H6。R8 で readback を一般化予定)
+│  │  ├─ persist.rs       GpuCanvas::export_state / import_state(作品保存の GPU 読み戻し/書き戻し。M7)
 │  │  ├─ shader_error.rs  WGSL コンパイルエラーの行番号補正の純関数+テスト(R3 QoL)
 │  │  └─ hot_reload.rs    WGSL ファイル監視と再ビルド(H1)
 │  ├─ input.rs            PointerSource trait(MouseSource / PenSource = egui Touch)
 │  ├─ preset.rs           SimParams ⇄ JSON(H3)
 │  ├─ replay.rs           ストローク記録の永続化(assets 依存の保存/読込。モデルは paint-core を再エクスポート。M5d でパレット同梱の StoredRecording に拡張)
 │  ├─ palette_store.rs    パレット(pigment::Palette)⇄ JSON(M5d。preset/replay と同じ流儀)
+│  ├─ work.rs             作品保存(M7)。全状態を独自バイナリ1ファイル works/*.mpaint に保存/読込
 │  └─ assets.rs           assets/ ディレクトリ解決(CARGO_MANIFEST_DIR 基準なのでバイナリ crate に残す)
 ├─ tests/shader_compile.rs  WGSL コンパイル可能性テスト(naga)
 └─ assets/
@@ -67,6 +69,7 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
    ├─ presets/*.json      SimParams プリセット(git 管理)
    ├─ strokes/*.json      テストストローク(git 管理。M5d でパレット同梱=StoredRecording)
    └─ palettes/*.json     顔料パレット・ライブラリ(git 管理。M5d)
+   (works/*.mpaint は作品保存の出力先。ユーザーの制作物なので snapshots/ 同様 git 管理外。M7)
 ```
 
 `replay` の**モデル**(Recorder / Player / Recording)は paint-core、**永続化**(strokes の save/load、assets ディレクトリ解決に依存)はバイナリ crate、と分けてある。`asset_dir` が `env!("CARGO_MANIFEST_DIR")` でワークスペースルート基準の `assets/` を指すため、これを使うコードはバイナリ crate に置く必要がある。
@@ -86,6 +89,8 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 | 湿レイヤー退避(M6) | rgba32float × 3(水・浮遊・沈着、COPY のみ) | 水彩ストローク開始時に `current` の3テクスチャを GPU 間コピーで退避。Ctrl+Z(水彩=1段 undo)で `current` へ書き戻す。bind せずコピーの読み元/書き先にしかならない。最新1本ぶんだけ保持 |
 
 アクティブタイル(M6)は**テクスチャでなく storage バッファ**を2本持つ: `raw_active` / `active`(いずれも `array<u32, NUM_TILES>`、NUM_TILES = (512/16)² = 1024)。tilescan がタイルごとの生フラグを raw に書き、tiledilate が1タイル膨張して active を確定する。バッファ実体は bind group が保持する(GpuCanvas のフィールドには持たない)。
+
+**作品保存の読み戻し用途(M7)**: 全状態を1ファイルに焼くため、乾燥レイヤー array・線画3枚・顔料 latent uniform に `COPY_SRC`(読み戻し)/ `COPY_DST`(書き戻し)を付けてある(湿レイヤーは M6 の undo 退避で既に COPY 付き)。乾燥レイヤーの実体テクスチャは従来スライスビューしか保持していなかったが、`copy_texture_to_buffer` に実体が要るため `dried_texture` フィールドを追加した。`export_state`/`import_state`([src/gpu/persist.rs](../src/gpu/persist.rs))が「GPU ⇄ f32 配列」を担い、parity は保存せず読込時に `current=0` へ正規化する(次フレームの sim が 0 を読んで 1 へ書くので ping-pong の一貫性は保たれる)。
 
 **ping-pong は3テクスチャまとめて単一の `current`** で管理する。各 compute パスは3枚の src を読み、3枚の dst を必ず全テクセル書いて(変更しない分は素通し)反転する。パスごとに index を分けるより単純で、512² では素通しコストは十分軽い。線画テクスチャ(M4.5a/c)は ping-pong せず read_write で自己更新するため `current` に依存しない。
 
@@ -125,6 +130,8 @@ paint:
 ```
 
 ボタン駆動の単発パス: **bake**(乾かす=焼き込み)/ **fastdry**(水だけ除去)/ **rewet**(全面再湿潤)。PNG スナップショット(H6)は display と同じシェーダーでオフスクリーンに焼いて読み戻す。
+
+**作品保存(M7)のファイル形式**: プリセット等の軽い JSON と違い、作品は数十 MB の生 f32 テクスチャを含むため独自バイナリ1ファイル `works/*.mpaint`(git 管理外)にする。先頭に `MAGIC "MPW1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成 `[slot, visible]`・canvas_size・layer_count)を置き、続けて生 f32 ブロブを固定順(湿レイヤー3 → 乾燥レイヤー → 線画3 → 顔料 latent)で並べる([src/work.rs](../src/work.rs) の `encode`/`decode`)。読込時は canvas_size を現在の `CANVAS_SIZE` と照合(不一致はエラー。M8 のサイズ可変化に備える)。線画の Undo 履歴(ストローク列)はテクスチャがあれば復元不要なので保存しない(読込直後の Undo/水彩1段 undo は効かない=履歴を破棄)。ファイル入出力を1モジュールに閉じ、将来 Web 版で保存先を差し替える余地を残す(plan §4)。
 
 ### シェーダー一覧(assets/shaders/)
 
