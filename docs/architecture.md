@@ -42,9 +42,10 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │  │  ├─ linehist.rs      線画の多段 Undo/Redo 履歴(M4.5d。RasterStroke / LineHistory / 再ラスタライズ)
 │  │  └─ ui/              UI 状態 + パネル描画を per-file 分割(R4。impl PaintApp を分散)
 │  │     ├─ mod.rs        UI 状態(PresetUi / WorkUi / PaletteUi / ReplayUi)+ 共通部品 NamedStore
-│  │     ├─ tools.rs      乾燥ボタン・水ブラシ・線画・線画 Undo/Redo(dry_controls / brush_panel / linework_panel / line_history_controls)
-│  │     ├─ palette.rs    顔料パレット編集(palette_panel。M5。色・ρ/ω/γ を編集し apply_palette で反映)
-│  │     ├─ layers.rs     レイヤー可視性・並べ替え・合成方式(layer_panel / layers_panel)
+│  │     ├─ tools.rs      乾燥ボタンと、アクティブレイヤーごとのツールパネル(dry_controls /
+│  │     │                 active_tools_panel が brush/pencil/pen/highlight/dried を出し分け)
+│  │     ├─ palette.rs    顔料パレット編集(palette_panel。M5。色・ρ/ω/γ を編集し apply_palette で反映。水彩レイヤー選択時のみ表示)
+│  │     ├─ layers.rs     右パネルのレイヤースタック(layer_stack_panel。選択=ツール系統切替・可視性・並べ替え・合成方式)
 │  │     ├─ tuning.rs     乾燥・筆圧・味付け・診断・シミュ制御(tuning_panel)
 │  │     ├─ panels.rs     プリセット/作品保存/記録再生/シェーダー状態(preset/work/replay/shader_status。M7)
 │  │     └─ canvas.rs     キャンバス描画とエラーオーバーレイ(canvas_ui / error_overlay)

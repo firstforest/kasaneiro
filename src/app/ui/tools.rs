@@ -1,10 +1,29 @@
-//! 乾燥ボタン(常時表示)と水ブラシパネル。app/mod.rs から分割(R4)。
+//! 乾燥ボタン(常時表示)と、アクティブレイヤーごとのツールパネル。app/mod.rs から分割(R4)。
+//!
+//! レイヤーごとに使うツールが決まっているため、左パネルのツール群は右のレイヤーパネルで
+//! 選択中のレイヤーに関係するものだけを出す([`PaintApp::active_tools_panel`] が出し分ける):
+//! 水彩 → 水ブラシ+パレット / 鉛筆・ペン・ハイライト → 各線画ツール / 乾燥 → 編集不可の案内。
 
-use crate::app::PaintApp;
+use crate::app::{ActiveLayer, PaintApp};
+use crate::gpu::GpuCanvas;
 use paint_core::tool::{RasterTool, Tool, ToolInfo, WetTool};
 use eframe::egui;
 
 impl PaintApp {
+    /// 選択中レイヤーのツールパネル(左パネル先頭)。右のレイヤーパネルの選択で出し分ける
+    pub(in crate::app) fn active_tools_panel(&mut self, ui: &mut egui::Ui) {
+        match self.active_layer {
+            ActiveLayer::Wet => {
+                self.brush_panel(ui);
+                self.palette_panel(ui);
+            }
+            ActiveLayer::Pencil => self.pencil_panel(ui),
+            ActiveLayer::Pen => self.pen_panel(ui),
+            ActiveLayer::Highlight => self.highlight_panel(ui),
+            ActiveLayer::Dried(index) => self.dried_info_panel(ui, index),
+        }
+    }
+
     /// M2: 乾燥操作は「にじみを止めたい瞬間」に間に合う必要がある(Fresco の UX 教訓)ため、
     /// スクロール領域の外=左パネル最上部に常時表示する
     pub(in crate::app) fn dry_controls(&mut self, ui: &mut egui::Ui) {
@@ -59,9 +78,9 @@ impl PaintApp {
         ui.add_space(4.0);
     }
 
-    /// 水ブラシ(M1〜M4): ツール選択・顔料スロット・ブラシスライダー
+    /// 水彩レイヤーのツール(M1〜M4): ツール選択・顔料スロット・ブラシスライダー
     pub(in crate::app) fn brush_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("水ブラシ");
+        ui.heading("水彩ブラシ");
         // ツール選択(R2): WetTool を回してボタン化する。ラベル・文言・GPU 値は
         // enum の impl に一元化されている(TOOLS 定数表は廃止)。選択したら
         // gpu_id を params.tool へ同期して splat.wgsl の分岐に渡す
@@ -74,6 +93,8 @@ impl PaintApp {
                     .clicked()
                 {
                     self.tool = Tool::Wet(wt);
+                    // レイヤーを離れて戻ったときの復元用(select_layer が読む)
+                    self.last_wet_tool = wt;
                 }
             }
         });
@@ -136,47 +157,27 @@ impl PaintApp {
         );
     }
 
-    /// 線画(M4.5a): 鉛筆/ペンの選択・消しゴム・線のスライダー。流体を通らないラスタツール。
-    /// 選択したら kind を params.line_mode / eraser を params.line_eraser へ同期し
-    /// linesplat.wgsl の分岐に渡す(描画先テクスチャの選択は CanvasCallback 経由)
-    pub(in crate::app) fn linework_panel(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.heading("線画 (M4.5)");
-        // 現在の消しゴム状態を引き継いでツールを切り替える(ラスタでなければ描画から始める)
-        let cur_eraser = matches!(self.tool, Tool::Raster { eraser: true, .. });
-        ui.horizontal(|ui| {
-            for kind in RasterTool::ALL {
-                let selected = matches!(self.tool, Tool::Raster { kind: k, .. } if k == kind);
-                if ui
-                    .selectable_label(selected, kind.label())
-                    .on_hover_text(kind.hint())
-                    .clicked()
-                {
-                    self.tool = Tool::Raster { kind, eraser: cur_eraser };
-                }
-            }
-            // 消しゴムはラスタツール選択中のみ有効
-            let is_raster = matches!(self.tool, Tool::Raster { .. });
-            let mut eraser = cur_eraser;
-            if ui
-                .add_enabled(is_raster, egui::Checkbox::new(&mut eraser, "消しゴム"))
-                .changed()
-                && let Tool::Raster { kind, .. } = self.tool
-            {
-                self.tool = Tool::Raster { kind, eraser };
-            }
-        });
-        // ツール状態を GPU パラメータへ同期(ラスタ選択中のみ)
-        if let Tool::Raster { kind, eraser } = self.tool {
-            self.params.line_mode = match kind {
-                RasterTool::Pencil => 0,
-                RasterTool::Pen => 1,
-                RasterTool::Highlight => 2,
-            };
-            self.params.line_eraser = eraser as u32;
-        }
-        // 鉛筆/ペンは太さ・濃さを独立に持つ(水ブラシの brush_radius とは別)
-        ui.label(egui::RichText::new("鉛筆").strong());
+    /// 線画レイヤー共通のヘッダ(M4.5a): 説明・消しゴムトグル。ツール状態を
+    /// params.line_mode / line_eraser へ同期し linesplat.wgsl の分岐に渡す
+    /// (描画先テクスチャの選択は CanvasCallback 経由)
+    fn raster_tool_header(&mut self, ui: &mut egui::Ui, kind: RasterTool) {
+        ui.label(egui::RichText::new(kind.hint()).weak());
+        let mut eraser = matches!(self.tool, Tool::Raster { eraser: true, .. });
+        ui.checkbox(&mut eraser, "消しゴム")
+            .on_hover_text("このレイヤーの線を削る(splat を減算に反転)");
+        self.tool = Tool::Raster { kind, eraser };
+        self.params.line_mode = match kind {
+            RasterTool::Pencil => 0,
+            RasterTool::Pen => 1,
+            RasterTool::Highlight => 2,
+        };
+        self.params.line_eraser = eraser as u32;
+    }
+
+    /// 下書き鉛筆レイヤーのツール(M4.5a)。太さ・濃さは水ブラシの brush_radius とは独立
+    pub(in crate::app) fn pencil_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("下書き鉛筆 (M4.5)");
+        self.raster_tool_header(ui, RasterTool::Pencil);
         ui.add(
             egui::Slider::new(&mut self.params.pencil_radius, 1.0..=64.0)
                 .text("太さ")
@@ -184,7 +185,13 @@ impl PaintApp {
         );
         ui.add(egui::Slider::new(&mut self.params.pencil_strength, 0.0..=1.0).text("濃さ"));
         ui.add(egui::Slider::new(&mut self.params.pencil_gran, 0.0..=1.0).text("粒状感"));
-        ui.label(egui::RichText::new("ペン").strong());
+        self.raster_tool_footer(ui);
+    }
+
+    /// 清書ペンレイヤーのツール(M4.5a/b)
+    pub(in crate::app) fn pen_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("清書ペン (M4.5)");
+        self.raster_tool_header(ui, RasterTool::Pen);
         ui.add(
             egui::Slider::new(&mut self.params.pen_radius, 1.0..=64.0)
                 .text("太さ")
@@ -198,16 +205,50 @@ impl PaintApp {
         .on_hover_text(
             "清書ペンの線を水の境界にする強さ(M4.5b)。上げるほど、ペンで囲った領域を塗っても水がはみ出さない。0=境界なし。線を跨いでストロークすれば明示的に越えられる",
         );
-        ui.label(egui::RichText::new("ハイライト").strong());
+        self.raster_tool_footer(ui);
+    }
+
+    /// 白ハイライトレイヤーのツール(M4.5c)
+    pub(in crate::app) fn highlight_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("ハイライト (M4.5)");
+        self.raster_tool_header(ui, RasterTool::Highlight);
         ui.add(
             egui::Slider::new(&mut self.params.highlight_radius, 1.0..=64.0)
                 .text("太さ")
                 .suffix(" px"),
         );
         ui.add(egui::Slider::new(&mut self.params.highlight_strength, 0.0..=1.0).text("不透明度"));
+        self.raster_tool_footer(ui);
+    }
+
+    /// 線画レイヤー共通のフッタ: 筆圧の注記 + 多段 Undo/Redo(M4.5d)
+    fn raster_tool_footer(&mut self, ui: &mut egui::Ui) {
         ui.label("※筆圧の効きは「筆圧」パネルの値を共用します");
-        // 線画の多段 Undo/Redo(M4.5d)
         self.line_history_controls(ui);
+    }
+
+    /// 乾燥レイヤー選択中の案内。焼き込みは一方通行なのでツールはなく、描画もブロックされる
+    /// (canvas.rs の drawing_locked)。表示・順序の操作は右のレイヤーパネルで行う
+    pub(in crate::app) fn dried_info_panel(&mut self, ui: &mut egui::Ui, index: usize) {
+        let slot = {
+            let renderer = self.render_state.renderer.read();
+            renderer
+                .callback_resources
+                .get::<GpuCanvas>()
+                .and_then(|c| c.layers.get(index))
+                .map(|l| l.slot + 1)
+        };
+        match slot {
+            Some(slot) => ui.heading(format!("乾燥レイヤー {slot}")),
+            None => ui.heading("乾燥レイヤー"),
+        };
+        ui.label("焼き込み済みのため編集できません(表示・順序は右のレイヤーパネルで)。");
+        ui.label(
+            egui::RichText::new(
+                "乾燥レイヤーの再編集は設計上ありません(焼き込みは一方通行)。いじり続けたい層は「乾かす」の代わりに「水だけ除去(Fast Dry)」で止めて、焼き込まない運用にしてください",
+            )
+            .weak(),
+        );
     }
 
     /// 線画の多段 Undo/Redo(M4.5d): ボタン+履歴本数の表示。キーは Ctrl+Z / Ctrl+Shift+Z。

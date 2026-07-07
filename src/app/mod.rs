@@ -79,6 +79,24 @@ enum UndoKind {
     Wet,
 }
 
+/// UI のアクティブレイヤー(右のレイヤーパネルで選択)。レイヤーごとに使えるツールが
+/// 決まっているため、選択がそのまま「描画先」と「左パネルに出すツール群」を決める。
+/// 並びは合成順(上=手前): ハイライト → ペン → 鉛筆 → 水彩(湿)→ 乾燥 → 紙。
+/// 乾燥レイヤーは焼き込み済みで編集不可(選択できるが描画はブロックし、案内を出す)
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActiveLayer {
+    /// 白ハイライト(最上段の線画テクスチャ。M4.5c)
+    Highlight,
+    /// 清書ペン(M4.5a。水の境界にもなる)
+    Pen,
+    /// 下書き鉛筆(M4.5a)
+    Pencil,
+    /// 水彩の湿レイヤー(流体シミュの描画先)
+    Wet,
+    /// 乾燥レイヤー(`GpuCanvas::layers` のインデックス)。編集不可
+    Dried(usize),
+}
+
 pub struct PaintApp {
     render_state: egui_wgpu::RenderState,
     params: SimParams,
@@ -86,6 +104,11 @@ pub struct PaintApp {
     /// `WetTool::gpu_id()` を `params.tool` へ同期して GPU の splat 分岐に渡す。
     /// ラスタツール(M4.5)は流体経路に流れない
     tool: Tool,
+    /// 選択中のレイヤー(UI)。右のレイヤーパネルで選び、左パネルはこのレイヤーの
+    /// ツールだけを出す。ツールとの同期は `select_layer` が担う
+    active_layer: ActiveLayer,
+    /// 水彩レイヤーで最後に使っていたツール。別レイヤーへ移って戻ったときに復元する
+    last_wet_tool: WetTool,
     stroke: StrokeState,
     /// M1.5: ペン入力(egui Touch 経由、筆圧付き)。接地中はマウスより優先される
     pen: PenSource,
@@ -164,6 +187,8 @@ impl PaintApp {
             render_state,
             params: SimParams::default(),
             tool: Tool::Wet(WetTool::Paint),
+            active_layer: ActiveLayer::Wet,
+            last_wet_tool: WetTool::Paint,
             stroke: StrokeState::default(),
             pen: PenSource::default(),
             mouse: MouseSource,
@@ -271,6 +296,33 @@ impl PaintApp {
         let d = (pos - rect.min) / rect.width().max(1.0) - egui::vec2(0.5, 0.5);
         let cuv = self.view_center + self.view_rotate(d) * (1.0 / self.view_zoom);
         cuv * CANVAS_SIZE as f32
+    }
+
+    /// レイヤー選択(右のレイヤーパネル)。レイヤーごとにツール系統が決まっているため、
+    /// 選択に合わせてツールを切り替える(水彩は最後に使っていたツールへ戻し、
+    /// 消しゴム状態は線画レイヤー間で引き継ぐ)。乾燥レイヤーはツールなし(描画はブロック)
+    fn select_layer(&mut self, layer: ActiveLayer) {
+        self.active_layer = layer;
+        let eraser = matches!(self.tool, Tool::Raster { eraser: true, .. });
+        match layer {
+            ActiveLayer::Wet => self.tool = Tool::Wet(self.last_wet_tool),
+            ActiveLayer::Pencil => {
+                self.tool = Tool::Raster { kind: RasterTool::Pencil, eraser };
+            }
+            ActiveLayer::Pen => {
+                self.tool = Tool::Raster { kind: RasterTool::Pen, eraser };
+            }
+            ActiveLayer::Highlight => {
+                self.tool = Tool::Raster { kind: RasterTool::Highlight, eraser };
+            }
+            ActiveLayer::Dried(_) => {} // ツールは据え置き(canvas 側で描画をブロックする)
+        }
+    }
+
+    /// 乾燥レイヤー選択中は描画不可(焼き込みは一方通行)。
+    /// canvas がポインタ入力をストロークへ流す前に見る
+    fn drawing_locked(&self) -> bool {
+        matches!(self.active_layer, ActiveLayer::Dried(_))
     }
 
     /// M5: 現行パレット(self.palette)を GPU へ反映する。色・ρ/ω/γ を編集したあとに呼ぶ。
@@ -724,13 +776,11 @@ impl PaintApp {
     }
 
     /// 左パネルのスクロール内容。セクションごとのメソッドへ振り分けるだけ(R4)。
-    /// 各セクションの実装は ui サブモジュール。M4.5/M5 でセクションが増えても
-    /// このディスパッチャに1行足すだけで済む
+    /// 各セクションの実装は ui サブモジュール。先頭はアクティブレイヤーのツール群
+    /// (active_tools_panel が選択中レイヤーで出し分ける)。レイヤー関連は右パネル
+    /// (layer_stack_panel)へ分離した
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
-        self.brush_panel(ui);
-        self.palette_panel(ui);
-        self.linework_panel(ui);
-        self.layers_panel(ui);
+        self.active_tools_panel(ui);
         self.tuning_panel(ui);
         self.view_panel(ui);
         self.preset_panel(ui);
@@ -757,6 +807,13 @@ impl eframe::App for PaintApp {
                 self.dry_controls(ui);
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| self.tool_panel(ui));
+            });
+
+        // レイヤー関連はキャンバスの右へ(選択中レイヤーが左のツール群を決める)
+        egui::Panel::right("layers")
+            .default_size(230.0)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.layer_stack_panel(ui));
             });
 
         self.error_overlay(ui);

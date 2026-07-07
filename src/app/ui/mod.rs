@@ -4,9 +4,11 @@
 //! プリセット([`PresetUi`])・ストローク記録再生([`ReplayUi`])。各セクションの描画は
 //! `impl PaintApp` メソッドとして以下のサブモジュールに分割してある(app/mod.rs 側は
 //! 状態・ライフサイクルとディスパッチャ `tool_panel` だけを持つ):
-//! - [`tools`] — 乾燥ボタン・水ブラシ(`dry_controls` / `brush_panel`)
-//! - [`palette`] — 顔料パレット編集(`palette_panel`。M5)
-//! - [`layers`] — レイヤー可視性・並べ替え・合成方式(`layer_panel` / `layers_panel`)
+//! - [`tools`] — 乾燥ボタン(常時表示)と、アクティブレイヤーごとのツールパネル
+//!   (`dry_controls` / `active_tools_panel` が水彩・鉛筆・ペン・ハイライト・乾燥を出し分け)
+//! - [`palette`] — 顔料パレット編集(`palette_panel`。M5。水彩レイヤー選択時のみ表示)
+//! - [`layers`] — 右パネルのレイヤースタック(選択=ツール系統の切替・可視性・並べ替え・合成方式。
+//!   `layer_stack_panel`)
 //! - [`tuning`] — 乾燥・筆圧・味付けスライダー・診断・シミュ制御(`tuning_panel`)
 //! - [`panels`] — プリセット / 記録再生 / シェーダー状態(`preset_panel` / `replay_panel` / `shader_status`)
 //! - [`canvas`] — キャンバス描画とエラーオーバーレイ(`canvas_ui` / `error_overlay`)

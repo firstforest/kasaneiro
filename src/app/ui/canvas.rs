@@ -92,6 +92,15 @@ impl PaintApp {
                 self.pick_color(pos, rect);
                 self.palette_ui.eyedropper = false;
             }
+        } else if self.drawing_locked() {
+            // 乾燥レイヤー選択中は描画不可(焼き込みは一方通行)。クリックされたら案内を出す
+            let pressed = ui.input(|i| i.pointer.primary_pressed());
+            if pressed && hover.is_some_and(|p| rect.contains(p)) {
+                self.status_msg = Some(
+                    "乾燥レイヤーは編集できません。右のレイヤーパネルで描くレイヤー(水彩・線画)を選択してください"
+                        .to_owned(),
+                );
+            }
         } else if !panning {
             // M6: パン中(中ボタンドラッグ)は描画イベントを流さない(ビュー操作専念)
             self.apply_pointer_events(&events, rect, &mut splats);
