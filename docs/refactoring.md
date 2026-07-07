@@ -1,177 +1,107 @@
-# リファクタリング計画
+# リファクタリング計画(完了記録)
 
-作成日: 2026-07-05。M4.5 以降のマイルストーン([plan.md](plan.md) §3)を見据えた構造改善の計画。ソース全体(src 13 ファイル・シェーダー 12 本)を M4.5〜M8 の要求と突き合わせた検討結果で、**大規模な作り直しは不要、ただし各マイルストーンで確実に苦しくなる箇所を先回りで直す**という位置づけ。
-
-**適用の原則**: 各項目は該当マイルストーンの着手前に、**挙動不変のリファクタとして 1 コミットずつ**適用する(cargo test + naga 検証([../tests/shader_compile.rs](../tests/shader_compile.rs))で確認)。適用したら本ファイルの状態列と、影響があれば [architecture.md](architecture.md)(モジュール/クレート構成)を同じコミットで更新する。
+作成 2026-07-05 / 見直し 2026-07-07。M4.5〜M8 を見据えた構造改善の計画で、**大規模な作り直しは不要、各マイルストーンで苦しくなる箇所を先回りで直す**という位置づけだった。マイルストーン M0〜M8 は全完了([status.md](status.md))。R1〜R4・R9 は挙動不変リファクタとして適用済み、**R5 は M5 実装に吸収されて達成**、**R6〜R8 は当のマイルストーンが別設計で先に完了したため未適用**(= 残った任意の技術的負債)。以下は各項目の狙いと実施/見送りの記録。
 
 ## 0. 壊さないもの(前提)
 
-リファクタはすべて「試行錯誤の速度最優先」の核を維持したまま行う:
+リファクタは「試行錯誤の速度最優先」の核を維持したまま行う:
 
 - WGSL ホットリロード(H1)と common.wgsl 連結ロードの仕組み
-- **「パラメータ追加 = フィールド1行+スライダー1行+WGSL 1行」**(H2)。SimParams が別クレートへ移っても、触るファイルの場所が変わるだけでこの定型は崩さない
-- mixbox 呼び出しの隔離(plan §4)。R1 でむしろ「ファイル規約」から「依存グラフ」へ格上げする
+- **「パラメータ追加 = フィールド1行+スライダー1行+WGSL 1行」**(H2)
+- mixbox 呼び出しの隔離(plan §4)。R1 で「ファイル規約」から「依存グラフ」へ格上げ
 
-## 1. 実施順サマリ
+## 1. 状態サマリ
 
-R1 は挙動不変のファイル移動が主なので**最初**にやる(後にやると R2〜R4 で動かしたコードをもう一度動かすことになる)。R5〜R9 は該当マイルストーンの直前で良い。
-
-| # | 項目 | 効く先 | 規模 | 状態 |
-|---|---|---|---|---|
-| R1 | workspace 化(km / pigment / paint-core の切り出し) | 全体。mixbox 隔離の構造化・テスト反復の高速化 | 中 | ✅ 完了(2026-07-05) |
-| R2 | Tool の階層 enum 化(`Tool::Wet` / `Tool::Raster`) | M4.5 全般 | 小 | ✅ 完了(2026-07-05) |
-| R3 | パイプラインのテーブル駆動化+エラー行番号補正 | M4.5、日々のシェーダー反復 | 小〜中 | ✅ 完了(2026-07-05) |
-| R4 | app.rs の UI 分割と状態のグループ化 | M4.5 / M5 | 中 | ✅ 完了(2026-07-05) |
-| R5 | 顔料バッファのフィールド化+ Palette 状態化の準備 | M5b | 極小 | ⬜ 未着手 |
-| R6 | LayerStack の抽出 | M4.5a / M5c | 小 | ⬜ 未着手 |
-| R7 | ストロークモデルの統一(replay と Undo 履歴) | M4.5d | 小 | ⬜ 未着手 |
-| R8 | 読み戻し(readback)ユーティリティの抽出 | M5e / M7 | 小 | ⬜ 未着手 |
-| R9 | CANVAS_SIZE の値化 | M6 / M8 | 中 | ✅ 完了(2026-07-07、M8 と同時) |
+| # | 項目 | 効く先 | 状態 |
+|---|---|---|---|
+| R1 | workspace 化(km / pigment / paint-core の切り出し) | 全体。mixbox 隔離・テスト反復の高速化 | ✅ 完了(2026-07-05) |
+| R2 | Tool の階層 enum 化(`Tool::Wet` / `Tool::Raster`) | M4.5 全般 | ✅ 完了(2026-07-05) |
+| R3 | パイプラインのテーブル駆動化+エラー行番号補正 | M4.5、日々のシェーダー反復 | ✅ 完了(2026-07-05) |
+| R4 | app.rs の UI 分割と状態のグループ化 | M4.5 / M5 | ✅ 完了(2026-07-05) |
+| R5 | 顔料バッファのフィールド化+ Palette 状態化 | M5b | ✅ 完了(2026-07-05、M5a/b に吸収) |
+| R6 | LayerStack の抽出 | M4.5a / M5c | ⬜ 見送り(未適用のまま完了。任意の負債) |
+| R7 | ストロークモデルの統一(replay と Undo 履歴) | M4.5d | ⬜ 見送り(別系統の undo で完了。既知の傷は解消済み) |
+| R8 | 読み戻し(readback)ユーティリティの抽出 | M5e / M7 | ⬜ 見送り(inline readback 重複のまま完了。任意の負債) |
+| R9 | CANVAS_SIZE の値化 | M6 / M8 | ✅ 完了(2026-07-07、M8 と同時) |
 
 ## 2. R1 — workspace 化(クレート切り出し)
 
-plan.md §2 の「単一クレートで開始、分割は必要になってから」を **2026-07-05 に「分割する」へ更新**した(本計画の決定)。切り出す価値が構造的にあるものは3つで、それ以外(UI・GPU)は切り出しても得がないため残す。
-
-```
-my-paint/                  (workspace)
-├─ Cargo.toml              workspace 定義([profile.*] 設定もここへ移動)
-├─ crates/
-│  ├─ km/                  Kubelka-Munk 純関数。依存ゼロ
-│  ├─ pigment/             顔料・パレット・latent/物性 uniform 計算。mixbox はここだけが依存
-│  └─ paint-core/          SimParams / Splat / Tool / ストローク補間(brush)/
-│                          記録再生モデル(replay)/ 紙ノイズ(paper)
-│                          (依存は bytemuck + serde のみ。GPU に触らない)
-└─ src/                    バイナリ crate(app / gpu / input / preset / assets)
-                           egui / wgpu / naga はここだけ。tests/shader_compile.rs も残留
-```
-
-| crate | 切り出す理由 |
-|---|---|
-| `km` | 依存ゼロの純関数+テスト。もともと「CPU 参照実装」という独立した役割で境界が既に綺麗 |
-| `pigment` | **mixbox 隔離(CC BY-NC 対策)が依存グラフで強制される**のが最大の利点。`cargo tree` で mixbox 依存がこの crate だけと機械的に確認でき、商用化時の差し替え = この crate の中身の置換になる |
-| `paint-core` | CPU 純粋で相互に使い合う一塊(replay → brush → Splat)。wgpu をリンクせずに `cargo test -p paint-core` が数秒で回る |
-
-副次効果: 今は km.rs を1行直してもバイナリ crate 全体が再コンパイルされるが、分割後は変更 crate とその依存先だけになる。日々一番触る app/gpu/WGSL は最上位なので、そこの編集で下位 crate は再ビルドされない。
-
-**やり過ぎ防止**: これ以上細かく割らない(`paper` 単独 crate 等)。crate 境界は「依存の隔離(pigment)」「純粋性の保証(km, paint-core)」という明確な理由があるものだけ。
-
-**同時に更新するドキュメント**: [plan.md](plan.md) §2(更新済み)・[architecture.md](architecture.md) §2 モジュール構成・CLAUDE.md のコマンド/構成記述。
+**狙い**: mixbox 隔離(CC BY-NC 対策)を依存グラフで強制し、CPU 純粋部を wgpu 抜きで数秒テストできるようにする。切り出すのは `km`(Kubelka-Munk 純関数)・`pigment`(顔料・パレット・mixbox の唯一の依存点)・`paint-core`(SimParams / Splat / Tool / brush / replay / paper)の3つのみ。UI・GPU は残す。詳細な構成は [architecture.md](architecture.md) §2。
 
 **実施メモ(2026-07-05 完了)**:
 
 - ルート `Cargo.toml` を `[workspace]`(members = 3 crate)+ `[package] my-paint`(バイナリ)の二役にした。`[profile.dev]` はワークスペースルートでのみ有効なのでルートに残す。
-- **replay はモデルと永続化を分けた**: モデル(Recorder / Player / Recording)を paint-core へ、ファイル保存/読込(assets ディレクトリ解決に依存)はバイナリ crate `src/replay.rs` に残し、そこで `pub use paint_core::replay::*;` して再エクスポート。`asset_dir` が `env!("CARGO_MANIFEST_DIR")` でワークスペースルート基準の `assets/` を指すため、これを使うコード(replay 永続化・preset・assets)はバイナリ crate に置く必要がある。呼び出し側の `crate::replay::*` はそのまま動く(paint-core のモデルは serde だけに依存 = 目標どおり)。
-- ルートが同時にバイナリ package なので、`cargo test` だけだと下位 crate のテストが回らない。**`cargo test --workspace` / `cargo clippy --workspace` に変更**(CLAUDE.md 更新済み)。
-- km crate はどこからも依存されない純粋な参照/テスト crate(workspace メンバーなので `--workspace` でテストは回る)。
+- **replay はモデルと永続化を分けた**: モデル(Recorder / Player / Recording)を paint-core へ、ファイル保存/読込(assets ディレクトリ解決に依存)はバイナリ crate `src/replay.rs` に残し、そこで `pub use paint_core::replay::*;` で再エクスポート。`asset_dir` が `env!("CARGO_MANIFEST_DIR")` 基準なので、これを使うコード(replay 永続化・preset・assets)はバイナリ crate に置く必要がある。
+- ルートが同時にバイナリ package なので `cargo test` だけでは下位 crate のテストが回らない。**`cargo test --workspace` / `cargo clippy --workspace` に変更**(CLAUDE.md 更新済み)。
 
 ## 3. R2 — Tool の階層 enum 化
 
-現状ツールは `u32` の魔法数で、[../src/app.rs](../src/app.rs) の `TOOLS` 定数表・[../assets/shaders/splat.wgsl](../assets/shaders/splat.wgsl) の分岐・[../src/replay.rs](../src/replay.rs) の記録が並走している。M4.5 の鉛筆(5)・ペン(6)・ハイライト(7)は**流体シミュを通らず別テクスチャに描く**ため、CPU 側で経路が分かれる。「wet 系か raster 系か」を実行時に聞くのではなく、**型の階層そのものに経路を埋め込む**:
-
-```rust
-/// ツール全体。トップレベルの分岐 = 描画経路の分岐(型が経路を保証する)
-pub enum Tool {
-    /// 流体シミュ経由(splat バッファ → splat.wgsl)
-    Wet(WetTool),
-    /// 線画テクスチャ直描き(M4.5。流体を通らない)
-    Raster { kind: RasterTool, eraser: bool },
-}
-
-pub enum WetTool { Paint, Lift, Erase, WaterBrush, Smear }
-pub enum RasterTool { Pencil, Pen, Highlight }   // M4.5 で追加
-
-impl WetTool {
-    /// SimParams::tool へ書く値。gpu_id を持つのは WetTool だけ —
-    /// raster ツールを splat.wgsl へ流す誤りを型レベルで排除する
-    pub fn gpu_id(self) -> u32 { /* 0..4 */ }
-}
-
-/// UI 表示用メタ情報。WetTool / RasterTool 両方に実装し、
-/// ツールバー描画は共通コードでツール群を回すだけにする
-pub trait ToolInfo {
-    fn label(&self) -> &'static str;   // 「描画」など
-    fn hint(&self) -> &'static str;    // ホバー文言
-}
-```
-
-設計の要点:
-
-- **enum(直和型)= 閉じた集合の分岐、trait = UI 表示の共通化**、と役割を分ける。閉じた集合に trait オブジェクトは使わない
-- `match` の網羅性チェックで、M4.5 のツール追加時に処理漏れがコンパイルエラーになる
-- 消しゴムは M4.5a の仕様(トグルで反転)どおり `Raster` 側のフィールド。wet 側に存在しない状態を型に載せる
-- 置き場所は paint-core(R1)。ラベルは `&'static str` なので egui 依存は不要
-- replay の保存形式は互換のため on-disk では `u32` のまま残し、`TryFrom<u32>` で enum へ変換(不正値はエラー)
-
-これで `TOOLS` 定数表は消え、ラベル・文言・GPU 値・経路が enum の impl に一元化される。
+**狙い**: `u32` 魔法数だったツールを `Tool::Wet(WetTool)` / `Tool::Raster{..}` の直和型にし、**型の階層に描画経路を埋め込む**(ラスタツールを splat.wgsl へ流す誤りを型で排除)。UI 表示は `ToolInfo` trait で共通化。`TOOLS` 定数表を廃止。置き場所は paint-core。
 
 **実施メモ(2026-07-05 完了)**:
 
-- [../crates/paint-core/src/tool.rs](../crates/paint-core/src/tool.rs) に `Tool` / `WetTool` / `RasterTool` / `ToolInfo` を実装。`RasterTool` と `Tool::Raster` は型階層だけ先に用意し `#[allow(dead_code)]`(M4.5a で UI・実装を足すときに allow を外す)。
-- app は `PaintApp.tool: Tool` を選択の正典に持ち、`Tool::wet()` が `Some(WetTool)` のとき `wt.gpu_id()` を `params.tool` へ同期して splat.wgsl の分岐に渡す(ラスタツールは `wet()==None` で流体経路に流れない)。`TOOLS` 定数表は廃止し、ツールバーは `WetTool::ALL` を回して `label()`/`hint()` で描く。
-- replay は on-disk 互換のため `RecordedStroke.tool: u32` のまま(GPU 境界も u32 なので変換不要)。enum への変換が要る箇所(M4.5 / R7)向けに `WetTool::from_gpu_id` / `TryFrom<u32>` を用意しテスト済み。
-- 網羅性チェックは M4.5 でラスタ経路を実装するとき(`Tool` を `match` する箇所)に効く。R2 時点では app は `wet()` の Option 経由なので `Tool::Raster` 追加は既存コードを壊さない。
+- [../crates/paint-core/src/tool.rs](../crates/paint-core/src/tool.rs) に `Tool` / `WetTool` / `RasterTool` / `ToolInfo` を実装。app は `PaintApp.tool: Tool` を選択の正典に持ち、`Tool::wet()` が `Some(WetTool)` のとき `wt.gpu_id()` を `params.tool` へ同期する(ラスタツールは `wet()==None` で流体経路に流れない)。ツールバーは `WetTool::ALL` を回して `label()`/`hint()` で描く。
+- replay は on-disk 互換のため `RecordedStroke.tool: u32` のまま。enum への変換用に `WetTool::from_gpu_id` / `TryFrom<u32>` を用意しテスト済み。
 
 ## 4. R3 — パイプラインのテーブル駆動化+エラー行番号補正
 
-[../src/gpu/mod.rs](../src/gpu/mod.rs) の `rebuild_pipelines()` はシェーダー1本につき「read → load → make_compute → struct フィールド → Pipelines 初期化」の5箇所を手書きしており、M4.5 で 3 本以上増える。
-
-- `const COMPUTE_SHADERS: &[(&str, レイアウト種別)]` +名前引きのコレクションにして、**「シェーダー追加 = ファイル名1行」**にする(bake だけ専用レイアウトなので種別タグ付き)
-- パス実行順(`prepare()` のシーケンス)はハードコードのまま維持する。ここは心臓部で、データ駆動化しても得がない
-- **QoL**: common.wgsl 連結でコンパイルエラーの行番号がずれる問題は、エラー文字列中の行番号から共通部の行数を引いて表示し直すだけで直せる。ホットリロードの反復速度に直結するため R3 に同梱する
+**狙い**: `rebuild_pipelines()` の「シェーダー1本 = 5箇所手書き」を表駆動にして**「シェーダー追加 = ファイル名1行」**にする。加えて common.wgsl 連結でずれるコンパイルエラー行番号を補正する(ホットリロードの反復速度に直結)。
 
 **実施メモ(2026-07-05 完了)**:
 
-- `const COMPUTE_SHADERS: &[(&str, ComputeLayout)]`(キー = WGSL ファイル名)を回して compute パイプラインを `HashMap<&'static str, ComputePipeline>` に作る。`Pipelines::compute("splat.wgsl")` で名前引き(未登録名は開発時に panic で気付ける)。**シェーダー追加 = 表に1行**。display/snapshot は render パイプラインで別レイアウト・2フォーマットなので表の外に残す。
-- パス実行順は `prepare()` のハードコードのまま(「ここがパス実行順の正典」とコメント明記)。名前引きなので prepare は `pipelines.compute("velocity.wgsl")` のように読む。
-- 行番号補正 `remap_shader_error_lines`(gpu/mod.rs、純関数): プレフィックス行数 = `common.matches('\n').count() + 1` を引く。codespan の2形式(`wgsl:LINE:COL` と行番号ガター `LINE │ …`)を対象、プレフィックス内(common.wgsl 側)は据え置き、想定外フォーマットは素通し(fail-safe)。GPU 不要の純関数なので cargo test で3件検証。
+- `const COMPUTE_SHADERS: &[(&str, ComputeLayout)]`(キー = WGSL ファイル名)を回して compute パイプラインを `HashMap` に作り、`Pipelines::compute("splat.wgsl")` で名前引き。**シェーダー追加 = 表に1行**。display/snapshot は別レイアウト・2フォーマットなので表の外。
+- パス実行順は `prepare()` のハードコードのまま(「ここがパス実行順の正典」とコメント明記)。
+- 行番号補正 `remap_shader_error_lines`(gpu/shader_error.rs、純関数): プレフィックス行数を引く。codespan の2形式を対象、想定外フォーマットは素通し(fail-safe)。cargo test で3件検証。
 
 ## 5. R4 — app.rs の UI 分割と状態のグループ化
 
-[../src/app.rs](../src/app.rs)(842 行)の `tool_panel()` は1関数で約 340 行あり、M4.5(ラスタツール・消しゴムトグル・線画レイヤー表示・Undo UI)と M5(パレット編集 UI・ライブラリ)で倍増する。
-
-- `src/ui/` サブモジュールへ分割: `tools.rs` / `layers.rs` / `presets.rs` / `tuning.rs`(畳んである味付けスライダー群)など
-- **名前入力+保存+一覧のパターンがプリセット(H3)とストローク(H5)で完全に重複**しているので共通化する
-- `PaintApp` のフィールドも束ねる: `recorder`/`pending_recording`/`player`/`stroke_name`/`stroke_list` → `ReplayUi`、`preset_name`/`preset_list` → `PresetUi`
+**狙い**: 約 340 行の `tool_panel()` を分割し、プリセット(H3)とストローク(H5)で重複する「名前入力+保存+一覧」を共通化。`PaintApp` の散らばったフィールドを `ReplayUi` / `PresetUi` に束ねる。
 
 **実施メモ(2026-07-05 完了)**:
 
-- `src/app.rs` を `src/app/mod.rs` に変え、UI 状態を `src/app/ui/mod.rs` に切り出した。**セクション描画は PaintApp の impl メソッドとして分解**(`tool_panel` は各セクションを呼ぶだけのディスパッチャに: `brush_panel` / `layers_panel` / `tuning_panel` / `preset_panel` / `replay_panel` / `shader_status`)。約 340 行の一枚岩を解消し、M4.5/M5 でセクションが増えてもディスパッチャに1行足すだけにした。**当面はメソッドを app/mod.rs に置き、per-file 分割(tools.rs 等)は app/mod.rs 自体が窮屈になったら行う**(privacy 上は app/ui/ 配下なら非公開フィールドに触れる)。
-- フィールド束ね: `PresetUi { store }` と `ReplayUi { store, recorder, pending_recording, player }`(`store: NamedStore { name, list }`)。PaintApp の 7 フィールドが 2 フィールド + status_msg に減った。
-- 重複していた「名前入力+保存+一覧」は `NamedStore::save_controls`(名前欄+保存+↻)/ `list_rows`(一覧行)に一本化。副作用としてストローク保存行にも ↻(一覧再読込)が付き、「試し再生」は保存行の次の行に移った(機能は不変。プリセット行と UI が揃った)。
+- `src/app.rs` → `src/app/mod.rs`、UI 状態を `src/app/ui/mod.rs` へ。パネル描画は `impl PaintApp` を `app/ui/` 配下に分散(`tools.rs` / `layers.rs` / `tuning.rs` / `panels.rs` / `canvas.rs`。可視性 `pub(in crate::app)`)。`tool_panel` は各セクションを呼ぶディスパッチャに縮小。
+- フィールド束ね: `PresetUi { store }` / `ReplayUi { store, recorder, pending_recording, player }`。「名前入力+保存+一覧」は `NamedStore::save_controls` / `list_rows` に一本化。
+- 同方針で **gpu/mod.rs も分割**(挙動不変の移動のみ、責務の再設計はなし):`init.rs`(`GpuCanvas::new`)・`callback.rs`・`snapshot.rs`・`shader_error.rs`。
 
-**追記(2026-07-05、per-file 分割を実施)**: 上記メモの「窮屈になったら per-file 分割」を、mod.rs に実装を溜めない方針の見直しとして前倒しで実施(挙動不変・cargo test + clippy 済み)。app/mod.rs(822行)は状態・ライフサイクル・ディスパッチャ `tool_panel`・`App::ui` だけ(324行)に減らし、パネル描画は `app/ui/` 配下に `impl PaintApp` を分散(可視性は `pub(in crate::app)`):`tools.rs`(dry_controls / brush_panel)・`layers.rs`・`tuning.rs`・`panels.rs`(preset/replay/shader_status)・`canvas.rs`(canvas_ui / error_overlay)。表示モード表(DISPLAY_MODES)・合成方式表(COMPOSE_MODES)は使うファイルへ移した。
+## 6. R5 — 顔料バッファのフィールド化+ Palette 状態化
 
-**追記(2026-07-05、gpu/mod.rs の分割を実施)**: mod.rs に実装を溜めない方針の見直しとして、gpu 側も分割した(番号なし。§12「GpuCanvas の全面再設計はやらない」の範囲内の切り出し。挙動不変・cargo test + clippy 済み)。gpu/mod.rs(1052行)は型定義・COMPUTE_SHADERS 表・実行時メソッド(clear/sync_layers/bake_dry/fast_dry/rewet/rebuild_pipelines)だけ(401行)に減らし、以下を子モジュールへ移した(いずれも挙動不変の移動。責務の再設計はしていない):`init.rs`(`GpuCanvas::new` の 415 行のリソース生成)・`callback.rs`(`CanvasCallback`。`pub use` で `crate::gpu::CanvasCallback` を維持)・`snapshot.rs`(`GpuCanvas::snapshot`)・`shader_error.rs`(R3 の行番号補正の純関数+テスト)。**R8(readback 一般化)は未着手のまま**で、snapshot は現状のまま snapshot.rs へ移しただけ(M5e/M7 の直前に readback.rs へ一般化する)。
+**狙い**: `GpuCanvas::new()` でローカル変数のまま破棄されていた顔料/物性バッファをフィールド化し(編集時に `write_buffer` するため)、UI の `const PIGMENTS` 直読みを `Palette` 構造体経由に変えて M5a/b をスライダー追加だけにする。
 
-## 6. R5 — 顔料バッファのフィールド化+ Palette 準備(M5b の前提)
+**実施メモ(2026-07-05、M5a/b に吸収)**: 独立コミットは切らず M5 実装の中で目標を満たした。
 
-`pigment_buffer` / `physics_buffer` は `GpuCanvas::new()` で**ローカル変数のまま bind group に渡して破棄**されている(bind group が生かすので動くが、後から `write_buffer` できない)。M5b「編集時に再計算して write_buffer」はフィールド化が前提。合わせて UI が `const PIGMENTS` を直接読んでいる箇所を `Palette` 構造体(中身は当面 const のコピー)経由に変えておくと、M5a/M5b がスライダー追加だけになる。
+- 顔料/物性バッファは `GpuCanvas` のフィールド化済み(`physics_buffer` / `latents_buffer` = [gpu/mod.rs](../src/gpu/mod.rs)、生成は [gpu/init.rs](../src/gpu/init.rs))。`pigment_buffer` の名前は無くなり顔料 latent は `latents_buffer` に統合。
+- ランタイム編集は `GpuCanvas::set_palette(&mut self, queue, &Palette)` が両バッファを `write_buffer` で更新 = R5 が想定した「編集時に再計算して write_buffer」そのもの。
+- `const PIGMENTS` 直読みは廃止。UI・app・replay はすべて `pigment::Palette` の状態(`self.palette`)経由([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs)。JSON 保存対応)。R5 が想定した構造体が M5d でそのままライブラリ化された。
 
-## 7. R6 — LayerStack の抽出(M4.5a / M5c の前)
+## 7. R6 — LayerStack の抽出
 
-`GpuCanvas.layers: Vec<DriedLayer>` は public フィールドで、UI が直接編集 → `sync_layers()` 手動呼び出しという規約結合。M4.5 で「並べ替え不可の固定レイヤー(下書き・清書・ハイライト)」、M5c で「レイヤーごとの latent 記録」が加わり、レイヤー状態はここが最も成長する。編集メソッドを持つ `LayerStack` に閉じ、GPU 同期(uniform 反映)を内部化する。
+**狙い**: `GpuCanvas.layers: Vec<DriedLayer>`(public フィールドを UI が直接編集 → `sync_layers()` 手動呼び出しという規約結合)を、編集メソッドを持ち GPU 同期を内部化した `LayerStack` に閉じる。
 
-## 8. R7 — ストロークモデルの統一(M4.5d の前)
+**見送りメモ(2026-07-07)**: **未適用のまま M4.5a/M5c が完了**した。[gpu/mod.rs](../src/gpu/mod.rs) は現在も `pub layers: Vec<DriedLayer>` で規約結合が残っている。線画が流体レイヤーとは別の `line_textures` として実装されたため、想定した「レイヤー状態がここに集中して膨らむ」成長は起きず、痛みは限定的だった。**現状は任意の負債**: `sync_layers()` の呼び忘れが将来バグになりうるので、レイヤー編集 UI に手を入れるときに合わせて `LayerStack` 化するのが安い。単独で今やる必要はない。
 
-M4.5d の多段 Undo は「ストローク+**当時の実効パラメータ**」の履歴再生で、H5 の `RecordedStroke`(パラメータは現在値で再生)と目的が逆の兄弟。[../src/replay.rs](../src/replay.rs) のストローク型を「points + tool + channel(+ Optional な captured params)」の共有モデルに整理しておくと、M4.5d が Recording の再利用で書ける。置き場所は paint-core(R1)。
+## 8. R7 — ストロークモデルの統一
 
-**ついでに直す既知の傷**: `Player::advance` が `params.tool` / `brush_channel` を上書きしたまま復元しないため、**再生後に選択中ツール・顔料が変わってしまう**。R7 で再生終了時に元の値へ戻す。
+**狙い**: M4.5d の多段 Undo は「ストローク+当時の実効パラメータ」の再生で、H5 の `RecordedStroke`(現在値で再生)と目的が逆の兄弟。ストローク型を「points + tool + channel(+ Optional な captured params)」の共有モデルに整理し、M4.5d を Recording の再利用で書けるようにする。
 
-## 9. R8 — 読み戻しユーティリティの抽出(M5e / M7 の前)
+**見送りメモ(2026-07-07)**: **統一モデルは採らず、M4.5d/M6 が別設計の undo で完了**した。多段 Undo は `undo_stack: Vec<UndoKind>`(操作順)+ ラスタ線画の多段履歴 `LineHistory`([app/linehist.rs](../src/app/linehist.rs))+ 湿レイヤー1段の GPU テクスチャ退避 `wet_backup`([gpu/mod.rs](../src/gpu/mod.rs))の三者構成。線画は実効パラメータを `LineHistory::begin` でスナップショットする形で「captured params」相当を別途満たしており、`RecordedStroke` は今も `channel + tool + points` のまま(統一していない)。この分岐は意図的な設計。
 
-`snapshot()` の「テクスチャ → バッファ → map → Vec」は、M5e(スポイト: カーソル下 1px)と M7(全シミュテクスチャ+乾燥レイヤーの保存/復元)でそのまま欲しくなる。`gpu/readback.rs` へ汎用化(任意テクスチャ・任意サイズ・bytes_per_row の 256B パディング対応)する。合わせて**永続テクスチャを1つの構造体(名前+フォーマット付き)で列挙可能**にしておくと、M7 の保存は「全テクスチャを列挙して読む/書く」だけになる。
+**既知の傷は解消済み(2026-07-07)**: `Player::advance` が再生中に `params.tool` / `brush_channel` を上書きする件は、`params.tool` は R2 の副作用で毎フレーム `self.tool` から再同期される([app/ui/tools.rs](../src/app/ui/tools.rs))ため元から自然治癒、残っていた `brush_channel`(再生後に選択顔料が最後のストロークの色へ飛ぶ)は `start_replay` で退避 → `stop_replay` で復元する形で修正([app/mod.rs](../src/app/mod.rs)、`ReplayUi.saved_channel`)。
 
-## 10. R9 — CANVAS_SIZE の値化(M6 / M8 の前)
+## 9. R8 — 読み戻し(readback)ユーティリティの抽出
 
-const `CANVAS_SIZE` は gpu/mod.rs(テクスチャ・dispatch・スナップショット)、app.rs(座標変換)、paper.rs に波及している。M8 で設定化するため、`GpuCanvas` のフィールド(+ app へ公開)へ先に変えておく。テクスチャが増える M4.5 以後にやるより今の方が安い。
+**狙い**: `snapshot()` の「テクスチャ → バッファ → map → Vec」を `gpu/readback.rs` へ汎用化(任意テクスチャ・任意サイズ・256B パディング対応)し、M5e(スポイト)と M7(作品保存)で再利用する。
 
-**注意**: snapshot の bytes_per_row は 512/1024/2048 なら偶然 256B 整列を満たすが、値化するときにパディング計算を入れる(R8 の readback 汎用化と整合)。
+**見送りメモ(2026-07-07)**: **汎用化せずに M5e/M7 が完了**した。読み戻しコードは共通化されず、[gpu/snapshot.rs](../src/gpu/snapshot.rs)(PNG 用)と [gpu/persist.rs](../src/gpu/persist.rs)(M7 作品保存)に inline で重複している。R9 でキャンバスサイズを 64 の倍数に限定したので **256B パディング計算は不要のまま**(汎用化の主目的の一つは前提ごと消えた)。**現状は任意の負債**: 読み戻し箇所がこれ以上増える、または R9 の 64 倍数制限を外すときに `gpu/readback.rs` へ寄せる。今の2〜3箇所の重複では割に合わない。
 
-**実施メモ(2026-07-07、M8 と同一コミットで適用)**: paint-core の const は `CANVAS_SIZES = [512, 1024, 2048]`(選択肢)+ `DEFAULT_CANVAS_SIZE = 512`(既定)に置き換え、実行時の値は `GpuCanvas.size`(+`tiles_per_side`)が正典。app は写し `PaintApp.canvas_size` を持つ(座標変換・保存が renderer ロックなしで毎フレーム読むため。変更は `recreate_canvas` 経由のみ)。**パディング計算は入れなかった**: サイズを CANVAS_SIZES(64 の倍数)に限定し `GpuCanvas::new` の assert で強制することで、readback の行バイト数が常に 256B 整列になる(計画の注意事項は「一般サイズ対応」でなく「サイズ制限」で満たした)。WGSL 側のタイル定数はサイズ依存になったため common.wgsl から外し、`shader_prelude`(gpu/mod.rs)が const 2行を生成して連結する(§M8・architecture.md §8 参照)。
+## 10. R9 — CANVAS_SIZE の値化
 
-## 11. 判断が要るもの(挙動変更を伴うため保留)
+**狙い**: gpu/mod.rs・app.rs・paper.rs に波及する const `CANVAS_SIZE` を `GpuCanvas` のフィールド化し、M8 の設定化に備える。
 
-**SimParams にツール/UI 状態が混ざっている**: `tool` / `brush_channel` / `display_mode` / `display_gain` / `compose_mode` は物理調整値ではないのにプリセットへ保存される = プリセット読込で選択中ツール・顔料・デバッグ表示まで切り替わる。該当フィールドに `#[serde(skip)]` を付けるだけで直せる(GPU レイアウトは不変、「1行×3」の原則も維持)が、「プリセット = 作業状態ごと復元したい」という意図なら現状維持が正。**使い勝手の好みの問題なので、気になったときに決める**。
+**実施メモ(2026-07-07、M8 と同一コミットで適用)**: paint-core の const は `CANVAS_SIZES = [512, 1024, 2048]` + `DEFAULT_CANVAS_SIZE = 512` に置き換え、実行時の値は `GpuCanvas.size`(+`tiles_per_side`)が正典。app は写し `PaintApp.canvas_size` を持つ(座標変換・保存が renderer ロックなしで毎フレーム読むため。変更は `recreate_canvas` 経由のみ)。**パディング計算は入れず**、サイズを 64 の倍数に限定して `GpuCanvas::new` の assert で強制することで readback の行バイト数を常に 256B 整列にした。WGSL 側のタイル定数はサイズ依存になったため `shader_prelude`(gpu/mod.rs)が const 2行を生成して連結する(architecture.md §8 参照)。
+
+## 11. 判断が要るもの(保留)
+
+**SimParams にツール/UI 状態が混ざっている**: `tool` / `brush_channel` / `display_mode` / `display_gain` / `compose_mode` は物理調整値ではないのにプリセットへ保存される = プリセット読込で選択中ツール・顔料・デバッグ表示まで切り替わる。`#[serde(skip)]` を付ければ直せるが、「プリセット = 作業状態ごと復元したい」意図なら現状維持が正。**好みの問題なので気になったときに決める**。
 
 ## 12. やらないこと(plan.md §4 と同じ「先送り」の流儀)
 
