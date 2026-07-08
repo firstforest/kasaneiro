@@ -97,6 +97,16 @@ enum ActiveLayer {
     Dried(usize),
 }
 
+/// 元に戻せない破壊操作(保存・書き出しセクション F9)。誤クリック一発で作品が消えないよう、
+/// 1度目のクリックで確認待ち(赤い警告ボタン)になり、もう一度押すと実行する(panels.rs)
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::app) enum ConfirmAction {
+    /// 「全部消す」= キャンバス全消去(clear_canvas)
+    ClearCanvas,
+    /// 「新規キャンバス」= 選択サイズで作り直し(recreate_canvas)
+    NewCanvas,
+}
+
 pub struct PaintApp {
     render_state: egui_wgpu::RenderState,
     params: SimParams,
@@ -132,6 +142,9 @@ pub struct PaintApp {
     replay_ui: ReplayUi,
     /// H3/H5/H6 の操作結果の表示(保存先パスやエラー)
     status_msg: Option<String>,
+    /// 破壊操作(全部消す・新規キャンバス)の2度押し確認の状態。Some=確認待ち。
+    /// 確認ボタン以外をクリックしたら解除する(save_panel 末尾で判定)
+    pending_confirm: Option<ConfirmAction>,
     /// M4.5d: 線画(鉛筆・ペン・ハイライト)の多段 Undo/Redo 履歴。
     /// 流体を通らないラスタ線画をストローク単位で決定論的に引き直す(湿レイヤーは対象外)
     line_history: LineHistory,
@@ -241,6 +254,7 @@ impl PaintApp {
                 saved_channel: None,
             },
             status_msg: None,
+            pending_confirm: None,
             line_history: LineHistory::default(),
             undo_stack: Vec::new(),
             // GpuCanvas::new が既定パレットを両バッファへ書き込み済み(同じ値で開始)

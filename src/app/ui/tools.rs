@@ -64,14 +64,14 @@ impl PaintApp {
             let can_undo = !self.undo_stack.is_empty();
             let can_redo = !self.line_history.redo.is_empty();
             if ui
-                .add_enabled(can_undo, egui::Button::new("↶ 元に戻す"))
+                .add_enabled(can_undo, egui::Button::new("元に戻す"))
                 .on_hover_text("直前の操作を戻す (Ctrl+Z)。水彩は1段、線画は多段")
                 .clicked()
             {
                 self.undo();
             }
             if ui
-                .add_enabled(can_redo, egui::Button::new("↷ やり直し"))
+                .add_enabled(can_redo, egui::Button::new("やり直し"))
                 .on_hover_text("取り消しをやり直す (Ctrl+Shift+Z)。対象は線画")
                 .clicked()
             {
@@ -133,17 +133,25 @@ impl PaintApp {
                     self.last_wet_tool = WetTool::Paint;
                 }
             }
-            // 削り/消す/ぼかし筆/ならし: 文字ボタン(Paint はスウォッチ側で出すので飛ばす)
+            // 「塗る4色」と「削り以降の4ツール」の意味グループを小さいギャップで区切る
+            // (horizontal_wrapped の折返し挙動を壊さないよう要素の追加はしない)
+            ui.add_space(8.0);
+            // 削り/消す/ぼかし筆/ならし: 枠付きの文字ボタン(Paint はスウォッチ側で出すので飛ばす)。
+            // 色スウォッチと高さ 28px を揃え、選択中は F17 のスウォッチ選択太枠と整合する
+            // selection 色の塗り+枠で明示する
             for wt in WetTool::ALL {
                 if wt == WetTool::Paint {
                     continue;
                 }
                 let selected = self.tool == Tool::Wet(wt);
-                if ui
-                    .selectable_label(selected, wt.label())
-                    .on_hover_text(wt.hint())
-                    .clicked()
-                {
+                let mut button =
+                    egui::Button::new(wt.label()).min_size(egui::vec2(0.0, 28.0));
+                if selected {
+                    button = button
+                        .fill(ui.visuals().selection.bg_fill)
+                        .stroke((3.0, ui.visuals().selection.stroke.color));
+                }
+                if ui.add(button).on_hover_text(wt.hint()).clicked() {
                     self.tool = Tool::Wet(wt);
                     self.last_wet_tool = wt;
                 }
@@ -154,9 +162,11 @@ impl PaintApp {
         }
         // スポイトは色選びの動線なのでツールバーの直後に置く(M5e。旧: パレットパネル内)
         self.eyedropper_control(ui);
-        // F16: 選択中ツールの短い説明を常時1行(ホバー不要で「何をする筆か」が読める)
+        // F16: 選択中ツールの短い説明を常時1行(ホバー不要で「何をする筆か」が読める)。
+        // 左パネル幅で折り返さないよう常時表示は short_hint、詳しい説明はホバーに温存
         if let Some(wt) = self.tool.wet() {
-            ui.label(egui::RichText::new(wt.hint()).weak().small());
+            ui.label(egui::RichText::new(wt.short_hint()).weak().small())
+                .on_hover_text(wt.hint());
         }
         // 塗るときは選択中の顔料名を出す(削り等では顔料は無関係なので出さない)
         if self.tool == Tool::Wet(WetTool::Paint) {
@@ -170,7 +180,8 @@ impl PaintApp {
                 .suffix(" px"),
         );
         ui.add(egui::Slider::new(&mut self.params.brush_water, 0.0..=2.0).text("水量"));
-        ui.add(egui::Slider::new(&mut self.params.brush_velocity, 0.0..=2.0).text("初速"));
+        ui.add(egui::Slider::new(&mut self.params.brush_velocity, 0.0..=2.0).text("筆の勢い"))
+            .on_hover_text("初速: ストロークが水に与える初期速度。上げるほど置いた色が流れ出す");
         ui.add(egui::Slider::new(&mut self.params.brush_pigment, 0.0..=1.0).text("顔料量"));
         // F5: ツール固有スライダーは、そのツールを選んでいるときだけ出す(通常時の壁を減らす)
         match self.tool.wet() {
@@ -295,14 +306,14 @@ impl PaintApp {
             let can_undo = !self.line_history.done.is_empty();
             let can_redo = !self.line_history.redo.is_empty();
             if ui
-                .add_enabled(can_undo, egui::Button::new("↶ 元に戻す"))
+                .add_enabled(can_undo, egui::Button::new("元に戻す"))
                 .on_hover_text("線画を1本戻す (Ctrl+Z)。水彩は対象外")
                 .clicked()
             {
                 self.line_undo();
             }
             if ui
-                .add_enabled(can_redo, egui::Button::new("↷ やり直し"))
+                .add_enabled(can_redo, egui::Button::new("やり直し"))
                 .on_hover_text("取り消した線画を1本復元 (Ctrl+Shift+Z)")
                 .clicked()
             {

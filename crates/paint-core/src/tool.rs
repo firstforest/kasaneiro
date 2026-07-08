@@ -73,6 +73,18 @@ impl WetTool {
     pub fn from_gpu_id(id: u32) -> Option<WetTool> {
         WetTool::ALL.into_iter().find(|t| t.gpu_id() == id)
     }
+
+    /// 選択中ツールの常時1行表示(F16)用の短い説明。左パネル幅で折り返さないよう
+    /// 全角 25〜30 字以内に収める。詳しい説明はツールボタンのホバー([`ToolInfo::hint`])に温存
+    pub fn short_hint(self) -> &'static str {
+        match self {
+            WetTool::Paint => "水と顔料を置いて描く基本のブラシ",
+            WetTool::Lift => "乾いた色を水で戻して薄くする削りツール",
+            WetTool::Erase => "水・顔料を消して紙の白まで戻す完全消去",
+            WetTool::WaterBrush => "水だけを塗り、下の色をなじませてぼかす",
+            WetTool::Smear => "濃い所の色を周囲へ広げて均一に伸ばす",
+        }
+    }
 }
 
 /// GPU 値(u32)からの変換。replay の `RecordedStroke.tool` など on-disk 互換のため u32 を残す箇所で使う。

@@ -53,13 +53,10 @@ impl PaintApp {
     pub(in crate::app) fn layer_stack_panel(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.heading("レイヤー");
-        ui.label(
-            egui::RichText::new(
-                "上=手前。選択したレイヤーのツールが左パネルに出ます(下書き→彩色の順がおすすめ)",
-            )
-            .weak()
-            .small(),
-        );
+        // レイヤー構造の初回ガイド。右パネル幅で読みやすいよう短い2行に手動で分け、
+        // .small() は使わず通常サイズの .weak() で表示する(小さすぎると読めないため)
+        ui.label(egui::RichText::new("上=手前。選んだレイヤーのツールが左パネルに出ます").weak());
+        ui.label(egui::RichText::new("おすすめ: 下書き→彩色の順").weak());
         ui.separator();
 
         // 選択は行の描画後にまとめて反映する(乾燥レイヤーのループが renderer を借りるため)

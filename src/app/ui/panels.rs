@@ -1,7 +1,7 @@
 //! プリセット(H3)・ストローク記録再生(H5)・シェーダー状態(H1)のパネル。
 //! app/mod.rs から分割(R4)。
 
-use crate::app::PaintApp;
+use crate::app::{ConfirmAction, PaintApp};
 use crate::gpu::hot_reload::shader_dir;
 use crate::preset;
 use crate::replay::{self, Recorder, Recording};
@@ -77,22 +77,19 @@ impl PaintApp {
     pub(in crate::app) fn save_panel(&mut self, ui: &mut egui::Ui) {
         self.work_panel(ui);
 
-        ui.horizontal(|ui| {
-            if ui
-                .button("画像を書き出す (PNG)")
-                .on_hover_text("いま見えている絵を PNG 画像として snapshots/ に書き出す")
-                .clicked()
-            {
-                self.save_snapshot();
-            }
-            if ui
-                .button("全部消す")
-                .on_hover_text("キャンバスを空に戻す(元に戻すで復帰不可。残すなら先に作品保存を)")
-                .clicked()
-            {
-                self.clear_canvas();
-            }
-        });
+        // このフレームで確認式ボタン(通常/警告どちらの状態でも)が押されたか。
+        // 押されずに別のクリックがあれば確認待ちを解除する(save_panel 末尾で判定)
+        let mut confirm_clicked = false;
+
+        // PNG 書き出し。破壊操作(全部消す)は誤クリック防止のため真横に並べず、
+        // セクション末尾へ分離した(UI レビュー対応)
+        if ui
+            .button("画像を書き出す (PNG)")
+            .on_hover_text("いま見えている絵を PNG 画像として snapshots/ に書き出す")
+            .clicked()
+        {
+            self.save_snapshot();
+        }
 
         // キャンバスサイズ(M8): 正方形 512/1024/2048。テクセル密度は据え置き=「広い紙」。
         // 変更は新規キャンバスの作り直しなので、描きかけは先に作品保存してから
@@ -105,14 +102,16 @@ impl PaintApp {
                         ui.selectable_value(&mut self.pending_canvas_size, s, format!("{s}×{s}"));
                     }
                 });
-            if ui
-                .button("新規キャンバス")
-                .on_hover_text(
-                    "現在のキャンバスを破棄して選択サイズで作り直す(広い紙。テクセル密度は同じ)。\
-                     保存していない絵は消えるので、残すなら先に作品保存を",
-                )
-                .clicked()
-            {
+            let (do_new, clicked) = self.confirm_button(
+                ui,
+                ConfirmAction::NewCanvas,
+                "新規キャンバス",
+                "本当に作り直す?(もう一度押すと実行)",
+                "現在のキャンバスを破棄して選択サイズで作り直す(広い紙。テクセル密度は同じ)。\
+                 保存していない絵は消えるので、残すなら先に作品保存を",
+            );
+            confirm_clicked |= clicked;
+            if do_new {
                 let size = self.pending_canvas_size;
                 self.recreate_canvas(size);
                 self.status_msg = Some(format!("新規キャンバス: {size}×{size}"));
@@ -128,6 +127,58 @@ impl PaintApp {
                 .small(),
             );
         }
+
+        // 全部消す: 元に戻せない一発破壊なので、書き出しボタンから離した末尾に単独で置き、
+        // さらに2度押し確認を挟む
+        ui.add_space(8.0);
+        let (do_clear, clicked) = self.confirm_button(
+            ui,
+            ConfirmAction::ClearCanvas,
+            "全部消す",
+            "本当に消す?(もう一度押すと実行)",
+            "キャンバスを空に戻す(元に戻すで復帰不可。残すなら先に作品保存を)",
+        );
+        confirm_clicked |= clicked;
+        if do_clear {
+            self.clear_canvas();
+        }
+
+        // 確認待ちの解除: 確認式ボタン以外のどこかをクリックしたら(=別の操作を始めたら)
+        // 確認状態を捨てる。press でなく click 判定にするのは、確認ボタン自身の押下
+        // (press と release が別フレーム)を誤って解除しないため
+        if self.pending_confirm.is_some() && !confirm_clicked && ui.input(|i| i.pointer.any_click())
+        {
+            self.pending_confirm = None;
+        }
+    }
+
+    /// 破壊操作の2度押し確認ボタン。1度目のクリックで確認待ち(赤い警告表示)になり、
+    /// もう一度押すと実行。戻り値は (実行してよいか, このフレームでこのボタンが押されたか)。
+    /// 後者は save_panel 末尾の「他をクリックしたら確認解除」の判定に使う
+    fn confirm_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        action: ConfirmAction,
+        label: &str,
+        confirm_label: &str,
+        hover: &str,
+    ) -> (bool, bool) {
+        if self.pending_confirm == Some(action) {
+            // 確認待ち: 赤い警告表示。もう一度押したら実行
+            let button = egui::Button::new(
+                egui::RichText::new(confirm_label).color(egui::Color32::WHITE),
+            )
+            .fill(egui::Color32::from_rgb(200, 60, 60));
+            if ui.add(button).on_hover_text(hover).clicked() {
+                self.pending_confirm = None;
+                return (true, true);
+            }
+        } else if ui.button(label).on_hover_text(hover).clicked() {
+            // 1度目: 実行せず確認待ちへ(他の操作の確認待ちがあれば置き換わる=解除)
+            self.pending_confirm = Some(action);
+            return (false, true);
+        }
+        (false, false)
     }
 
     /// 操作結果(保存先パス・スポイト・エラー)の1行表示(F3)。左パネルのスクロール外・
