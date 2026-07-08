@@ -939,9 +939,9 @@ impl PaintApp {
     /// (active_tools_panel が選択中レイヤーで出し分ける)。レイヤー関連は右パネル
     /// (layer_stack_panel)へ分離した
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
-        // 通常ユーザー向け(ワークフロー順: 塗る → 表示 → 保存 → プリセット)
+        // 通常ユーザー向け(ワークフロー順: 塗る → 保存 → プリセット)。
+        // 表示(ズーム・回転)はレイヤーの上=右パネル最上段へ移した
         self.active_tools_panel(ui);
-        self.view_panel(ui);
         self.save_panel(ui);
         self.preset_panel(ui);
         // F8: 制作者向けは開発モードのときだけ露出(削除でなく退避)。
@@ -979,7 +979,10 @@ impl eframe::App for PaintApp {
         egui::Panel::left("tools")
             .default_size(280.0)
             .show(ui, |ui| {
-                // M2: 乾燥ボタン(+F11 開発モードトグル)はスクロールの外に置き、常に見える位置に固定する
+                // F11: 開発モードトグルは左パネルの下端(左下)へ固定する。
+                // 下端固定は他より先に確保する(残りが上側のスクロール領域になる)
+                egui::Panel::bottom("dev_toggle").show(ui, |ui| self.dev_mode_toggle(ui));
+                // M2: 乾燥ボタンはスクロールの外に置き、常に見える位置に固定する
                 self.dry_controls(ui);
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| self.tool_panel(ui));
@@ -991,7 +994,11 @@ impl eframe::App for PaintApp {
         egui::Panel::right("layers")
             .default_size(230.0)
             .show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.layer_stack_panel(ui));
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    // 表示(ズーム・回転)はレイヤーの上=右パネル最上段に置く
+                    self.view_panel(ui);
+                    self.layer_stack_panel(ui);
+                });
             });
 
         self.error_overlay(ui);

@@ -253,7 +253,8 @@ impl PaintApp {
     /// ビュー(M6): 拡大率の表示・全体表示に戻す・操作ヒント。
     /// 拡大/パンの実操作はキャンバス上のホイール・中ボタンドラッグで行う(canvas.rs)
     pub(in crate::app) fn view_panel(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
+        // 右パネル最上段(レイヤーの上)に置くので、先頭の区切り線は付けない
+        ui.add_space(4.0);
         ui.heading("表示(ズーム・回転)");
         // 通常時はこの1行だけ: 拡大率と「全体表示に戻す」(拡大中に迷子から復帰する用)
         ui.horizontal(|ui| {

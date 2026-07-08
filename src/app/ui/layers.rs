@@ -51,6 +51,8 @@ impl PaintApp {
     /// 右パネル: レイヤースタック。選択中レイヤーをハイライトし、選択がツール系統を切り替える。
     /// 乾燥レイヤーの可視性・並べ替え(M2)と合成方式(M3)もここに集約する
     pub(in crate::app) fn layer_stack_panel(&mut self, ui: &mut egui::Ui) {
+        // 上段の「表示」パネルと視覚的に分ける区切り線
+        ui.separator();
         ui.add_space(4.0);
         ui.heading("レイヤー");
         // レイヤー構造の初回ガイド。右パネル幅で読みやすいよう短い2行に手動で分け、

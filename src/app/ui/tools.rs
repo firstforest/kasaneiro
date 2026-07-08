@@ -78,9 +78,13 @@ impl PaintApp {
                 self.redo();
             }
         });
-        // F11: 制作者向け機能(味付け・診断・シミュ制御・記録再生・シェーダー状態)の表示切替。
-        // off=通常ユーザー向け最小 UI。開発機能は削除でなくこのトグルの裏へ退避する
-        ui.separator();
+    }
+
+    /// F11: 制作者向け機能(味付け・診断・シミュ制御・記録再生・シェーダー状態)の表示切替。
+    /// off=通常ユーザー向け最小 UI。開発機能は削除でなくこのトグルの裏へ退避する。
+    /// 誤操作しにくいよう、左パネルの下端(左下)へ固定して置く(mod.rs の Panel::bottom)
+    pub(in crate::app) fn dev_mode_toggle(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
         ui.checkbox(&mut self.dev_mode, "🔧 開発モード")
             .on_hover_text(
                 "味付けスライダー・診断表示・シミュ制御・ストローク記録再生・シェーダー状態を表示/退避する。\
