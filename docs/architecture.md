@@ -38,17 +38,18 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 ├─ src/                   バイナリ crate(egui / wgpu / naga はここだけ)
 │  ├─ main.rs             eframe 起動
 │  ├─ app/                egui UI
-│  │  ├─ mod.rs           PaintApp の状態・ライフサイクル・ディスパッチャ tool_panel・App::ui(R4)
+│  │  ├─ mod.rs           PaintApp の状態・ライフサイクル・二層ディスパッチャ tool_panel・App::ui/save(R4)
+│  │  │                   (dev_mode:通常/開発モードの二層化。eframe storage に永続化。has_painted:初回ガイド)
 │  │  ├─ linehist.rs      線画の多段 Undo/Redo 履歴(M4.5d。RasterStroke / LineHistory / 再ラスタライズ)
 │  │  └─ ui/              UI 状態 + パネル描画を per-file 分割(R4。impl PaintApp を分散)
 │  │     ├─ mod.rs        UI 状態(PresetUi / WorkUi / PaletteUi / ReplayUi)+ 共通部品 NamedStore
-│  │     ├─ tools.rs      乾燥ボタンと、アクティブレイヤーごとのツールパネル(dry_controls /
-│  │     │                 active_tools_panel が brush/pencil/pen/highlight/dried を出し分け)
-│  │     ├─ palette.rs    顔料パレット編集(palette_panel。M5。色・ρ/ω/γ を編集し apply_palette で反映。水彩レイヤー選択時のみ表示)
+│  │     ├─ tools.rs      乾燥ボタン+開発モードトグルと、アクティブレイヤーごとのツールパネル(dry_controls /
+│  │     │                 active_tools_panel が brush/pencil/pen/highlight/dried を Frame::group で囲んで出し分け)
+│  │     ├─ palette.rs    顔料パレット編集(palette_panel。M5。スポイトは常時+色・ρ/ω/γ・ライブラリは「顔料の詳細設定」に折りたたみ。水彩レイヤー選択時のみ表示)
 │  │     ├─ layers.rs     右パネルのレイヤースタック(layer_stack_panel。選択=ツール系統切替・可視性・並べ替え・合成方式)
-│  │     ├─ tuning.rs     乾燥・筆圧・味付け・診断・シミュ制御(tuning_panel)
-│  │     ├─ panels.rs     プリセット/作品保存/記録再生/シェーダー状態(preset/work/replay/shader_status。M7)
-│  │     └─ canvas.rs     キャンバス描画とエラーオーバーレイ(canvas_ui / error_overlay)
+│  │     ├─ tuning.rs     制作者向けの調整・診断・シミュ制御(tuning_dev_panel。開発モード時のみ表示)
+│  │     ├─ panels.rs     表示/保存・書き出し/プリセット/記録再生/シェーダー状態+status_bar(view/save_panel(work+PNG+リセット+サイズ)/preset/replay/shader_status/status_bar)
+│  │     └─ canvas.rs     キャンバス描画・初回ガイド・エラーオーバーレイ(canvas_ui / error_overlay)
 │  ├─ gpu/                GpuCanvas。リソース定義と型・実行時メソッドを持ち、長い処理は分離
 │  │  ├─ mod.rs           型定義(GpuCanvas / Pipelines / DriedLayer)・COMPUTE_SHADERS 表・
 │  │  │                   clear/sync_layers/bake_dry/fast_dry/rewet/rebuild_pipelines

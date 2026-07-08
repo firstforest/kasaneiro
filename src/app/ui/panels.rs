@@ -12,7 +12,7 @@ impl PaintApp {
     /// プリセット(H3): 名前保存+一覧読込。共通 UI は NamedStore に集約(R4)
     pub(in crate::app) fn preset_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.heading("プリセット (H3)");
+        ui.heading("設定プリセット");
         let params = self.params;
         if let Some(status) =
             self.preset_ui
@@ -37,7 +37,7 @@ impl PaintApp {
     /// 名前欄+ボタンを直に描いてクリック時に self.save_work を呼ぶ(一覧の読込は list_rows を流用)
     pub(in crate::app) fn work_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.heading("作品保存 (M7)");
+        ui.heading("作品を保存");
         let mut do_save = None;
         ui.horizontal(|ui| {
             ui.add(
@@ -68,6 +68,74 @@ impl PaintApp {
         }
         if let Some(name) = self.work_ui.store.list_rows(ui, "読込") {
             self.load_work(&name);
+        }
+    }
+
+    /// 保存・書き出しセクション(F9): 作品保存/読込に、画像書き出し(PNG)・全消去・
+    /// キャンバスサイズを集約する。どれも通常ユーザーが使う機能なので開発モードに関係なく常時表示。
+    /// 旧「制御 (H6)」に混在していた PNG/リセット/サイズを、動線に沿ってここへ移した
+    pub(in crate::app) fn save_panel(&mut self, ui: &mut egui::Ui) {
+        self.work_panel(ui);
+
+        ui.horizontal(|ui| {
+            if ui
+                .button("画像を書き出す (PNG)")
+                .on_hover_text("いま見えている絵を PNG 画像として snapshots/ に書き出す")
+                .clicked()
+            {
+                self.save_snapshot();
+            }
+            if ui
+                .button("全部消す")
+                .on_hover_text("キャンバスを空に戻す(元に戻すで復帰不可。残すなら先に作品保存を)")
+                .clicked()
+            {
+                self.clear_canvas();
+            }
+        });
+
+        // キャンバスサイズ(M8): 正方形 512/1024/2048。テクセル密度は据え置き=「広い紙」。
+        // 変更は新規キャンバスの作り直しなので、描きかけは先に作品保存してから
+        ui.horizontal(|ui| {
+            ui.label("キャンバスサイズ");
+            egui::ComboBox::from_id_salt("canvas_size")
+                .selected_text(format!("{0}×{0}", self.pending_canvas_size))
+                .show_ui(ui, |ui| {
+                    for s in paint_core::sim::CANVAS_SIZES {
+                        ui.selectable_value(&mut self.pending_canvas_size, s, format!("{s}×{s}"));
+                    }
+                });
+            if ui
+                .button("新規キャンバス")
+                .on_hover_text(
+                    "現在のキャンバスを破棄して選択サイズで作り直す(広い紙。テクセル密度は同じ)。\
+                     保存していない絵は消えるので、残すなら先に作品保存を",
+                )
+                .clicked()
+            {
+                let size = self.pending_canvas_size;
+                self.recreate_canvas(size);
+                self.status_msg = Some(format!("新規キャンバス: {size}×{size}"));
+            }
+        });
+        if self.pending_canvas_size != self.canvas_size {
+            ui.label(
+                egui::RichText::new(format!(
+                    "現在 {0}×{0}(「新規キャンバス」で切り替え)",
+                    self.canvas_size
+                ))
+                .weak()
+                .small(),
+            );
+        }
+    }
+
+    /// 操作結果(保存先パス・スポイト・エラー)の1行表示(F3)。左パネルのスクロール外・
+    /// 常時可視の位置で呼ぶので、開発モードの記録再生パネルに埋めず、どの操作でも同じ場所に出る
+    pub(in crate::app) fn status_bar(&mut self, ui: &mut egui::Ui) {
+        if let Some(msg) = &self.status_msg {
+            ui.separator();
+            ui.label(msg.clone());
         }
     }
 
@@ -128,18 +196,15 @@ impl PaintApp {
         if let Some((recording, palette)) = replay_now {
             self.start_replay(recording, palette);
         }
-
-        if let Some(msg) = &self.status_msg {
-            ui.separator();
-            ui.label(msg.clone());
-        }
+        // status_msg の表示は status_bar(常時可視・スクロール外)へ移した(F3)
     }
 
     /// ビュー(M6): 拡大率の表示・全体表示に戻す・操作ヒント。
     /// 拡大/パンの実操作はキャンバス上のホイール・中ボタンドラッグで行う(canvas.rs)
     pub(in crate::app) fn view_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.heading("ビュー (M6)");
+        ui.heading("表示(ズーム・回転)");
+        // 通常時はこの1行だけ: 拡大率と「全体表示に戻す」(拡大中に迷子から復帰する用)
         ui.horizontal(|ui| {
             ui.label(format!("拡大 {:.0}%", self.view_zoom * 100.0));
             let rotated = self.view_zoom > 1.0 || self.view_angle != 0.0;
@@ -150,41 +215,47 @@ impl PaintApp {
                 self.reset_view();
             }
         });
-        // 回転(表示中心まわり)。スライダーは自由角、ボタンは 15°スナップ
-        ui.horizontal(|ui| {
-            ui.label("回転");
-            let mut deg = self.view_angle.to_degrees();
-            if ui
-                .add(egui::Slider::new(&mut deg, -180.0..=180.0).suffix("°"))
-                .changed()
-            {
-                self.view_angle = deg.to_radians();
-                self.clamp_view();
-            }
-            if ui.small_button("−15°").clicked() {
-                self.rotate_view(-std::f32::consts::FRAC_PI_8 * 1.5);
-            }
-            if ui.small_button("+15°").clicked() {
-                self.rotate_view(std::f32::consts::FRAC_PI_8 * 1.5);
-            }
-            if ui.small_button("0°").clicked() {
-                self.view_angle = 0.0;
-                self.clamp_view();
-            }
-        });
-        ui.label(
-            egui::RichText::new(
-                "ホイール=拡大 / Shift+ホイール=15°回転 / 中ボタン・スペース+左ドラッグ=パン",
-            )
-            .weak()
-            .small(),
-        );
+        // F13: 回転スライダー・スナップ・操作ヒントは詳細として畳む(実操作はキャンバス上の
+        // ホイール/ドラッグで行うので、畳んでも体験は落ちない)
+        egui::CollapsingHeader::new("表示の詳細")
+            .default_open(false)
+            .show(ui, |ui| {
+                // 回転(表示中心まわり)。スライダーは自由角、ボタンは 15°スナップ
+                ui.horizontal(|ui| {
+                    ui.label("回転");
+                    let mut deg = self.view_angle.to_degrees();
+                    if ui
+                        .add(egui::Slider::new(&mut deg, -180.0..=180.0).suffix("°"))
+                        .changed()
+                    {
+                        self.view_angle = deg.to_radians();
+                        self.clamp_view();
+                    }
+                    if ui.small_button("−15°").clicked() {
+                        self.rotate_view(-std::f32::consts::FRAC_PI_8 * 1.5);
+                    }
+                    if ui.small_button("+15°").clicked() {
+                        self.rotate_view(std::f32::consts::FRAC_PI_8 * 1.5);
+                    }
+                    if ui.small_button("0°").clicked() {
+                        self.view_angle = 0.0;
+                        self.clamp_view();
+                    }
+                });
+                ui.label(
+                    egui::RichText::new(
+                        "ホイール=拡大 / Shift+ホイール=15°回転 / 中ボタン・スペース+左ドラッグ=パン",
+                    )
+                    .weak()
+                    .small(),
+                );
+            });
     }
 
     /// シェーダー(H1): 監視ディレクトリとコンパイル状態の表示
     pub(in crate::app) fn shader_status(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.heading("シェーダー (H1)");
+        ui.heading("シェーダー(開発)");
         ui.label(format!("{} を監視中", shader_dir().display()));
         match &self.shader_error {
             None => {

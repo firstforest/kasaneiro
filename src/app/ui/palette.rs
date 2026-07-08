@@ -14,9 +14,40 @@ impl PaintApp {
     /// パレット(M5): 4スロットの色・密度 ρ・ステイニング ω・粒状感 γ を編集する。
     /// ブラシの顔料セレクタ(brush_panel)と同じ4スロットを指す
     pub(in crate::app) fn palette_panel(&mut self, ui: &mut egui::Ui) {
+        // スポイトは色選びの動線なので折りたたみの外(常時)に置く。
+        // 色/ρ/ω/γ の編集・ライブラリは「顔料の詳細設定」に畳んで通常時の情報量を下げる(F4)。
         ui.separator();
-        ui.heading("パレット (M5)");
-        ui.label("色と顔料の性質(沈み方・剥がれ方・粒状感)を編集できます");
+        self.eyedropper_control(ui);
+        egui::CollapsingHeader::new("顔料の詳細設定(色・沈み方・粒状感)")
+            .default_open(false)
+            .show(ui, |ui| self.palette_details(ui));
+    }
+
+    /// スポイト待機トグル(色選びの動線なので常時表示)。M5e
+    fn eyedropper_control(&mut self, ui: &mut egui::Ui) {
+        let slot = self.params.brush_channel.min(3) as usize + 1;
+        let armed = self.palette_ui.eyedropper;
+        if ui
+            .selectable_label(armed, "💧 スポイト(画面の色を拾う)")
+            .on_hover_text(format!(
+                "押してからキャンバスをクリックすると、その点の色を選択中スロット #{slot} に取り込みます"
+            ))
+            .clicked()
+        {
+            self.palette_ui.eyedropper = !armed;
+        }
+        if self.palette_ui.eyedropper {
+            ui.colored_label(
+                egui::Color32::from_rgb(64, 130, 200),
+                "スポイト待機中… キャンバスをクリックしてください",
+            );
+        }
+    }
+
+    /// 顔料の色・性質(ρ/ω/γ)編集とパレット・ライブラリ。折りたたみの中身(F4)。
+    /// ラベルは平易な日本語を主に、数式記号 ρ/ω/γ はホバーへ温存(F2)
+    fn palette_details(&mut self, ui: &mut egui::Ui) {
+        ui.label("色と顔料の性質(沈み方・染みつき・粒状感)を編集できます");
 
         let mut changed = false;
         for (i, p) in self.palette.pigments.iter_mut().enumerate() {
@@ -30,48 +61,31 @@ impl PaintApp {
             // per-顔料の密度 ρ は「沈着の速さ」。表示の被覆率カーブ(SimParams の
             // pigment_density)とは別概念なので用語を分ける(M5a)
             changed |= ui
-                .add(egui::Slider::new(&mut p.density, 0.1..=2.0).text("密度 ρ(沈む速さ)"))
+                .add(egui::Slider::new(&mut p.density, 0.1..=2.0).text("沈みやすさ"))
+                .on_hover_text("密度 ρ: 大きいほど早く紙に沈着する")
                 .changed();
             changed |= ui
-                .add(egui::Slider::new(&mut p.staining, 0.0..=1.0).text("ステイニング ω(残りやすさ)"))
+                .add(egui::Slider::new(&mut p.staining, 0.0..=1.0).text("染みつき(落ちにくさ)"))
+                .on_hover_text("ステイニング ω: 大きいほど削りで落ちず紙に残る")
                 .changed();
             changed |= ui
-                .add(egui::Slider::new(&mut p.granulation, 0.0..=1.0).text("粒状感 γ(紙目に溜まる)"))
+                .add(egui::Slider::new(&mut p.granulation, 0.0..=1.0).text("粒状感(紙目のザラつき)"))
+                .on_hover_text("粒状感 γ: 大きいほど紙の凹部に溜まりザラつく")
                 .changed();
             ui.separator();
         }
 
-        ui.horizontal(|ui| {
-            if ui
-                .button("既定に戻す")
-                .on_hover_text("4スロットを起動時の顔料に戻す")
-                .clicked()
-            {
-                self.palette = pigment::Palette::default_palette();
-                changed = true;
-            }
-            // M5e スポイト: 待機トグル。次にキャンバスをクリックすると色を拾って選択スロットへ
-            let slot = self.params.brush_channel.min(3) as usize + 1;
-            let armed = self.palette_ui.eyedropper;
-            if ui
-                .selectable_label(armed, "💧 スポイト")
-                .on_hover_text(format!(
-                    "押してからキャンバスをクリックすると、その点の色を選択中スロット #{slot} に取り込みます(M5e)"
-                ))
-                .clicked()
-            {
-                self.palette_ui.eyedropper = !armed;
-            }
-        });
-        if self.palette_ui.eyedropper {
-            ui.colored_label(
-                egui::Color32::from_rgb(64, 130, 200),
-                "スポイト待機中… キャンバスをクリックしてください",
-            );
+        if ui
+            .button("既定に戻す")
+            .on_hover_text("4スロットを起動時の顔料に戻す")
+            .clicked()
+        {
+            self.palette = pigment::Palette::default_palette();
+            changed = true;
         }
         ui.label(
             egui::RichText::new(
-                "※色は「乾かす」時にレイヤーへ記録され、以降編集しても乾燥済みレイヤーの色は変わりません(M5c)",
+                "※色は「乾かす(固定)」時にその層へ記録され、以降編集しても乾いた層の色は変わりません",
             )
             .weak(),
         );
@@ -80,10 +94,10 @@ impl PaintApp {
             self.apply_palette();
         }
 
-        // M5d パレット・ライブラリ: 現行パレットに名前を付けて保存 / 一覧から読込。
+        // パレット・ライブラリ: 現行パレットに名前を付けて保存 / 一覧から読込。
         // 保存/一覧の共通 UI は NamedStore(プリセット H3 と同じ流儀)
         ui.separator();
-        ui.label(egui::RichText::new("パレット・ライブラリ (M5d)").strong());
+        ui.label(egui::RichText::new("パレットの保存").strong());
         let palette = self.palette.clone();
         if let Some(status) = self.palette_ui.store.save_controls(
             ui,

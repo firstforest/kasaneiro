@@ -12,10 +12,10 @@ use eframe::egui;
 
 /// レイヤー合成方式(M3)。値は SimParams::compose_mode / display.wgsl の分岐と対応。
 const COMPOSE_MODES: [(u32, &str, &str); 2] = [
-    (0, "multiply", "M2 の乗算合成(重ねるほど暗く。散乱を無視した安価な近似)"),
+    (0, "乗算(重ねて暗く)", "multiply(M2)の乗算合成(重ねるほど暗く。散乱を無視した安価な近似)"),
     (
         1,
-        "KM(R/T)",
+        "グレーズ(内側から光る)",
         "Kubelka-Munk の光学合成(M3)。各層を白地/黒地に置いた発色から反射率・透過率を導き、下から光学混色する。薄い層ほど下が透ける「内側から光る」グレーズ",
     ),
 ];
@@ -54,9 +54,11 @@ impl PaintApp {
         ui.add_space(4.0);
         ui.heading("レイヤー");
         ui.label(
-            egui::RichText::new("上=手前。選択したレイヤーのツールが左パネルに出ます")
-                .weak()
-                .small(),
+            egui::RichText::new(
+                "上=手前。選択したレイヤーのツールが左パネルに出ます(下書き→彩色の順がおすすめ)",
+            )
+            .weak()
+            .small(),
         );
         ui.separator();
 
@@ -113,8 +115,8 @@ impl PaintApp {
         let (clicked, _) = layer_row(
             ui,
             self.active_layer == ActiveLayer::Wet,
-            "水彩(湿レイヤー)",
-            "水彩の描画先。「乾かす」で下の乾燥レイヤーへ焼き込まれる(M2)",
+            "水彩(乾く前)",
+            "水彩の描画先。「乾かす(固定)」で下の乾いた層へ固定される(M2 焼き込み)",
             None,
         );
         if clicked {
@@ -138,7 +140,7 @@ impl PaintApp {
                 sanitize_to_wet = true;
             }
             ui.label(
-                egui::RichText::new(format!("乾燥レイヤー {count}/{MAX_LAYERS} 枚(焼き込み済み・編集不可)"))
+                egui::RichText::new(format!("乾いた層 {count}/{MAX_LAYERS} 枚(固定済み・編集不可)"))
                     .weak()
                     .small(),
             );
@@ -148,14 +150,14 @@ impl PaintApp {
             // 上から表示(Vec の末尾=最後に乾かしたもの=最上層)
             for k in (0..count).rev() {
                 let layer = &mut canvas.layers[k];
-                let label = format!("乾燥レイヤー {}", layer.slot + 1);
+                let label = format!("乾いた層 {}", layer.slot + 1);
                 ui.horizontal(|ui| {
                     if ui.checkbox(&mut layer.visible, "").on_hover_text("表示/非表示").changed() {
                         changed = true;
                     }
                     if ui
                         .selectable_label(active == ActiveLayer::Dried(k), label)
-                        .on_hover_text("焼き込み済みのため編集不可。再編集は「全面を湿らす」で再湿潤してから")
+                        .on_hover_text("乾いて固定済みのため編集不可。再編集は「全体を濡らす」で再湿潤してから")
                         .clicked()
                     {
                         clicked_layer = Some(ActiveLayer::Dried(k));

@@ -141,6 +141,18 @@ impl PaintApp {
             (1.0, ui.visuals().weak_text_color()),
             egui::StrokeKind::Outside,
         );
+
+        // F15: 初回ガイド。まだ一度も描いていない間だけ、空キャンバス中央に淡いヒントを出す。
+        // 最初の一筆(has_painted)で消える。開発機能・描画には一切影響しない
+        if !self.has_painted {
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "左で色を選び、ここにドラッグして描いてみましょう",
+                egui::FontId::proportional(20.0),
+                egui::Color32::from_rgba_unmultiplied(90, 90, 90, 150),
+            );
+        }
     }
 
     pub(in crate::app) fn error_overlay(&self, ui: &mut egui::Ui) {

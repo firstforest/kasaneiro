@@ -166,6 +166,13 @@ pub struct PaintApp {
     /// UI スクショ(AI レビュー用): screenshots/request-shot の作成/変更を監視し、
     /// AI(外部 Bash)からの撮影指示をフレームループで拾う。ボタン撮影とは別経路
     shot_watcher: ScreenshotWatcher,
+    /// 開発モード(UI 二層化)。off=通常ユーザー向け最小 UI / on=味付け・診断・シミュ制御・
+    /// 記録再生・シェーダー状態を露出。開発機能は削除でなくこのトグルの裏へ退避する。
+    /// eframe storage に永続化(前回の状態で起動。初回のみ off)
+    dev_mode: bool,
+    /// 初回体験ガイド(F15): まだ一度も描いていない間だけ空キャンバスにヒントを出す。
+    /// 最初の一筆(apply_pointer_events の Down)で true になり、以降ガイドは消える
+    has_painted: bool,
 }
 
 /// M6: ビューの最大拡大率(テクセルが潰れない範囲の実用上限)
@@ -192,6 +199,13 @@ impl PaintApp {
         if let Some(e) = &shader_error {
             log::error!("WGSL の初回ビルドに失敗: {e}");
         }
+
+        // F11: 開発モードを前回の状態で復元(eframe storage。初回=キー無し=通常モード off)
+        let dev_mode = cc
+            .storage
+            .and_then(|s| s.get_string("dev_mode"))
+            .map(|v| v == "true")
+            .unwrap_or(false);
         render_state
             .renderer
             .write()
@@ -243,6 +257,8 @@ impl PaintApp {
             shader_dir: dir,
             screenshot_pending: false,
             shot_watcher: ScreenshotWatcher::new(&screenshots_dir()),
+            dev_mode,
+            has_painted: false,
         }
     }
 
@@ -596,6 +612,7 @@ impl PaintApp {
                         continue;
                     }
                     self.painting = true;
+                    self.has_painted = true; // F15: 最初の一筆で初回ガイドを消す
                     self.stroke.begin();
                     // H5: 記録はストローク単位。そのとき選ばれていた顔料スロットとツールも残す
                     if let Some(recorder) = &mut self.replay_ui.recorder
@@ -908,17 +925,27 @@ impl PaintApp {
     /// (active_tools_panel が選択中レイヤーで出し分ける)。レイヤー関連は右パネル
     /// (layer_stack_panel)へ分離した
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
+        // 通常ユーザー向け(ワークフロー順: 塗る → 表示 → 保存 → プリセット)
         self.active_tools_panel(ui);
-        self.tuning_panel(ui);
         self.view_panel(ui);
+        self.save_panel(ui);
         self.preset_panel(ui);
-        self.work_panel(ui);
-        self.replay_panel(ui);
-        self.shader_status(ui);
+        // F8: 制作者向けは開発モードのときだけ露出(削除でなく退避)。
+        // 味付け・診断・シミュ制御・UIスクショ / 記録再生 / シェーダー状態
+        if self.dev_mode {
+            self.tuning_dev_panel(ui);
+            self.replay_panel(ui);
+            self.shader_status(ui);
+        }
     }
 }
 
 impl eframe::App for PaintApp {
+    /// F11: 開発モードのトグル状態を永続化(次回起動時に new() が復元)
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        storage.set_string("dev_mode", self.dev_mode.to_string());
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // H1: .wgsl が保存されたら再ビルド(失敗しても落とさない)
         if self.watcher.take_dirty() {
@@ -938,10 +965,12 @@ impl eframe::App for PaintApp {
         egui::Panel::left("tools")
             .default_size(280.0)
             .show(ui, |ui| {
-                // M2: 乾燥ボタンはスクロールの外に置き、常に見える位置に固定する
+                // M2: 乾燥ボタン(+F11 開発モードトグル)はスクロールの外に置き、常に見える位置に固定する
                 self.dry_controls(ui);
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| self.tool_panel(ui));
+                // F3: 操作結果(保存先・スポイト・エラー)はスクロール外の下端で常時表示する
+                self.status_bar(ui);
             });
 
         // レイヤー関連はキャンバスの右へ(選択中レイヤーが左のツール群を決める)

@@ -17,10 +17,13 @@ const DISPLAY_MODES: [(u32, &str); 8] = [
 ];
 
 impl PaintApp {
-    /// 乾燥・筆圧・味付けスライダー・診断表示・シミュ制御(H6)をまとめた調整セクション
-    pub(in crate::app) fn tuning_panel(&mut self, ui: &mut egui::Ui) {
+    /// 制作者向けの調整・診断・シミュ制御(F10)。開発モード時のみ tool_panel から呼ぶ。
+    /// 通常ユーザーが使う PNG 書き出し・キャンバスサイズ・リセットは save_panel へ移した(F9)。
+    /// 見出しは開発者が見るので M2/M1.5 等の対応はコメント側に残す
+    pub(in crate::app) fn tuning_dev_panel(&mut self, ui: &mut egui::Ui) {
+        // 乾燥 (M2)
         ui.separator();
-        ui.heading("乾燥 (M2)");
+        ui.heading("乾燥");
         ui.add(
             egui::Slider::new(&mut self.params.dry_shift, 0.0..=1.5)
                 .text("乾燥シフト(<1で乾くと薄く)"),
@@ -29,8 +32,9 @@ impl PaintApp {
             egui::Slider::new(&mut self.params.rewet_water, 0.0..=2.0).text("再湿潤の水量"),
         );
 
+        // 筆圧 (M1.5)
         ui.separator();
-        ui.heading("筆圧 (M1.5)");
+        ui.heading("筆圧");
         match self.pen.last_pressure() {
             Some(p) => {
                 ui.colored_label(
@@ -108,7 +112,7 @@ impl PaintApp {
             });
 
         // 診断表示(H4): デバッグ用ヒートマップ。通常描画は「通常」モード固定で十分なので畳む
-        egui::CollapsingHeader::new("表示・診断 (H4)")
+        egui::CollapsingHeader::new("表示・診断")
             .default_open(false)
             .show(ui, |ui| {
                 let mode_label = |mode: u32| {
@@ -146,8 +150,9 @@ impl PaintApp {
                 }
             });
 
+        // 制御 (H6): シミュ挙動を変える開発ノブ。通常ユーザーには等倍・再生で足りる
         ui.separator();
-        ui.heading("制御 (H6)");
+        ui.heading("シミュレーション制御");
         ui.horizontal(|ui| {
             let pause_label = if self.paused { "▶ 再開" } else { "⏸ 一時停止" };
             if ui.button(pause_label).clicked() {
@@ -165,14 +170,6 @@ impl PaintApp {
                 .text("速度倍率")
                 .suffix(" ステップ/フレーム"),
         );
-        ui.horizontal(|ui| {
-            if ui.button("キャンバスをリセット").clicked() {
-                self.clear_canvas();
-            }
-            if ui.button("PNG スナップショット").clicked() {
-                self.save_snapshot();
-            }
-        });
         if ui
             .button("📷 UI スクショ (AI 用)")
             .on_hover_text(
@@ -183,42 +180,6 @@ impl PaintApp {
             .clicked()
         {
             self.request_ui_screenshot(ui.ctx());
-        }
-
-        // キャンバスサイズ(M8): 正方形 512/1024/2048。テクセル密度は据え置き=「広い紙」
-        // (ブラシ・にじみの見た目スケールは変わらない)。変更は新規キャンバスの作り直しなので、
-        // 描きかけは作品保存(M7)してから
-        ui.horizontal(|ui| {
-            ui.label("キャンバスサイズ");
-            egui::ComboBox::from_id_salt("canvas_size")
-                .selected_text(format!("{0}×{0}", self.pending_canvas_size))
-                .show_ui(ui, |ui| {
-                    for s in paint_core::sim::CANVAS_SIZES {
-                        ui.selectable_value(&mut self.pending_canvas_size, s, format!("{s}×{s}"));
-                    }
-                });
-            if ui
-                .button("新規キャンバス")
-                .on_hover_text(
-                    "現在のキャンバスを破棄して選択サイズで作り直す(広い紙。テクセル密度は同じ)。\
-                     保存していない絵は消えるので、残すなら先に作品保存 (M7) を",
-                )
-                .clicked()
-            {
-                let size = self.pending_canvas_size;
-                self.recreate_canvas(size);
-                self.status_msg = Some(format!("新規キャンバス: {size}×{size}"));
-            }
-        });
-        if self.pending_canvas_size != self.canvas_size {
-            ui.label(
-                egui::RichText::new(format!(
-                    "現在 {0}×{0}(「新規キャンバス」で切り替え)",
-                    self.canvas_size
-                ))
-                .weak()
-                .small(),
-            );
         }
     }
 }
