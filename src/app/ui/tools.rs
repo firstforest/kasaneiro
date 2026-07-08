@@ -92,33 +92,11 @@ impl PaintApp {
     /// 水彩レイヤーのツール(M1〜M4): ツール選択・顔料スロット・ブラシスライダー
     pub(in crate::app) fn brush_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("水彩ブラシ");
-        // ツール選択(R2): WetTool を回してボタン化する。ラベル・文言・GPU 値は
-        // enum の impl に一元化されている(TOOLS 定数表は廃止)。選択したら
-        // gpu_id を params.tool へ同期して splat.wgsl の分岐に渡す
-        ui.horizontal(|ui| {
-            for wt in WetTool::ALL {
-                let selected = self.tool == Tool::Wet(wt);
-                if ui
-                    .selectable_label(selected, wt.label())
-                    .on_hover_text(wt.hint())
-                    .clicked()
-                {
-                    self.tool = Tool::Wet(wt);
-                    // レイヤーを離れて戻ったときの復元用(select_layer が読む)
-                    self.last_wet_tool = wt;
-                }
-            }
-        });
-        if let Some(wt) = self.tool.wet() {
-            self.params.tool = wt.gpu_id();
-        }
-        // F16: 選択中ツールの短い説明を常時1行(ホバー不要で「何をする筆か」が読める)
-        if let Some(wt) = self.tool.wet() {
-            ui.label(egui::RichText::new(wt.hint()).weak().small());
-        }
-        // 顔料セレクタ(M1c/M5): ブラシが注入する顔料スロット。色・名前・個性はランタイム
-        // パレット(self.palette)から。編集はパレットパネル(palette_panel)で行う。
-        // スロット情報を先にスナップショットしておく(ループ内で self.params を触るための借用回避)。
+        // 8ツールを1列(並列)に並べる: 「塗る」4色(色スウォッチ)+ 削り/消す/ぼかし筆/ならし
+        // (文字ボタン)。**色選び = その色で「塗る」ツールを選ぶ**に統合したので、旧「ツール選択行 +
+        // 別行の顔料スウォッチ」の2段はやめて 8 ボタンを一列にした(色スウォッチを押すと Paint ツール +
+        // その顔料スロットへ切り替わる)。選択状態: 塗るは tool==Paint かつ brush_channel==i、
+        // 他の4ツールは tool==Wet(wt)(GPU 値・ラベル・文言は enum の impl に一元化。TOOLS 定数表は廃止)。
         // F2: ホバーは平易な日本語(数式記号は顔料の詳細設定側に残す)
         let swatches: Vec<(egui::Color32, String)> = self
             .palette
@@ -128,16 +106,19 @@ impl PaintApp {
                 (
                     egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]),
                     format!(
-                        "{}\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2}",
+                        "{}で塗る\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2}",
                         p.name, p.density, p.staining, p.granulation
                     ),
                 )
             })
             .collect();
-        // F17: 選択中のスウォッチはアクセント色の太枠で明示(角丸のスウォッチ)
-        ui.horizontal(|ui| {
+        // 左パネルは幅が狭いので横一列に収まらないぶんは折り返す(8 ボタン=色4+文字4)
+        ui.horizontal_wrapped(|ui| {
+            // 「塗る」4色: 色スウォッチ。押すと Paint ツール + その顔料スロットへ。
+            // F17: 選択中のスウォッチはアクセント色の太枠で明示(角丸のスウォッチ)
             for (i, (color, hover)) in swatches.iter().enumerate() {
-                let selected = self.params.brush_channel == i as u32;
+                let selected = self.tool == Tool::Wet(WetTool::Paint)
+                    && self.params.brush_channel == i as u32;
                 let mut button = egui::Button::new("")
                     .fill(*color)
                     .corner_radius(4.0)
@@ -146,12 +127,42 @@ impl PaintApp {
                     button = button.stroke((3.0, ui.visuals().selection.stroke.color));
                 }
                 if ui.add(button).on_hover_text(hover.clone()).clicked() {
+                    self.tool = Tool::Wet(WetTool::Paint);
                     self.params.brush_channel = i as u32;
+                    // レイヤーを離れて戻ったときの復元用(select_layer が読む)
+                    self.last_wet_tool = WetTool::Paint;
+                }
+            }
+            // 削り/消す/ぼかし筆/ならし: 文字ボタン(Paint はスウォッチ側で出すので飛ばす)
+            for wt in WetTool::ALL {
+                if wt == WetTool::Paint {
+                    continue;
+                }
+                let selected = self.tool == Tool::Wet(wt);
+                if ui
+                    .selectable_label(selected, wt.label())
+                    .on_hover_text(wt.hint())
+                    .clicked()
+                {
+                    self.tool = Tool::Wet(wt);
+                    self.last_wet_tool = wt;
                 }
             }
         });
-        let pg = &self.palette.pigments[self.params.brush_channel.min(3) as usize];
-        ui.label(pg.name.clone());
+        if let Some(wt) = self.tool.wet() {
+            self.params.tool = wt.gpu_id();
+        }
+        // スポイトは色選びの動線なのでツールバーの直後に置く(M5e。旧: パレットパネル内)
+        self.eyedropper_control(ui);
+        // F16: 選択中ツールの短い説明を常時1行(ホバー不要で「何をする筆か」が読める)
+        if let Some(wt) = self.tool.wet() {
+            ui.label(egui::RichText::new(wt.hint()).weak().small());
+        }
+        // 塗るときは選択中の顔料名を出す(削り等では顔料は無関係なので出さない)
+        if self.tool == Tool::Wet(WetTool::Paint) {
+            let pg = &self.palette.pigments[self.params.brush_channel.min(3) as usize];
+            ui.label(format!("塗る色: {}", pg.name));
+        }
         // 共通スライダー(どのツールでも使う)
         ui.add(
             egui::Slider::new(&mut self.params.brush_radius, 1.0..=64.0)

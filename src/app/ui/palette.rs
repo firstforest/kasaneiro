@@ -14,17 +14,16 @@ impl PaintApp {
     /// パレット(M5): 4スロットの色・密度 ρ・ステイニング ω・粒状感 γ を編集する。
     /// ブラシの顔料セレクタ(brush_panel)と同じ4スロットを指す
     pub(in crate::app) fn palette_panel(&mut self, ui: &mut egui::Ui) {
-        // スポイトは色選びの動線なので折りたたみの外(常時)に置く。
+        // スポイトは色選びの動線なのでツールバー直後(brush_panel)へ移した。
         // 色/ρ/ω/γ の編集・ライブラリは「顔料の詳細設定」に畳んで通常時の情報量を下げる(F4)。
         ui.separator();
-        self.eyedropper_control(ui);
         egui::CollapsingHeader::new("顔料の詳細設定(色・沈み方・粒状感)")
             .default_open(false)
             .show(ui, |ui| self.palette_details(ui));
     }
 
-    /// スポイト待機トグル(色選びの動線なので常時表示)。M5e
-    fn eyedropper_control(&mut self, ui: &mut egui::Ui) {
+    /// スポイト待機トグル(色選びの動線)。M5e。brush_panel のツールバー直後から呼ばれる
+    pub(in crate::app) fn eyedropper_control(&mut self, ui: &mut egui::Ui) {
         let slot = self.params.brush_channel.min(3) as usize + 1;
         let armed = self.palette_ui.eyedropper;
         if ui
