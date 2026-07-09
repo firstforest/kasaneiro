@@ -25,6 +25,13 @@ fn edge_perm(here: f32, at: vec2i) -> f32 {
     return clamp(1.0 - params.line_block * max(here, there), 0.0, 1.0);
 }
 
+// 隣接2セル間の流束の水依存重み: (両セルの水量平均)^γ。
+// γ=1 は従来の線形。γ>1 で「水がたっぷりのときは傾斜がなくても自由に混ざり、
+// 水が引いてくると急に混ざらなくなる」カーブになる(乾きかけの縁は形が残る)
+fn wet_weight(a: f32, b: f32) -> f32 {
+    return pow(clamp(0.5 * (a + b), 0.0, 1.0), max(params.diffuse_gamma, 0.01));
+}
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
     let dims = textureDimensions(src_water);
@@ -55,7 +62,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // 濡れたセル同士だけで交換し(乾いた隣はフラックス 0 = Neumann 境界)、
     // 対になるフラックスが対称なので顔料の総量は保存される。
-    // 水が少ない場所へはにじみにくいよう、双方の水量の平均で重み付けする。
+    // 重みは双方の水量平均^γ(wet_weight): 水がたっぷりなら傾斜がなくても濃度差だけで
+    // 自由に混ざり、水が引いてくると急に混ざらなくなる(diffuse_gamma)
     let n_l = load_clamped(src_water, ip + vec2i(-1, 0));
     let n_r = load_clamped(src_water, ip + vec2i(1, 0));
     let n_u = load_clamped(src_water, ip + vec2i(0, -1));
@@ -64,19 +72,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let pen_c = textureLoad(pen_line_tex, ip, 0).r;
     var flux = vec4f(0.0);
     if (is_wet(n_l)) {
-        flux += clamp(0.5 * (cell.r + n_l.r), 0.0, 1.0) * edge_perm(pen_c, ip + vec2i(-1, 0))
+        flux += wet_weight(cell.r, n_l.r) * edge_perm(pen_c, ip + vec2i(-1, 0))
             * (load_clamped(src_susp, ip + vec2i(-1, 0)) - susp);
     }
     if (is_wet(n_r)) {
-        flux += clamp(0.5 * (cell.r + n_r.r), 0.0, 1.0) * edge_perm(pen_c, ip + vec2i(1, 0))
+        flux += wet_weight(cell.r, n_r.r) * edge_perm(pen_c, ip + vec2i(1, 0))
             * (load_clamped(src_susp, ip + vec2i(1, 0)) - susp);
     }
     if (is_wet(n_u)) {
-        flux += clamp(0.5 * (cell.r + n_u.r), 0.0, 1.0) * edge_perm(pen_c, ip + vec2i(0, -1))
+        flux += wet_weight(cell.r, n_u.r) * edge_perm(pen_c, ip + vec2i(0, -1))
             * (load_clamped(src_susp, ip + vec2i(0, -1)) - susp);
     }
     if (is_wet(n_d)) {
-        flux += clamp(0.5 * (cell.r + n_d.r), 0.0, 1.0) * edge_perm(pen_c, ip + vec2i(0, 1))
+        flux += wet_weight(cell.r, n_d.r) * edge_perm(pen_c, ip + vec2i(0, 1))
             * (load_clamped(src_susp, ip + vec2i(0, 1)) - susp);
     }
     // 陽解法の安定条件: 係数は 4 近傍合計で 1 を超えないよう 0.2 に制限

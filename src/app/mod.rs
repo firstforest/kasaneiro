@@ -133,6 +133,12 @@ pub struct PaintApp {
     /// 離したとき戻す元ツール(水彩=Wet(Erase) / 線画=Raster{eraser:true} / 乾燥=無反応)
     erase_hold: Option<Tool>,
     stroke: StrokeState,
+    /// 筆の含みの残り(秒)。筆を下ろすと params.brush_charge で満たされ、
+    /// 置いたまま動かないフレームの feed splat 発行で減る(feed_charge)
+    charge_left: f32,
+    /// 直近のストローク位置と筆圧(テクセル座標)。置いたまま動かないフレームの
+    /// feed splat をここに積む。Up でクリア
+    feed_pos: Option<([f32; 2], f32)>,
     /// M1.5: ペン入力(egui Touch 経由、筆圧付き)。接地中はマウスより優先される
     pen: PenSource,
     mouse: MouseSource,
@@ -246,6 +252,8 @@ impl PaintApp {
             eyedropper_hold: false,
             erase_hold: None,
             stroke: StrokeState::default(),
+            charge_left: 0.0,
+            feed_pos: None,
             pen: PenSource::default(),
             mouse: MouseSource,
             painting: false,
@@ -706,6 +714,8 @@ impl PaintApp {
                     self.painting = true;
                     self.has_painted = true; // F15: 最初の一筆で初回ガイドを消す
                     self.stroke.begin();
+                    // 筆の含み: 筆を下ろすたびに満たす(色水をたっぷり含み直すイメージ)
+                    self.charge_left = self.params.brush_charge;
                     // H5: 記録はストローク単位。そのとき選ばれていた顔料スロットとツールも残す
                     if let Some(recorder) = &mut self.replay_ui.recorder
                         && recordable
@@ -726,6 +736,7 @@ impl PaintApp {
                     if self.painting {
                         self.painting = false;
                         self.stroke.end();
+                        self.feed_pos = None;
                         if let Some(recorder) = &mut self.replay_ui.recorder
                             && recordable
                         {
@@ -758,6 +769,8 @@ impl PaintApp {
             let spacing = (self.params.radius_at_base(base, ev.pressure) * 0.25).max(1.0);
             self.stroke
                 .add_motion([px.x, px.y], ev.pressure, spacing, splats);
+            // 筆の含み: 置いたまま動かないフレームの feed splat をここに積む(feed_charge)
+            self.feed_pos = Some(([px.x, px.y], ev.pressure));
             // H5: 補間前の生ポインタ位置+筆圧を記録する(再生時に補間し直すため
             // ブラシ半径や筆圧マッピングを変えても同じストロークを引ける)
             if let Some(recorder) = &mut self.replay_ui.recorder
@@ -770,6 +783,25 @@ impl PaintApp {
                 self.line_history.push_point([px.x, px.y], ev.pressure);
             }
         }
+    }
+
+    /// 筆の含み: 塗る筆(Wet::Paint)を置いたまま動かさないフレームでは、含みが残って
+    /// いる間 feed splat を1つ積んで色水を流し出し続ける(置き馴染みの水補充+広がる勢い+
+    /// 少量の顔料。splat.wgsl の feed 分岐)。含みは置いている時間で減り、動いている
+    /// (通常 splat が出た)フレームは通常注入があるので消費しない。dt はフレーム時間(秒)
+    pub(in crate::app) fn feed_charge(&mut self, dt: f32, splats: &mut Vec<Splat>) {
+        if !self.painting
+            || self.tool != Tool::Wet(WetTool::Paint)
+            || !splats.is_empty()
+            || self.charge_left <= 0.0
+        {
+            return;
+        }
+        let Some((pos, pressure)) = self.feed_pos else {
+            return;
+        };
+        splats.push(Splat::feed_at(pos, pressure));
+        self.charge_left -= dt;
     }
 
     /// 現在のツールが使うブラシ半径の基準値(筆圧前)。ラスタ線画は鉛筆/ペンの

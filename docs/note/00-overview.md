@@ -39,6 +39,7 @@
 | [03-layering-glazing-lifting.md](03-layering-glazing-lifting.md) | 重ね塗り(KM層合成・グレージング)と削り(リフティング・粒状感・ステイニング) |
 | [04-implementation-stack.md](04-implementation-stack.md) | 実装技術スタック(WebGPU/WebGL2/wgpu比較、参考OSS、入力処理、性能目安、推奨構成) |
 | [05-rust-feasibility.md](05-rust-feasibility.md) | Rustでの実現可能性評価(wgpu / winit 0.31ペン入力 / octotablet / egui / mixboxクレート、Rust版推奨構成) |
+| [06-wet-blending-tuning.md](06-wet-blending-tuning.md) | **実装後の設計記録**(2026-07-09): 筆置きの広がり・馴染みの試行錯誤4ラウンド(置き馴染み・広がる勢い・水持ち・筆の含み・混ざりの水依存)と調整ガイド |
 
 ## 推奨アーキテクチャ(調査結果の結論)
 

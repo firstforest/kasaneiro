@@ -61,7 +61,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         // 吸着(沈着): 水が少ないほど強い → 乾きかけで定着。
         // 粒状化(M1d/M3): 凹部(h=0)で強め・凸部(h=1)で弱め、効き幅は顔料の γ に比例
         let gran = max(1.0 + params.paper_gran * gamma * (1.0 - 2.0 * h), 0.0);
-        let down_rate = clamp(params.deposit_rate * rho * params.dt * (2.0 - w) * gran, 0.0, 1.0);
+        // 水持ち: 水がたっぷりのセルでは顔料が沈まず浮遊し続ける(自由に流れて混ざる)。
+        // 沈着が始まるのは水が引いてから。wet_hold=0 で従来どおり
+        let hold = max(1.0 - params.wet_hold * w, 0.0);
+        let down_rate = clamp(params.deposit_rate * rho * params.dt * (2.0 - w) * gran * hold, 0.0, 1.0);
         // 脱着(再浮遊): 水が多い場所ほど浮き上がるが、ステイニング顔料は (1−ω) で残る
         let up_rate = clamp(params.lift_rate * params.dt * w * (1.0 - omega), 0.0, 1.0);
         down[c] = susp[c] * down_rate;

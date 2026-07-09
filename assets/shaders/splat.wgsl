@@ -1,5 +1,8 @@
 // splat.wgsl — ブラシ入力の compute パス。ツール(params.tool)で3分岐する(M3):
-//   0 = 描画: 水+初速+顔料を置く(M1a/M1b)
+//   0 = 描画: 水+初速+顔料を置く(M1a/M1b)。既に描いてある(濡れた)部分では
+//       置き馴染み(paint_soak: 周囲へ水の足場)+広がる勢い(paint_spread: 外向きの流れ。
+//       水が多いほど強い)+色の溶かし戻し(paint_pickup)が加わり、
+//       筆の色が遠くへ広がって下の色と馴染む
 //   1 = リフト(削り): 沈着顔料を浮遊層へ戻し、その場を濡らして流す。ステイニング顔料(ω)は
 //       残り、紙の凸部から先に剥がれる(粒状化 γ の顔料は谷に残る) — Curtis の削りレシピ
 //   2 = 消去: 湿レイヤーの水・速度・顔料・濡れマスクを機械的にゼロへ(紙の白まで戻す完全消去)
@@ -42,6 +45,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var water = cell.r;
     var vel = cell.gb;
     var wet = cell.a;
+    // 置き馴染みのゲート: このストロークが触れる前から濡れていた(=既に描いてある)か。
+    // ループ内で wet が 1 に立つ前の値で判定する
+    let was_wet = is_wet(cell);
     let h = textureLoad(paper_tex, ip, 0).r;
     // 水筆(tool=3)の均し用: このセルにかかったブラシの最大効き(カバレッジ×筆圧)。ループ後に使う
     var wb_w = 0.0;
@@ -105,15 +111,60 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             }
             wb_w = max(wb_w, coverage * press);
         } else {
-            // 描画(既定): 水+初速+顔料の注入
-            water += coverage * params.brush_water * mix(1.0, press, params.pressure_water);
-            vel += coverage * params.brush_velocity * s.vel;
-            // 顔料は浮遊層の選択チャンネル(brush_channel = パレットの顔料スロット)へ注入する
-            susp[min(params.brush_channel, 3u)] += coverage * params.brush_pigment * mix(1.0, press, params.pressure_pigment);
+            // 描画(既定): 水+初速+顔料の注入。
+            // s.feed > 0.5 は「筆の含み」splat(置いたまま動かない間、CPU が毎フレーム積む):
+            // 一括注入(+=)を毎フレーム繰り返すと溢れるので、水は下の置き馴染み(max 補充)に
+            // 任せ、顔料は charge_pigment ぶんだけ注ぎ、広がる勢いを毎フレームかけ直す。
+            // これで「筆に含まれた色水が置いている間ずっと流れ出る」動きになる
+            let feed = s.feed > 0.5;
+            if (!feed) {
+                water += coverage * params.brush_water * mix(1.0, press, params.pressure_water);
+                vel += coverage * params.brush_velocity * s.vel;
+                // 顔料は浮遊層の選択チャンネル(brush_channel = パレットの顔料スロット)へ注入する
+                susp[min(params.brush_channel, 3u)] += coverage * params.brush_pigment * mix(1.0, press, params.pressure_pigment);
+            } else {
+                susp[min(params.brush_channel, 3u)] += coverage * params.brush_pigment * params.charge_pigment
+                    * mix(1.0, press, params.pressure_pigment);
+            }
             // 筆が届いた範囲を濡らす(wet-area mask)。水が動けるのはこの領域だけ。
             // 水を置く範囲(coverage > 0)と一致させ、マスク外に水が取り残されないようにする
             if (dist < radius) {
                 wet = 1.0;
+            }
+            // 置き馴染み: 既に描いてある(=このストローク前から濡れマスクが立っている)セルに
+            // 限り、ブラシの外周(paint_soak_radius×半径)まで水を目標水位へ持ち上げる
+            // (max = なでても積み上がらない)。筆を置いた点の水の山とこの足場がつながり、
+            // 拡散・移流が働いて筆の色が既存の塗りへ広がって馴染む。
+            // 乾いた紙にはマスクも水も広げないので、白紙へのストローク輪郭は従来どおり
+            if (params.paint_soak > 0.0 && was_wet) {
+                let soak_r = radius * clamp(params.paint_soak_radius, 1.0, 8.0);
+                let soak_cov = 1.0 - smoothstep(radius * 0.6, soak_r, dist);
+                let soak_target = soak_cov * params.brush_water * params.paint_soak
+                    * mix(1.0, press, params.pressure_water);
+                water = max(water, soak_target);
+            }
+            // 広がる勢い: 置いた点から外向きの流れを与える。効きは筆圧と「そのセルの水量」で
+            // スケールするので、水がたっぷりの場所ほど色が遠くまで自由に流れて混ざる。
+            // 水の山の勾配(自然に減衰する)と違い、明示的な放射流で確実に外へ運ぶ。
+            // 白紙(was_wet=false)には効かない。速度はループ後の vel_max クランプが安全弁
+            if (params.paint_spread > 0.0 && was_wet && dist > 1e-3) {
+                let spread_r = radius * clamp(params.paint_soak_radius, 1.0, 8.0);
+                let ring = 1.0 - smoothstep(radius * 0.3, spread_r, dist);
+                let dir = (p - s.pos) / dist;
+                vel += dir * params.paint_spread * press * ring * clamp(water, 0.0, 1.0);
+            }
+            // 色の溶かし戻し: 筆が触れた沈着顔料を浮遊層へ戻す(リフト tool=1 の弱い版)。
+            // 筆の色と下の色が同じ浮遊層で混ざるので、置いた境界が濁らず馴染む。
+            // ステイニング顔料(ω 大)は (1−ω) で剥がれず残る。
+            // feed splat は毎フレーム来るので弱める(そのままだと1秒で筆の下が全部剥がれる)
+            if (params.paint_pickup > 0.0 && coverage > 0.0) {
+                let pickup_k = params.paint_pickup * select(1.0, 0.1, feed);
+                for (var c = 0u; c < 4u; c++) {
+                    let frac = clamp(pickup_k * coverage * press * (1.0 - pigment[c].y), 0.0, 1.0);
+                    let picked = dep[c] * frac;
+                    dep[c] -= picked;
+                    susp[c] += picked;
+                }
             }
         }
     }

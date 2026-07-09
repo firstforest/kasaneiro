@@ -86,6 +86,15 @@ impl PaintApp {
                 ui.heading("顔料 (M1b)");
                 ui.add(egui::Slider::new(&mut self.params.pigment_diffuse, 0.0..=1.0).text("拡散率(にじみの速さ)"));
                 ui.add(egui::Slider::new(&mut self.params.diffuse_iters, 0..=32).text("拡散反復回数(速いにじみはこちらで)"));
+                ui.add(
+                    egui::Slider::new(&mut self.params.diffuse_gamma, 0.5..=6.0)
+                        .text("混ざりの水依存 γ"),
+                )
+                .on_hover_text(
+                    "顔料拡散の流束の重み = (両セルの水量平均)^γ。1=線形(従来)。\
+                     大きいほど「水がたっぷりのときは傾斜がなくても自由に混ざり、\
+                     水が引いてくると急に混ざらなくなる」が急峻になる",
+                );
                 ui.add(egui::Slider::new(&mut self.params.deposit_rate, 0.0..=0.5).text("吸着率(沈着の速さ)"));
                 ui.add(egui::Slider::new(&mut self.params.lift_rate, 0.0..=0.5).text("脱着率(再浮遊の速さ)"));
                 ui.add(
@@ -97,6 +106,30 @@ impl PaintApp {
                     egui::Slider::new(&mut self.params.pigment_density, 0.5..=10.0)
                         .logarithmic(true)
                         .text("発色の濃さ(濃度→被覆率)"),
+                );
+
+                ui.separator();
+                ui.heading("置き馴染み(塗る筆)");
+                ui.add(
+                    egui::Slider::new(&mut self.params.paint_soak_radius, 1.0..=8.0)
+                        .text("広がる範囲(×ブラシ半径)"),
+                )
+                .on_hover_text(
+                    "既に描いてある部分に筆を置いたとき、水の足場と外向きの流れが届く範囲。\
+                     強さのスライダー(置き馴染み・広がる勢い・下の色を溶かす)は塗るツールのパネルにある",
+                );
+                ui.add(egui::Slider::new(&mut self.params.wet_hold, 0.0..=1.0).text("水持ち(水中で沈まない)"))
+                    .on_hover_text(
+                        "水が多いセルほど吸着(沈着)を抑える。1 に近いほど、たっぷりの水の中では\
+                         顔料が沈まず浮遊し続けて自由に流れ・混ざる(沈着は水が引いてから)。0=従来どおり",
+                    );
+                ui.add(
+                    egui::Slider::new(&mut self.params.charge_pigment, 0.0..=1.0)
+                        .text("含みから出る顔料(通常比)"),
+                )
+                .on_hover_text(
+                    "筆の含み(置いたまま流れ出る色水)が1フレームに注ぐ顔料の、通常の筆致に\
+                     対する比。0 で水だけが流れ出る(置いた色が水で運ばれて広がる)",
                 );
 
                 ui.separator();

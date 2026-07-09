@@ -117,6 +117,9 @@ impl PaintApp {
             // M6: パン中(中ボタンドラッグ)は描画イベントを流さない(ビュー操作専念)。
             // F18: Ctrl+Alt+ドラッグでの半径調整中も同様に描かない
             self.apply_pointer_events(&events, rect, &mut splats);
+            // 筆の含み: 塗る筆を置いたまま動かないフレームでも色水が流れ出続ける
+            let dt = ui.input(|i| i.stable_dt);
+            self.feed_charge(dt, &mut splats);
         }
 
         // H5: 記録はフレーム基準(ストローク間の待ちも再現される)
