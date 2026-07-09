@@ -52,14 +52,14 @@
 | `pigment_diffuse` | 0.4 | 0〜1 | 顔料拡散率(1反復あたり。安定条件のため WGSL 側で 0.2 に制限。既定 0.4×dt0.5=上限に張り付き=水たっぷりのセル間は最速で混ざる) |
 | `diffuse_iters` | 12 | 0〜32 | 拡散の反復回数/ステップ。実効的なにじみ速度 = 拡散率 × 反復回数。速いにじみはこちらで稼ぐ |
 | `deposit_rate` | 0.05 | 0〜0.5 | 吸着率: 浮遊顔料が紙へ沈着する速さ(水が少ないほど強い)。顔料の ρ と粒状ゲートで変調 |
-| `lift_rate` | 0.02 | 0〜0.5 | 脱着率: 沈着顔料が水に浮き上がる速さ(水が多いほど強い)。顔料の (1−ω) で変調 |
+| `lift_rate` | 0.1 | 0〜0.5 | 脱着率: 沈着顔料が水に浮き上がる速さ(水が多いほど強い)。顔料の (1−ω) で変調。0.02→0.1(note/07): 毛細管モデルでは既存色が新しい塗りへ戻る経路が再浮遊→拡散だけなので速めが既定 |
 | `evap_rate` | 0.005 | 0〜0.05 | 蒸発率: 濡れ領域の水が 1 ステップに減る量 |
 
 transfer.wgsl の実効式(per-channel、M3):
 
 ```
 吸着 = deposit_rate × ρ × dt × deposit_weight(水量) × 粒状ゲート(paper_gran×γ)
-       deposit_weight(w) = mix(2.0, DEPOSIT_WET_FLOOR, w^DEPOSIT_GAMMA)
+       deposit_weight(w) = mix(2.0, DEPOSIT_WET_FLOOR, smoothstep(0, DEPOSIT_DRY_POINT, w))
 脱着 = lift_rate × dt × 水量 × (1−ω)
 ```
 
@@ -73,8 +73,8 @@ transfer.wgsl の実効式(per-channel、M3):
 | `WATER_GAMMA` | 2.0 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 水の毛細管の水依存カーブ: 流束の重み = max(両セル水量)^γ。max なのは乾きかけへ吸い込まれる向きを殺さないため |
 | `DIFFUSE_GAMMA` | 4.0 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 顔料の混ざりの水依存 γ: 拡散流束の重み = (水量平均)^γ。水たっぷり=自由に混ざる/引くと止まる |
 | `CHARGE_PIGMENT` | 0.15 | [splat.wgsl](../assets/shaders/splat.wgsl) | 筆の含みの feed splat 1フレームが注ぐ顔料の通常比。0 で水だけ |
-| `DEPOSIT_WET_FLOOR` | 0.3 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 吸着カーブの w=1 での倍率(旧 (2−w)×(1−0.7w) の2重カーブを deposit_weight 1本に統合。旧「水持ち」を含む) |
-| `DEPOSIT_GAMMA` | 0.7 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 吸着カーブの立ち上がり(小さいほど水が引く前から吸着が戻る) |
+| `DEPOSIT_WET_FLOOR` | 0.1 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 水膜がある間(w ≥ DRY_POINT)の吸着倍率。0 にすると濡れている間は全く沈まない(旧 (2−w)×(1−0.7w) の2重カーブを deposit_weight 1本に統合。旧「水持ち」を含む) |
+| `DEPOSIT_DRY_POINT` | 0.35 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 吸着が立ち上がる水量しきい値(=水膜が切れる点)。上げるほど早く沈み始め、下げるほど流れている間は浮遊し続ける |
 
 ## 5. 紙(paper.rs / 3箇所適用)
 

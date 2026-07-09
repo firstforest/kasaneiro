@@ -222,7 +222,9 @@ impl Default for SimParams {
             wet_expand: 0.0,
             brush_pigment: 0.11,
             deposit_rate: 0.05,
-            lift_rate: 0.02,
+            // 0.02→0.1(note/07): 毛細管モデルでは既存色が新しい塗りへ戻る経路が
+            // 再浮遊→拡散だけなので脱着を速く。ステイニング ω の「剥がれない」個性はそのまま効く
+            lift_rate: 0.1,
             evap_rate: 0.005,
             // 水がたっぷりのセル間は上限いっぱいの速さで混ざる(0.4×dt0.5 = WGSL 上限 0.2)。
             // 乾きかけで混ざらないのは水依存カーブ(diffuse.wgsl の DIFFUSE_GAMMA)が担う
