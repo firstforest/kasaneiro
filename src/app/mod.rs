@@ -97,14 +97,18 @@ enum ActiveLayer {
     Dried(usize),
 }
 
-/// 元に戻せない破壊操作(保存・書き出しセクション F9)。誤クリック一発で作品が消えないよう、
-/// 1度目のクリックで確認待ち(赤い警告ボタン)になり、もう一度押すと実行する(panels.rs)
+/// 上部「ファイル」メニューから開くモーダルの種別。None=どれも開いていない(file_menu.rs)。
+/// 破壊操作(新規キャンバス・全部消す)はモーダル内の明示ボタンで確認する(旧2度押し機構を置換)。
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::app) enum ConfirmAction {
-    /// 「全部消す」= キャンバス全消去(clear_canvas)
-    ClearCanvas,
-    /// 「新規キャンバス」= 選択サイズで作り直し(recreate_canvas)
+pub(in crate::app) enum FileModal {
+    /// 作品の保存+開く(統合モーダル)
+    Work,
+    /// 設定プリセット(SimParams)の保存+開く(統合モーダル)
+    Preset,
+    /// 新規キャンバス(サイズ選択+確認)
     NewCanvas,
+    /// 全部消す(確認)
+    Clear,
 }
 
 pub struct PaintApp {
@@ -148,9 +152,8 @@ pub struct PaintApp {
     replay_ui: ReplayUi,
     /// H3/H5/H6 の操作結果の表示(保存先パスやエラー)
     status_msg: Option<String>,
-    /// 破壊操作(全部消す・新規キャンバス)の2度押し確認の状態。Some=確認待ち。
-    /// 確認ボタン以外をクリックしたら解除する(save_panel 末尾で判定)
-    pending_confirm: Option<ConfirmAction>,
+    /// 上部「ファイル」メニューから開いているモーダル。None=どれも開いていない(file_menu.rs)
+    file_modal: Option<FileModal>,
     /// M4.5d: 線画(鉛筆・ペン・ハイライト)の多段 Undo/Redo 履歴。
     /// 流体を通らないラスタ線画をストローク単位で決定論的に引き直す(湿レイヤーは対象外)
     line_history: LineHistory,
@@ -262,7 +265,7 @@ impl PaintApp {
                 saved_channel: None,
             },
             status_msg: None,
-            pending_confirm: None,
+            file_modal: None,
             line_history: LineHistory::default(),
             undo_stack: Vec::new(),
             // GpuCanvas::new が既定パレットを両バッファへ書き込み済み(同じ値で開始)
@@ -1022,11 +1025,9 @@ impl PaintApp {
     /// (active_tools_panel が選択中レイヤーで出し分ける)。レイヤー関連は右パネル
     /// (layer_stack_panel)へ分離した
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
-        // 通常ユーザー向け(ワークフロー順: 塗る → 保存 → プリセット)。
-        // 表示(ズーム・回転)はレイヤーの上=右パネル最上段へ移した
+        // 通常ユーザー向け。塗るツールだけを残し、作品保存・設定プリセット・PNG・新規/全消去は
+        // 上部「ファイル」メニュー(file_menu)へ移した。表示(ズーム・回転)は右パネル最上段
         self.active_tools_panel(ui);
-        self.save_panel(ui);
-        self.preset_panel(ui);
         // F8: 制作者向けは開発モードのときだけ露出(削除でなく退避)。
         // 味付け・診断・シミュ制御・UIスクショ / 記録再生 / シェーダー状態
         if self.dev_mode {
@@ -1063,6 +1064,9 @@ impl eframe::App for PaintApp {
         }
         self.poll_ui_screenshot(ui.ctx());
 
+        // 上端に「ファイル」メニューバーを1本(左右・中央パネルより先に show して上端の帯を確保)
+        egui::Panel::top("menu_bar").show(ui, |ui| self.menu_bar(ui));
+
         egui::Panel::left("tools")
             .default_size(280.0)
             .show(ui, |ui| {
@@ -1091,6 +1095,11 @@ impl eframe::App for PaintApp {
         self.error_overlay(ui);
 
         egui::CentralPanel::default().show(ui, |ui| self.canvas_ui(ui));
+
+        // ファイル系モーダル(作品・新規キャンバス・全部消す)。ctx を先に clone して、
+        // &mut self を捕捉する closure と ui.ctx() の同時借用を回避する(Modal は foreground Area)
+        let ctx = ui.ctx().clone();
+        self.file_modals(&ctx);
 
         // 常時シミュレーションが走るため連続再描画
         ui.ctx().request_repaint();

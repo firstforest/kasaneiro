@@ -39,6 +39,7 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │  ├─ main.rs             eframe 起動
 │  ├─ app/                egui UI
 │  │  ├─ mod.rs           PaintApp の状態・ライフサイクル・二層ディスパッチャ tool_panel・App::ui/save(R4)
+│  │  │                   (App::ui のパネル順: Panel::top("menu_bar") → left("tools") → right("layers") → CentralPanel → file_modals)
 │  │  │                   (dev_mode:通常/開発モードの二層化。eframe storage に永続化。has_painted:初回ガイド)
 │  │  ├─ linehist.rs      線画の多段 Undo/Redo 履歴(M4.5d。RasterStroke / LineHistory / 再ラスタライズ)
 │  │  └─ ui/              UI 状態 + パネル描画を per-file 分割(R4。impl PaintApp を分散)
@@ -48,7 +49,8 @@ my-paint/                 (workspace ルート = バイナリ crate。[profile.*
 │  │     ├─ palette.rs    顔料パレット編集(palette_panel。M5。スポイトは常時+色・ρ/ω/γ・ライブラリは「顔料の詳細設定」に折りたたみ。水彩レイヤー選択時のみ表示)
 │  │     ├─ layers.rs     右パネルのレイヤースタック(layer_stack_panel。選択=ツール系統切替・可視性・並べ替え・合成方式)
 │  │     ├─ tuning.rs     制作者向けの調整・診断・シミュ制御(tuning_dev_panel。開発モード時のみ表示)
-│  │     ├─ panels.rs     表示/保存・書き出し/プリセット/記録再生/シェーダー状態+status_bar(view/save_panel(work+PNG+リセット+サイズ)/preset/replay/shader_status/status_bar)
+│  │     ├─ panels.rs     表示/記録再生/シェーダー状態+status_bar(view/replay/shader_status/status_bar)
+│  │     ├─ file_menu.rs  上部「ファイル」メニューバー+モーダル(menu_bar / file_modals。作品保存/開く統合・設定プリセット・新規キャンバス・全部消す。破壊操作はモーダル内の明示ボタンで確認)
 │  │     └─ canvas.rs     キャンバス描画・初回ガイド・エラーオーバーレイ(canvas_ui / error_overlay)
 │  ├─ gpu/                GpuCanvas。リソース定義と型・実行時メソッドを持ち、長い処理は分離
 │  │  ├─ mod.rs           型定義(GpuCanvas / Pipelines / DriedLayer)・COMPUTE_SHADERS 表・

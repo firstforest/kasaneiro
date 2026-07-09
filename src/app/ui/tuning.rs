@@ -18,7 +18,7 @@ const DISPLAY_MODES: [(u32, &str); 8] = [
 
 impl PaintApp {
     /// 制作者向けの調整・診断・シミュ制御(F10)。開発モード時のみ tool_panel から呼ぶ。
-    /// 通常ユーザーが使う PNG 書き出し・キャンバスサイズ・リセットは save_panel へ移した(F9)。
+    /// 通常ユーザーが使う PNG 書き出し・キャンバスサイズ・リセットは上部ファイルメニュー(file_menu)へ移した。
     /// 見出しは開発者が見るので M2/M1.5 等の対応はコメント側に残す
     pub(in crate::app) fn tuning_dev_panel(&mut self, ui: &mut egui::Ui) {
         // 乾燥 (M2)
