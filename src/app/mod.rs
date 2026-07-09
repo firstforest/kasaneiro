@@ -18,6 +18,7 @@ use linehist::{LineHistory, stroke_splats};
 use crate::gpu::hot_reload::{ScreenshotWatcher, ShaderWatcher, screenshots_dir, shader_dir};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase};
 use crate::palette_store;
+use crate::pigment_store;
 use crate::preset;
 use crate::replay::{self, Player, Recording};
 use crate::work;
@@ -105,10 +106,6 @@ pub(in crate::app) enum FileModal {
     Work,
     /// 設定プリセット(SimParams)の保存+開く(統合モーダル)
     Preset,
-    /// パレット(4色一式)の保存+読込(統合モーダル。M5g)
-    Palette,
-    /// 色ライブラリ(顔料1個)の保存+読込(統合モーダル。M5f)
-    Pigment,
     /// 新規キャンバス(サイズ選択+確認)
     NewCanvas,
     /// 全部消す(確認)
@@ -277,8 +274,10 @@ impl PaintApp {
             palette_ui: PaletteUi {
                 store: NamedStore::new(palette_store::list()),
                 eyedropper: false,
-                pigment_cache: Vec::new(),
-                palette_cache: Vec::new(),
+                // 色ライブラリ・パレット一覧は左パネルに常時表示するので起動時に読む
+                // (以降は保存時と ↻ ボタンで更新)
+                pigment_cache: pigment_store::load_all(),
+                palette_cache: palette_store::load_all(),
             },
             view_zoom: 1.0,
             view_center: egui::vec2(0.5, 0.5),

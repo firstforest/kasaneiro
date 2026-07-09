@@ -6,7 +6,8 @@
 //! 状態・ライフサイクルとディスパッチャ `tool_panel` だけを持つ):
 //! - [`tools`] — 乾燥ボタン(常時表示)と、アクティブレイヤーごとのツールパネル
 //!   (`dry_controls` / `active_tools_panel` が水彩・鉛筆・ペン・ハイライト・乾燥を出し分け)
-//! - [`palette`] — 顔料パレット編集(`palette_panel`。M5。水彩レイヤー選択時のみ表示)
+//! - [`palette`] — 顔料パレット編集(`palette_panel`。M5。水彩レイヤー選択時のみ表示。
+//!   色をつくる・色ライブラリ・パレット保存/読込を常時表示セクションとして持つ)
 //! - [`layers`] — 右パネルのレイヤースタック(選択=ツール系統の切替・可視性・並べ替え・合成方式。
 //!   `layer_stack_panel`)
 //! - [`tuning`] — 乾燥・筆圧・味付けスライダー・診断・シミュ制御(`tuning_panel`)
@@ -112,8 +113,8 @@ pub struct PaletteUi {
     pub store: NamedStore,
     /// M5e: スポイト待機中。次のキャンバスクリックで色を拾い、選択スロットへ入れて解除する
     pub eyedropper: bool,
-    /// M5f: 色ライブラリ一覧のキャッシュ(モーダルを開くとき・保存後・↻ で更新)。
-    /// 色見本チップとホバーの ρ/ω/γ 表示のため名前だけでなく Pigment 丸ごと持つ
+    /// M5f: 色ライブラリ一覧のキャッシュ(左パネルに常時表示するので起動時に読み、
+    /// 保存後・↻ で更新)。色見本チップとホバーの ρ/ω/γ 表示のため Pigment 丸ごと持つ
     pub pigment_cache: Vec<(String, pigment::Pigment)>,
     /// M5g: パレット一覧のキャッシュ(4色見本チップ用。更新タイミングは pigment_cache と同じ)
     pub palette_cache: Vec<(String, pigment::Palette)>,
