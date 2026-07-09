@@ -19,12 +19,12 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
-            .with_title("my-paint")
+            .with_title("かさねいろ")
             .with_inner_size([1100.0, 780.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "my-paint",
+        "kasaneiro",
         options,
         Box::new(|cc| Ok(Box::new(app::PaintApp::new(cc)))),
     )

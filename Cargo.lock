@@ -1394,6 +1394,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "kasaneiro"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "chrono",
+ "eframe",
+ "env_logger",
+ "image",
+ "log",
+ "naga",
+ "notify",
+ "paint-core",
+ "pigment",
+ "pollster",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1579,25 +1598,6 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
-]
-
-[[package]]
-name = "my-paint"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "chrono",
- "eframe",
- "env_logger",
- "image",
- "log",
- "naga",
- "notify",
- "paint-core",
- "pigment",
- "pollster",
- "serde",
- "serde_json",
 ]
 
 [[package]]

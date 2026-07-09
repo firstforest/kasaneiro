@@ -101,7 +101,7 @@ pub struct PresetUi {
     pub store: NamedStore,
 }
 
-/// 作品保存(M7)の UI 状態。名前入力+保存済み一覧(`.mpaint`)。
+/// 作品保存(M7)の UI 状態。名前入力+保存済み一覧(`.kasane`)。
 pub struct WorkUi {
     pub store: NamedStore,
 }

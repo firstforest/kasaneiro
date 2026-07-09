@@ -1,6 +1,6 @@
 # 要件仕様
 
-my-paint が「何を実現するツールか」をまとめる。実装の現在地は [status.md](status.md) が正典、実装計画・順序は [plan.md](plan.md)、技術調査は [note/00-overview.md](note/00-overview.md) 起点の5ノートを参照。
+かさねいろ(kasaneiro)が「何を実現するツールか」をまとめる。実装の現在地は [status.md](status.md) が正典、実装計画・順序は [plan.md](plan.md)、技術調査は [note/00-overview.md](note/00-overview.md) 起点の5ノートを参照。
 
 最終更新: 2026-07-05(M3 完了・M4 進行中の時点)
 

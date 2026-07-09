@@ -30,7 +30,7 @@
 
 **実施メモ(2026-07-05 完了)**:
 
-- ルート `Cargo.toml` を `[workspace]`(members = 3 crate)+ `[package] my-paint`(バイナリ)の二役にした。`[profile.dev]` はワークスペースルートでのみ有効なのでルートに残す。
+- ルート `Cargo.toml` を `[workspace]`(members = 3 crate)+ `[package] kasaneiro`(バイナリ)の二役にした。`[profile.dev]` はワークスペースルートでのみ有効なのでルートに残す。
 - **replay はモデルと永続化を分けた**: モデル(Recorder / Player / Recording)を paint-core へ、ファイル保存/読込(assets ディレクトリ解決に依存)はバイナリ crate `src/replay.rs` に残し、そこで `pub use paint_core::replay::*;` で再エクスポート。`asset_dir` が `env!("CARGO_MANIFEST_DIR")` 基準なので、これを使うコード(replay 永続化・preset・assets)はバイナリ crate に置く必要がある。
 - ルートが同時にバイナリ package なので `cargo test` だけでは下位 crate のテストが回らない。**`cargo test --workspace` / `cargo clippy --workspace` に変更**(CLAUDE.md 更新済み)。
 

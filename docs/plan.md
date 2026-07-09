@@ -1,4 +1,4 @@
-# my-paint 実装計画
+# かさねいろ(kasaneiro)実装計画
 
 [docs/note/](note/00-overview.md) の調査結果に基づく実装計画。作成日: 2026-07-04。
 
@@ -47,7 +47,7 @@
 ## 2. プロジェクト構成
 
 ```
-my-paint/
+kasaneiro/
 ├─ Cargo.toml
 ├─ src/
 │  ├─ main.rs            # eframe 起動

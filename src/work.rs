@@ -3,7 +3,7 @@
 //! プリセット(H3)・パレット(M5d)・ストローク(H5)が「軽い設定 JSON」なのに対し、作品は
 //! 全シミュレーションテクスチャ(湿レイヤー)+乾燥レイヤー+線画+レイヤーごとパレット(M5c)を
 //! 含む数十 MB の生 f32 データを持つ。JSON base64 だと肥大化・低速なので **独自バイナリ1ファイル**
-//! (`works/*.mpaint`)にする: 先頭に軽いメタ情報(SimParams・パレット・レイヤー構成)を JSON で置き、
+//! (`works/*.kasane`)にする: 先頭に軽いメタ情報(SimParams・パレット・レイヤー構成)を JSON で置き、
 //! 続けて生 f32 ブロブを固定順で並べる。作品ファイルは使い捨てでなく蓄積されるが git 管理外
 //! (スナップショット同様、比較用でなくユーザーの制作物なので）。
 //!
@@ -18,11 +18,13 @@ use paint_core::sim::SimParams;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// ファイル先頭の識別子(my-paint work、形式バージョン 1)。読込時に検査する
+/// ファイル先頭の識別子(形式バージョン 1)。読込時に検査する。
+/// 旧名 my-paint 時代の "MPW1" のまま変えない(変えると既存の作品ファイルが読めなくなる)
 const MAGIC: &[u8; 4] = b"MPW1";
 
-/// 作品ファイルの拡張子(JSON プリセット等と区別する)
-const EXT: &str = "mpaint";
+/// 作品ファイルの拡張子(JSON プリセット等と区別する)。
+/// 旧拡張子 .mpaint からの改名時に既存ファイルもリネーム済み(中身の形式は不変)
+const EXT: &str = "kasane";
 
 /// レイヤー構成1枚分(GpuCanvas::DriedLayer と対応。GPU 非依存に持つ)
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]

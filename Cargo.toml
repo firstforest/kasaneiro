@@ -3,7 +3,7 @@ members = ["crates/km", "crates/pigment", "crates/paint-core"]
 resolver = "3"
 
 [package]
-name = "my-paint"
+name = "kasaneiro"
 version = "0.1.0"
 edition = "2024"
 
