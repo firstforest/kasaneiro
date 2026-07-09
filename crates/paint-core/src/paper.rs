@@ -3,9 +3,10 @@
 //! ③吸着の粒状化(transfer.wgsl)の3箇所から同じテクスチャを参照させる
 //! (docs/note/01-fluid-simulation.md §6)。
 //!
-//! 値ノイズ(格子点ハッシュのスムーズ補間)の3成分合成:
+//! 値ノイズ(格子点ハッシュのスムーズ補間)の4成分合成:
 //! - 低周波: 沈殿ムラ(大きな濃淡)
-//! - 高周波: 紙目(細かい凹凸)
+//! - 中周波: 紙目(凹凸の基調)
+//! - 微細: 紙目の細かなざらつき(高周波オクターブ)
 //! - 異方性: 横方向に引き伸ばした繊維ストリーク
 //!
 //! 実紙スキャンへの差し替え(M4)はこの生成関数をロード関数に置き換えるだけ。
@@ -47,11 +48,12 @@ pub fn generate(size: u32, seed: u32) -> Vec<f32> {
     for y in 0..size {
         for x in 0..size {
             let (fx, fy) = (x as f32, y as f32);
-            // 低周波 = 沈殿ムラ / 高周波 = 紙目 / 異方性 = 横方向の繊維ストリーク
+            // 低周波 = 沈殿ムラ / 中周波 = 紙目 / 微細 = 細かなざらつき / 異方性 = 横方向の繊維ストリーク
             let low = value_noise(fx / 48.0, fy / 48.0, seed);
             let grain = value_noise(fx / 6.0, fy / 6.0, seed.wrapping_add(1));
+            let micro = value_noise(fx / 2.2, fy / 2.2, seed.wrapping_add(3));
             let fiber = value_noise(fx / 24.0, fy / 3.0, seed.wrapping_add(2));
-            let h = 0.40 * low + 0.35 * grain + 0.25 * fiber;
+            let h = 0.34 * low + 0.26 * grain + 0.18 * micro + 0.22 * fiber;
             heights.push(h.clamp(0.0, 1.0));
         }
     }
