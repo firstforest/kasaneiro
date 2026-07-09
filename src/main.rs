@@ -7,6 +7,7 @@ mod assets;
 mod gpu;
 mod input;
 mod palette_store;
+mod pigment_store;
 mod preset;
 mod replay;
 mod work;
