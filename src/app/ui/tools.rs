@@ -98,7 +98,7 @@ impl PaintApp {
     /// 水彩レイヤーのツール(M1〜M4): ツール選択・顔料スロット・ブラシスライダー
     pub(in crate::app) fn brush_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("水彩ブラシ");
-        // 8ツールを1列(並列)に並べる: 「塗る」4色(色スウォッチ)+ 削り/消す/ぼかし筆/ならし
+        // 7ツールを1列(並列)に並べる: 「塗る」4色(色スウォッチ)+ 削り/消す/ぼかし筆
         // (文字ボタン)。**色選び = その色で「塗る」ツールを選ぶ**に統合したので、旧「ツール選択行 +
         // 別行の顔料スウォッチ」の2段はやめて 8 ボタンを一列にした(色スウォッチを押すと Paint ツール +
         // その顔料スロットへ切り替わる)。選択状態: 塗るは tool==Paint かつ brush_channel==i、
@@ -118,7 +118,7 @@ impl PaintApp {
                 )
             })
             .collect();
-        // 左パネルは幅が狭いので横一列に収まらないぶんは折り返す(8 ボタン=色4+文字4)
+        // 左パネルは幅が狭いので横一列に収まらないぶんは折り返す(7 ボタン=色4+文字3)
         ui.horizontal_wrapped(|ui| {
             // 「塗る」4色: 色スウォッチ。押すと Paint ツール + その顔料スロットへ。
             // F17: 選択中のスウォッチはアクセント色の太枠で明示(角丸のスウォッチ)
@@ -142,7 +142,7 @@ impl PaintApp {
             // 「塗る4色」と「削り以降の4ツール」の意味グループを小さいギャップで区切る
             // (horizontal_wrapped の折返し挙動を壊さないよう要素の追加はしない)
             ui.add_space(8.0);
-            // 削り/消す/ぼかし筆/ならし: 枠付きの文字ボタン(Paint はスウォッチ側で出すので飛ばす)。
+            // 削り/消す/ぼかし筆: 枠付きの文字ボタン(Paint はスウォッチ側で出すので飛ばす)。
             // 色スウォッチと高さ 28px を揃え、選択中は F17 のスウォッチ選択太枠と整合する
             // selection 色の塗り+枠で明示する
             for wt in WetTool::ALL {
@@ -221,13 +221,11 @@ impl PaintApp {
                 ui.add(egui::Slider::new(&mut self.params.lift_strength, 0.0..=1.0).text("削りの強さ"));
             }
             Some(WetTool::WaterBrush) => {
-                ui.add(egui::Slider::new(&mut self.params.water_lift, 0.0..=1.0).text("ぼかしの強さ"));
-            }
-            Some(WetTool::Smear) => {
-                ui.add(
-                    egui::Slider::new(&mut self.params.smear_rate, 0.0..=1.0)
-                        .text("ならしの強さ(濃い所を伸ばす)"),
-                );
+                ui.add(egui::Slider::new(&mut self.params.water_lift, 0.0..=1.0).text("ぼかしの強さ"))
+                    .on_hover_text(
+                        "筆が触れた沈着顔料を溶かして浮かせる割合。浮いた色は水の量に応じて\
+                         ひとりでに混ざって馴染む。染みつき(ω)が強い色は剥がれず残る",
+                    );
             }
             _ => {}
         }

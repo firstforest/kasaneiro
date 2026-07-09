@@ -40,20 +40,18 @@ pub enum WetTool {
     Lift,
     /// 湿レイヤーの水・顔料をゼロへ(完全消去。M3)
     Erase,
-    /// 水を置きブラシ下の顔料を近傍平均へ均す(局所ならし。M4)
+    /// 水を置き、ブラシ下の沈着顔料を溶かし戻してぼかす(M4 → 2026-07-09 に一次原理化。
+    /// 均しの箱ぼかしは廃止し、馴染ませは毛細管拡散+γ重み顔料拡散の物理に任せる)
     WaterBrush,
-    /// 総顔料をブラシスケールで均す(広い均一化。M4)
-    Smear,
 }
 
 impl WetTool {
     /// UI・記録が回すための全列挙(順序 = ツールバーの並び)
-    pub const ALL: [WetTool; 5] = [
+    pub const ALL: [WetTool; 4] = [
         WetTool::Paint,
         WetTool::Lift,
         WetTool::Erase,
         WetTool::WaterBrush,
-        WetTool::Smear,
     ];
 
     /// `SimParams::tool` へ書く値。gpu_id を持つのは WetTool だけ —
@@ -64,7 +62,7 @@ impl WetTool {
             WetTool::Lift => 1,
             WetTool::Erase => 2,
             WetTool::WaterBrush => 3,
-            WetTool::Smear => 4,
+            // 4 は欠番(旧ならし。2026-07-09 に廃止 — ぼかし筆へ統合)
         }
     }
 
@@ -81,8 +79,7 @@ impl WetTool {
             WetTool::Paint => "水と顔料を置いて描く基本のブラシ",
             WetTool::Lift => "乾いた色を水で戻して薄くする削りツール",
             WetTool::Erase => "水・顔料を消して紙の白まで戻す完全消去",
-            WetTool::WaterBrush => "水だけを塗り、下の色をなじませてぼかす",
-            WetTool::Smear => "濃い所の色を周囲へ広げて均一に伸ばす",
+            WetTool::WaterBrush => "水だけを塗り、下の色を溶かしてぼかす",
         }
     }
 }
@@ -130,7 +127,6 @@ impl ToolInfo for WetTool {
             WetTool::Lift => "削り",
             WetTool::Erase => "消す",
             WetTool::WaterBrush => "ぼかし筆",
-            WetTool::Smear => "ならし",
         }
     }
 
@@ -143,10 +139,7 @@ impl ToolInfo for WetTool {
             }
             WetTool::Erase => "水・顔料をその場で消して紙の白まで戻す完全消去。",
             WetTool::WaterBrush => {
-                "色を置かずに水だけ塗り、ブラシ下の色をなじませてぼかす。①広い領域を先に濡らして色を滑らかに広げる ②境界をなでて均一に馴染ませる(なでても濃くならない。ぼかしの強さで調整)"
-            }
-            WetTool::Smear => {
-                "濃い所に置くと色が周囲へ広がって均一に伸びる。ぼかし筆より広い範囲の均一化に(なでても濃くならない。ならしの強さで調整)"
+                "色を置かずに水だけ塗り、下の沈着した色を溶かして浮かせる。浮いた色は水の量に応じてひとりでに混ざって馴染む。①広い領域を先に濡らす ②境界をなでてぼかす(なでても濃くならない。ぼかしの強さ=溶かす量。染みつきの強い顔料は残る)"
             }
         }
     }
@@ -184,6 +177,8 @@ mod tests {
         }
         assert_eq!(WetTool::from_gpu_id(99), None);
         assert_eq!(WetTool::try_from(99u32), Err(99));
+        // 4 = 旧ならし(2026-07-09 廃止)。欠番として拒否される
+        assert_eq!(WetTool::from_gpu_id(4), None);
     }
 
     /// ラスタツールは流体経路に流れない(wet() が None)= 型が経路を保証する

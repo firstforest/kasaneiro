@@ -151,7 +151,7 @@ paint:
 | ファイル | 役割 |
 |---|---|
 | common.wgsl | 共通定義(SimParams / Splat 構造体、濡れ判定、バイリニア補間)。Rust 側が各シェーダーの先頭に連結してコンパイル。さらに前にキャンバスサイズ依存の const 2行(TILE_SIZE / TILES_PER_SIDE)を `shader_prelude`(gpu/mod.rs)が生成して連結する(M8) |
-| splat.wgsl | ブラシ入力。tool(描画/リフト/消去/水筆/ならし)で分岐 |
+| splat.wgsl | ブラシ入力。tool(描画/リフト/消去/ぼかし筆)で分岐 |
 | velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率 `perm` を速度場・にじみ拡張に掛ける(M4.5b) |
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
 | flowout.wgsl | FlowOutward(縁の水を抜く。既定オフ=edge_eta 0、M2 方式に置き換え済みで残置) |
