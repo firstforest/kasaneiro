@@ -6,6 +6,7 @@
 
 use crate::app::{ActiveLayer, PaintApp};
 use crate::gpu::GpuCanvas;
+use crate::work;
 use paint_core::tool::{RasterTool, Tool, ToolInfo, WetTool};
 use eframe::egui;
 
@@ -37,7 +38,9 @@ impl PaintApp {
                 .on_hover_text("定着パス(bake)を走らせて乾燥レイヤーへ焼き込み、湿レイヤーを空にする。色は乾いた層として固定される(M2)")
                 .clicked()
             {
-                self.run_canvas_action(|c, d, q| c.bake_dry(d, q));
+                // M5h: 焼き込み時点の現行パレットを渡して CPU 側にも記録する(抽出の正典)
+                let pal = self.palette.clone();
+                self.run_canvas_action(move |c, d, q| c.bake_dry(d, q, &pal));
                 // M6: 湿レイヤーを別経路で書き替えたので水彩の 1 段 undo を無効化
                 self.invalidate_wet_undo();
             }
@@ -291,18 +294,23 @@ impl PaintApp {
     }
 
     /// 乾燥レイヤー選択中の案内。焼き込みは一方通行なのでツールはなく、描画もブロックされる
-    /// (canvas.rs の drawing_locked)。表示・順序の操作は右のレイヤーパネルで行う
+    /// (canvas.rs の drawing_locked)。表示・順序の操作は右のレイヤーパネルで行う。
+    /// M5h: この層を描いたときのパレット(CPU 記録=layer_palettes)からの色取り込み UI を持つ
     pub(in crate::app) fn dried_info_panel(&mut self, ui: &mut egui::Ui, index: usize) {
-        let slot = {
+        // slot 解決と記録時パレットの clone は renderer.read() の間に済ませる
+        // (取り込みの apply_palette は renderer.write() を取るためロックを跨げない)
+        let (slot, recorded) = {
             let renderer = self.render_state.renderer.read();
-            renderer
-                .callback_resources
-                .get::<GpuCanvas>()
+            let canvas = renderer.callback_resources.get::<GpuCanvas>();
+            let slot = canvas
                 .and_then(|c| c.layers.get(index))
-                .map(|l| l.slot + 1)
+                .map(|l| l.slot as usize);
+            let recorded =
+                canvas.and_then(|c| slot.and_then(|s| c.layer_palette(s).cloned()));
+            (slot, recorded)
         };
         match slot {
-            Some(slot) => ui.heading(format!("乾いた層 {slot}")),
+            Some(slot) => ui.heading(format!("乾いた層 {}", slot + 1)),
             None => ui.heading("乾いた層"),
         };
         ui.label("乾いて固定されたため編集できません(表示・順序は右のレイヤーパネルで)。");
@@ -312,6 +320,69 @@ impl PaintApp {
             )
             .weak(),
         );
+
+        // M5h: 記録時パレットからの取り込み。スウォッチクリック=1色だけ同番スロットへ、
+        // ボタン=4色丸ごと。読込時正規化(load_work)により通常 recorded は常に Some だが、
+        // 将来の変更(レイヤー個別削除など)で崩れたときの破綻検知を兼ねて None も明示する
+        ui.separator();
+        let Some(rec) = recorded else {
+            ui.label(egui::RichText::new("この層のパレット記録はありません").weak());
+            return;
+        };
+        let layer_no = slot.unwrap_or(0) + 1;
+        ui.label("この層を描いたときの4色:");
+        let mut pick = None;
+        ui.horizontal(|ui| {
+            for (i, p) in rec.pigments.iter().enumerate() {
+                let button = egui::Button::new("")
+                    .fill(egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]))
+                    .corner_radius(4.0)
+                    .min_size(egui::vec2(24.0, 24.0));
+                if ui
+                    .add(button)
+                    .on_hover_text(format!(
+                        "{}\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2}\nクリックでこの1色をスロット #{} に取り込む",
+                        p.name,
+                        p.density,
+                        p.staining,
+                        p.granulation,
+                        i + 1
+                    ))
+                    .clicked()
+                {
+                    pick = Some(i);
+                }
+            }
+        });
+        if let Some(i) = pick {
+            self.palette.pigments[i] = rec.pigments[i].clone();
+            self.apply_palette();
+            self.status_msg = Some(format!("層{layer_no}の色{}を取り込みました", i + 1));
+        }
+        if ui
+            .button("この4色をいまのパレットにする")
+            .on_hover_text(
+                "この層を描いたときのパレット(名前・性質ごと)へ丸ごと切り替えます。\n今の4色が惜しければ先に「パレット…」で保存してください",
+            )
+            .clicked()
+        {
+            self.palette = rec.clone();
+            self.apply_palette();
+            self.status_msg = Some(format!("層{layer_no}のパレットを取り込みました"));
+        }
+        // 旧 .kasane 由来のフォールバック復元(自動命名「層nの色i」)には出所を注記する
+        if slot.is_some_and(|s| {
+            rec.pigments
+                .iter()
+                .enumerate()
+                .any(|(i, p)| p.name == work::fallback_pigment_name(s, i))
+        }) {
+            ui.label(
+                egui::RichText::new("※古い作品のため色のみ復元(性質は保存時パレット由来)")
+                    .weak()
+                    .small(),
+            );
+        }
     }
 
     /// 線画の多段 Undo/Redo(M4.5d): ボタン+履歴本数の表示。キーは Ctrl+Z / Ctrl+Shift+Z。

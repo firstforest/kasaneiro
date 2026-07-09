@@ -46,15 +46,17 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
 │  │     ├─ mod.rs        UI 状態(PresetUi / WorkUi / PaletteUi / ReplayUi)+ 共通部品 NamedStore
 │  │     ├─ tools.rs      乾燥ボタン+開発モードトグルと、アクティブレイヤーごとのツールパネル(dry_controls /
 │  │     │                 active_tools_panel が brush/pencil/pen/highlight/dried を Frame::group で囲んで出し分け)
-│  │     ├─ palette.rs    顔料パレット編集(palette_panel。M5。スポイトは常時+色・ρ/ω/γ・ライブラリは「顔料の詳細設定」に折りたたみ。水彩レイヤー選択時のみ表示)
+│  │     ├─ palette.rs    顔料パレット編集(palette_panel。M5。スポイトは常時+選択中スロットの色・ρ/ω/γ 編集を「色をつくる」に折りたたみ(M5g で1スロット化。編集対象は brush_channel 連動)+色ライブラリ/パレットモーダルへの動線。水彩レイヤー選択時のみ表示)
 │  │     ├─ layers.rs     右パネルのレイヤースタック(layer_stack_panel。選択=ツール系統切替・可視性・並べ替え・合成方式)
 │  │     ├─ tuning.rs     制作者向けの調整・診断・シミュ制御(tuning_dev_panel。開発モード時のみ表示)
 │  │     ├─ panels.rs     表示/記録再生/シェーダー状態+status_bar(view/replay/shader_status/status_bar)
-│  │     ├─ file_menu.rs  上部「ファイル」メニューバー+モーダル(menu_bar / file_modals。作品保存/開く統合・設定プリセット・新規キャンバス・全部消す。破壊操作はモーダル内の明示ボタンで確認)
+│  │     ├─ file_menu.rs  上部「ファイル」メニューバー+モーダル(menu_bar / file_modals。作品保存/開く統合・設定プリセット・パレット(M5g、4色見本チップ付き一覧+既定に戻す)・色ライブラリ(M5f、スロットミニセレクタ+即保存+性質ホバー付き一覧)・新規キャンバス・全部消す。破壊操作はモーダル内の明示ボタンで確認)
 │  │     └─ canvas.rs     キャンバス描画・初回ガイド・エラーオーバーレイ(canvas_ui / error_overlay)
 │  ├─ gpu/                GpuCanvas。リソース定義と型・実行時メソッドを持ち、長い処理は分離
 │  │  ├─ mod.rs           型定義(GpuCanvas / Pipelines / DriedLayer)・COMPUTE_SHADERS 表・
 │  │  │                   clear/sync_layers/bake_dry/fast_dry/rewet/rebuild_pipelines
+│  │  │                   (M5h: layer_palettes = 乾燥レイヤーの記録時パレットの CPU 正典。
+│  │  │                    bake_dry(palette) が latent 焼き込みと対で push、不変条件 len==layers.len())
 │  │  ├─ init.rs          GpuCanvas::new(テクスチャ・バッファ・bind group の生成)
 │  │  ├─ callback.rs      CanvasCallback(フレーム描画。パス実行順の正典)
 │  │  ├─ snapshot.rs      GpuCanvas::snapshot(PNG 読み戻し。H6。R8 で readback を一般化予定)
@@ -65,14 +67,18 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
 │  ├─ preset.rs           SimParams ⇄ JSON(H3)
 │  ├─ replay.rs           ストローク記録の永続化(assets 依存の保存/読込。モデルは paint-core を再エクスポート。M5d でパレット同梱の StoredRecording に拡張)
 │  ├─ palette_store.rs    パレット(pigment::Palette)⇄ JSON(M5d。preset/replay と同じ流儀)
+│  ├─ pigment_store.rs    色単体(pigment::Pigment 1個)⇄ JSON(M5f。保存名=顔料名の1本化)
 │  ├─ work.rs             作品保存(M7)。全状態を独自バイナリ1ファイル works/*.kasane に保存/読込
+│  │                      (M5h: メタに layer_palettes を serde(default) で追加=旧ファイルは空。
+│  │                       normalized_layer_palettes が latent 逆変換で層数に揃える読込時正規化)
 │  └─ assets.rs           assets/ ディレクトリ解決(CARGO_MANIFEST_DIR 基準なのでバイナリ crate に残す)
 ├─ tests/shader_compile.rs  WGSL コンパイル可能性テスト(naga)
 └─ assets/
    ├─ shaders/*.wgsl      実行時ロード(ビルドに埋め込まない)
    ├─ presets/*.json      SimParams プリセット(git 管理)
    ├─ strokes/*.json      テストストローク(git 管理。M5d でパレット同梱=StoredRecording)
-   └─ palettes/*.json     顔料パレット・ライブラリ(git 管理。M5d)
+   ├─ palettes/*.json     顔料パレット・ライブラリ(git 管理。M5d)
+   └─ pigments/*.json     色単体ライブラリ(顔料1個=1ファイル。git 管理。M5f。既定4顔料を同梱)
    (works/*.kasane は作品保存の出力先。ユーザーの制作物なので snapshots/ 同様 git 管理外。M7)
 ```
 
@@ -109,7 +115,7 @@ display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 late
 
 **ビューポート変換(binding 11、M6)**: `ViewUniform { center: vec2f, span: f32, cos_t: f32, sin_t: f32, _pad×3 }`(32B。WGSL の末尾パディングは vec3f だと align 16 で 48B に膨らむため f32×3 で詰めて Rust 側と一致させる)。fs_main が画面 uv → キャンバス uv を `canvas_uv = center + R(θ)·(画面uv − 0.5)·span`(`span = 1/zoom`、`R(θ)` は表示中心まわりの回転)で写してからサンプルするため、拡大/パン/**回転**が全サンプル(水/浮遊/沈着/紙/乾燥/線画)に一括で効く。SimParams とは分けた display 専用 uniform で(プリセット H3・記録 H5 を汚さない)、`CanvasCallback` がフレームごとに `write_buffer`。app 側で `zoom ∈ [1, 32]`。**回転で窓の隅がキャンバス外に出るぶん(`canvas_uv` が [0,1] の外)は `BG_COLOR`(紙の周りの机)で塗る**。クランプは回転なしなら窓をキャンバス内に(`center` を各軸 `[half, 1−half]`)、回転時は `center` のみ `[0,1]` に留める。ポインタ→テクセル変換(描画・スポイト)も同じ写像 `PaintApp::screen_to_texel`(逆回転込み)を通す。**スポイト(M5e)の snapshot 読み戻しは画面 uv で索引する**(snapshot は display と同じビュー変換込みで焼くため。テクセル索引では拡大・回転時にズレる)。回転操作は Shift+ホイールで15°刻み・「ビュー」パネルのスライダーで自由角。パン は中ボタンまたはスペース+左ドラッグ。
 
-**顔料 latent(binding 4)のレイアウト(M5c、`array<vec4f, LATENT_TOTAL=78>`)**: 先頭 `GLOBAL_LATENTS=6` vec4 = パレット非依存のグローバル光学(`[0,1]`紙 / `[2,3]`白 R_w / `[4,5]`黒 R_b)。以降は**パレット枠**を `PALETTE_SLOTS = MAX_LAYERS+1 = 9` 個並べ、各枠 `PIGMENT_LATENTS=8` vec4(顔料4種 × c0..c3/RGB残差)。枠 `0..MAX_LAYERS-1` は乾燥レイヤーのスロット別、枠 `LIVE_PALETTE=MAX_LAYERS` は現行(湿レイヤー)のパレット。**乾かすと現行パレットの色を対応スロット枠へ焼き込む**(`GpuCanvas::record_layer_palette`)ため、顔料を後から編集しても乾燥済みレイヤーの色は変わらない。編集時は `set_palette` が physics(ρ/ω/γ、全レイヤー共通)と live 枠だけを `write_buffer`(パイプライン再構築不要)。定数は [crates/pigment](../crates/pigment/src/lib.rs) と [src/gpu/mod.rs](../src/gpu/mod.rs)、WGSL の `pal_base()` が対応。
+**顔料 latent(binding 4)のレイアウト(M5c、`array<vec4f, LATENT_TOTAL=78>`)**: 先頭 `GLOBAL_LATENTS=6` vec4 = パレット非依存のグローバル光学(`[0,1]`紙 / `[2,3]`白 R_w / `[4,5]`黒 R_b)。以降は**パレット枠**を `PALETTE_SLOTS = MAX_LAYERS+1 = 9` 個並べ、各枠 `PIGMENT_LATENTS=8` vec4(顔料4種 × c0..c3/RGB残差)。枠 `0..MAX_LAYERS-1` は乾燥レイヤーのスロット別、枠 `LIVE_PALETTE=MAX_LAYERS` は現行(湿レイヤー)のパレット。**乾かすと現行パレットの色を対応スロット枠へ焼き込む**(`GpuCanvas::record_layer_palette`)ため、顔料を後から編集しても乾燥済みレイヤーの色は変わらない。編集時は `set_palette` が physics(ρ/ω/γ、全レイヤー共通)と live 枠だけを `write_buffer`(パイプライン再構築不要)。定数は [crates/pigment](../crates/pigment/src/lib.rs) と [src/gpu/mod.rs](../src/gpu/mod.rs)、WGSL の `pal_base()` が対応。**M5h**: latent 枠は色しか持たないため、`bake_dry(…, palette)` が同時に `GpuCanvas::layer_palettes`(index=slot)へ Palette を丸ごと clone する。こちらが名前・ρ/ω/γ 込みの**正典**(GPU 枠は表示用キャッシュ)で、乾燥層パネルの「パレット抽出」UI が読む。旧 .kasane(記録なし)は読込時に `pigment::latent_block_to_rgbs`(mixbox 逆変換の隔離点)で色のみ復元する。
 
 ## 4. フレームの流れ
 

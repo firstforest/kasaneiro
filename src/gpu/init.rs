@@ -779,6 +779,7 @@ impl GpuCanvas {
             tilescan_layout,
             tiledilate_layout,
             layers: Vec::new(),
+            layer_palettes: Vec::new(),
             pipelines: None,
             current: 0,
             snapshot_format,

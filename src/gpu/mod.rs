@@ -268,6 +268,14 @@ pub struct GpuCanvas {
     /// 乾燥レイヤーの重ね順とメタ情報(先頭が最下層)。UI(app.rs)から直接編集し、
     /// 変更後に sync_layers() で uniform へ反映する
     pub layers: Vec<DriedLayer>,
+    /// 乾燥レイヤーの記録時パレット(M5h)。index = slot。GPU の latents 枠(M5c)が
+    /// 色 latent しか持たないのに対し、こちらは名前・ρ/ω/γ 込みの**正典**
+    /// (GPU 枠は表示用キャッシュ)。UI の「乾いた層からパレット抽出」が読む。
+    /// 不変条件: `layer_palettes.len() == layers.len()`(bake_dry で push / clear で全消去 /
+    /// 作品読込は app::load_work が正規化して代入)。slot は layers.len() 連番で採番し
+    /// 解放は全消去のみなので添字=slot が常に成立する。将来レイヤー個別削除を入れる場合は
+    /// この前提が崩れる → HashMap 化等の再設計が必要
+    pub layer_palettes: Vec<pigment::Palette>,
     /// シェーダーが一度も通っていない/壊れている間は None(描画をスキップして継続)
     pipelines: Option<Pipelines>,
     /// 表示中のテクスチャ番号。各 compute パスは current を読み 1-current へ書いてから反転する
@@ -336,7 +344,15 @@ impl GpuCanvas {
             );
         }
         self.layers.clear();
+        self.layer_palettes.clear();
         self.sync_layers(queue);
+    }
+
+    /// 乾燥レイヤー slot の記録時パレット(M5h)。UI のパレット抽出が読む。
+    /// 不変条件(len == layers.len())が保たれていれば使用スロットでは常に Some だが、
+    /// 将来の変更(レイヤー個別削除など)で崩れたときの破綻検知を兼ねて Option のまま返す
+    pub fn layer_palette(&self, slot: usize) -> Option<&pigment::Palette> {
+        self.layer_palettes.get(slot)
     }
 
     /// 湿レイヤーの 1 段 undo(M6): いま表示中(current)の [水, 浮遊, 沈着] を退避テクスチャへ
@@ -503,8 +519,15 @@ impl GpuCanvas {
     }
 
     /// 「乾かす」(M2): 定着パスを1回走らせ、湿レイヤーの顔料を新しい乾燥レイヤーへ
-    /// 焼き込んで湿レイヤーを解放する。手動ボタンから呼ばれる(フレーム外の即時 submit)
-    pub fn bake_dry(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), String> {
+    /// 焼き込んで湿レイヤーを解放する。手動ボタンから呼ばれる(フレーム外の即時 submit)。
+    /// M5h: `palette` = 焼き込み時点の現行パレット。GPU の latent 焼き込み(色のみ)と対で
+    /// CPU 側にも丸ごと記録する(layer_palettes の不変条件をこの関数内に閉じる)
+    pub fn bake_dry(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        palette: &pigment::Palette,
+    ) -> Result<(), String> {
         let pipelines = self.pipelines.as_ref().ok_or("シェーダーが未ビルドです")?;
         if self.layers.len() >= MAX_LAYERS {
             return Err(format!(
@@ -567,6 +590,8 @@ impl GpuCanvas {
             slot: slot as u32,
             visible: true,
         });
+        // M5h: 記録時パレットの CPU 正典(index = slot = 今 push した layers の末尾と対)
+        self.layer_palettes.push(palette.clone());
         self.sync_layers(queue);
         Ok(())
     }

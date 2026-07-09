@@ -38,6 +38,15 @@ pub fn load(name: &str) -> Result<Palette, String> {
     serde_json::from_str(&json).map_err(|e| format!("{name}.json の形式が不正です: {e}"))
 }
 
+/// 一覧+中身(パレットモーダルの4色見本チップ用。M5g)。読めないファイルはスキップする。
+/// モーダルを開くとき・保存後・↻ でのみ呼ぶ(ファイル監視はしない=既存キャッシュ流儀)
+pub fn load_all() -> Vec<(String, Palette)> {
+    list()
+        .into_iter()
+        .filter_map(|name| load(&name).ok().map(|p| (name, p)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

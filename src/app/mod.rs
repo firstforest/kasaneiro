@@ -105,6 +105,10 @@ pub(in crate::app) enum FileModal {
     Work,
     /// 設定プリセット(SimParams)の保存+開く(統合モーダル)
     Preset,
+    /// パレット(4色一式)の保存+読込(統合モーダル。M5g)
+    Palette,
+    /// 色ライブラリ(顔料1個)の保存+読込(統合モーダル。M5f)
+    Pigment,
     /// 新規キャンバス(サイズ選択+確認)
     NewCanvas,
     /// 全部消す(確認)
@@ -273,6 +277,8 @@ impl PaintApp {
             palette_ui: PaletteUi {
                 store: NamedStore::new(palette_store::list()),
                 eyedropper: false,
+                pigment_cache: Vec::new(),
+                palette_cache: Vec::new(),
             },
             view_zoom: 1.0,
             view_center: egui::vec2(0.5, 0.5),
@@ -960,6 +966,8 @@ impl PaintApp {
                 params: self.params,
                 palette: self.palette.clone(),
                 layers,
+                // M5h: 乾燥レイヤーの記録時パレット(CPU 正典)も作品へ残す
+                layer_palettes: canvas.layer_palettes.clone(),
                 textures,
             }
         };
@@ -981,6 +989,9 @@ impl PaintApp {
         if file.canvas_size != self.canvas_size {
             self.recreate_canvas(file.canvas_size);
         }
+        // M5h: 記録時パレットを層数に揃えてから渡す(旧ファイルは latent 逆変換で補完)。
+        // 以降は canvas.layer_palettes.len() == layers.len() の不変条件が成立する
+        let layer_palettes = work::normalized_layer_palettes(&file);
         // GPU 側(テクスチャ・レイヤー・パレット)を復元
         let result: Result<(), String> = {
             let mut renderer = self.render_state.renderer.write();
@@ -997,6 +1008,7 @@ impl PaintApp {
                                     visible: l.visible,
                                 })
                                 .collect();
+                            canvas.layer_palettes = layer_palettes;
                             canvas.sync_layers(&self.render_state.queue);
                             // physics(ρ/ω/γ)と live latent 枠を現行パレットで整える
                             // (latent 本体は import_state が丸ごと復元済み。同値で上書き)

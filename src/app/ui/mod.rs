@@ -106,11 +106,17 @@ pub struct WorkUi {
     pub store: NamedStore,
 }
 
-/// パレット(M5)の UI 状態。ライブラリ保存/読込(M5d)+ スポイト待機(M5e)。
+/// パレット(M5)の UI 状態。ライブラリ保存/読込(M5d)+ スポイト待機(M5e)+
+/// モーダル一覧のキャッシュ(M5f/g)。
 pub struct PaletteUi {
     pub store: NamedStore,
     /// M5e: スポイト待機中。次のキャンバスクリックで色を拾い、選択スロットへ入れて解除する
     pub eyedropper: bool,
+    /// M5f: 色ライブラリ一覧のキャッシュ(モーダルを開くとき・保存後・↻ で更新)。
+    /// 色見本チップとホバーの ρ/ω/γ 表示のため名前だけでなく Pigment 丸ごと持つ
+    pub pigment_cache: Vec<(String, pigment::Pigment)>,
+    /// M5g: パレット一覧のキャッシュ(4色見本チップ用。更新タイミングは pigment_cache と同じ)
+    pub palette_cache: Vec<(String, pigment::Palette)>,
 }
 
 /// ストローク記録・再生(H5)の UI 状態をまとめる(R4 で PaintApp の 5 フィールドを集約)。

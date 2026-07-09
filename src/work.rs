@@ -44,6 +44,11 @@ struct WorkMeta {
     palette: Palette,
     /// 重ね順・可視性(先頭が最下層)
     layers: Vec<StoredLayer>,
+    /// M5h: 乾燥レイヤーの記録時パレット(index = slot、名前・ρ/ω/γ 込みの正典)。
+    /// `#[serde(default)]` 必須: 旧 .kasane はこのフィールドを持たず、空 Vec で読めることが
+    /// 後方互換の要(欠落分は app::load_work が latent 逆変換で正規化する)
+    #[serde(default)]
+    layer_palettes: Vec<Palette>,
 }
 
 /// 1作品分の全状態(メタ + GPU テクスチャの生データ)。
@@ -55,6 +60,8 @@ pub struct WorkFile {
     pub params: SimParams,
     pub palette: Palette,
     pub layers: Vec<StoredLayer>,
+    /// M5h: 乾燥レイヤーの記録時パレット(index = slot)。旧ファイルは空 Vec
+    pub layer_palettes: Vec<Palette>,
     pub textures: WorkTextures,
 }
 
@@ -99,6 +106,42 @@ pub fn load(name: &str) -> Result<WorkFile, String> {
     decode(&bytes).map_err(|e| format!("{name}.{EXT} の形式が不正です: {e}"))
 }
 
+/// M5h: 乾燥レイヤーの記録時パレットを層数(= textures.dried.len())に揃えて返す(読込時正規化)。
+/// 旧 .kasane(layer_palettes 欠落=空 Vec)は latent ブロブ(M5c が色 latent を保存済み)から
+/// 基本色を逆変換して補完する。名前・ρ/ω/γ は latent に無いため復元できず、名前は
+/// 「層{n}の色{i}」の自動命名(UI がこの型で「色のみ復元」と判別する)、ρ/ω/γ は保存時
+/// パレット(meta.palette)の同番スロット値を借りる(「色だけ差し替えて描き味は維持」)。
+/// 呼び出し側(app::load_work)はこの結果を GpuCanvas::layer_palettes へ代入し、
+/// 以降の UI は欠損の有無を意識しない(len == 層数 が常に成立)
+pub fn normalized_layer_palettes(file: &WorkFile) -> Vec<Palette> {
+    (0..file.textures.dried.len())
+        .map(|slot| {
+            file.layer_palettes.get(slot).cloned().unwrap_or_else(|| {
+                // latent ブロブのレイアウト: グローバル光学 → スロット別パレット枠(persist.rs)
+                let base = (pigment::GLOBAL_LATENTS + slot * pigment::PIGMENT_LATENTS) * 4;
+                let mut block = [[0.0f32; 4]; pigment::PIGMENT_LATENTS];
+                for (k, v4) in block.iter_mut().enumerate() {
+                    let at = base + k * 4;
+                    v4.copy_from_slice(&file.textures.latents[at..at + 4]);
+                }
+                let rgbs = pigment::latent_block_to_rgbs(&block);
+                let mut pal = file.palette.clone();
+                for (i, p) in pal.pigments.iter_mut().enumerate() {
+                    p.rgb = rgbs[i];
+                    p.name = fallback_pigment_name(slot, i);
+                }
+                pal
+            })
+        })
+        .collect()
+}
+
+/// 旧 .kasane フォールバック復元の自動命名(M5h)。「層{n}の色{i}」型=由来が名前から分かる。
+/// UI(乾いた層の抽出パネル)はこの型の名前で「※色のみ復元」の注記を出す
+pub fn fallback_pigment_name(slot: usize, index: usize) -> String {
+    format!("層{}の色{}", slot + 1, index + 1)
+}
+
 /// WorkFile → バイト列。MAGIC + メタ長 + メタ JSON + 生 f32 ブロブ(固定順)
 fn encode(work: &WorkFile) -> Result<Vec<u8>, String> {
     let meta = WorkMeta {
@@ -107,6 +150,7 @@ fn encode(work: &WorkFile) -> Result<Vec<u8>, String> {
         params: work.params,
         palette: work.palette.clone(),
         layers: work.layers.clone(),
+        layer_palettes: work.layer_palettes.clone(),
     };
     let meta_json = serde_json::to_vec(&meta).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
@@ -177,6 +221,7 @@ fn decode(bytes: &[u8]) -> Result<WorkFile, String> {
         params: meta.params,
         palette: meta.palette,
         layers: meta.layers,
+        layer_palettes: meta.layer_palettes,
         textures: WorkTextures {
             wet,
             dried,
@@ -221,6 +266,9 @@ mod tests {
                 lines: [ramp(6.0, texels), ramp(7.0, texels), ramp(8.0, texels)],
                 latents: ramp(9.0, crate::gpu::LATENT_TOTAL * 4),
             };
+            // M5h: レイヤーごとパレット(index = slot)。1枚目だけ色を変えて取り違えも検出する
+            let mut recorded = Palette::default_palette();
+            recorded.pigments[0].rgb = [1, 2, 3];
             let work = WorkFile {
                 canvas_size,
                 params: SimParams {
@@ -232,6 +280,7 @@ mod tests {
                     StoredLayer { slot: 0, visible: true },
                     StoredLayer { slot: 1, visible: false },
                 ],
+                layer_palettes: vec![recorded, Palette::default_palette()],
                 textures: textures.clone(),
             };
 
@@ -241,9 +290,79 @@ mod tests {
             assert_eq!(back.params, work.params);
             assert_eq!(back.palette, work.palette);
             assert_eq!(back.layers, work.layers);
+            assert_eq!(back.layer_palettes, work.layer_palettes);
             // テクスチャは巨大なので assert_eq!(Debug ダンプ)を避け、等価判定だけ行う
             assert!(back.textures == textures, "テクスチャの往復が一致しません");
         }
+    }
+
+    /// 旧 .kasane(メタ JSON に layer_palettes フィールドが無い)が空 Vec で読めること
+    /// (M5h の後方互換の要。`#[serde(default)]` の剥落をここで検知する)
+    #[test]
+    fn old_meta_without_layer_palettes_loads() {
+        // 現行メタを JSON にしてから layer_palettes キーを取り除く=旧形式の再現
+        let meta = WorkMeta {
+            canvas_size: 512,
+            layer_count: 0,
+            params: SimParams::default(),
+            palette: Palette::default_palette(),
+            layers: Vec::new(),
+            layer_palettes: Vec::new(),
+        };
+        let mut v: serde_json::Value = serde_json::to_value(&meta).unwrap();
+        v.as_object_mut().unwrap().remove("layer_palettes");
+        let old: WorkMeta = serde_json::from_value(v).unwrap();
+        assert!(old.layer_palettes.is_empty());
+        assert_eq!(old.palette, meta.palette);
+    }
+
+    /// 読込時正規化(M5h): 記録があればそのまま、旧ファイル(空 Vec)は latent 逆変換で
+    /// 色を復元し、名前は自動命名・ρ/ω/γ は保存時パレット由来になること
+    #[test]
+    fn normalize_fills_missing_layer_palettes() {
+        // 保存時パレットと「当時のパレット」を別の色にして、復元元の取り違えを検出する
+        let mut recorded = Palette::default_palette();
+        recorded.pigments[0].rgb = [200, 40, 10];
+        let mut latents = vec![0.0f32; crate::gpu::LATENT_TOTAL * 4];
+        let base = pigment::GLOBAL_LATENTS * 4; // slot 0 のパレット枠
+        for (k, v4) in recorded.pigment_latents().iter().enumerate() {
+            latents[base + k * 4..base + k * 4 + 4].copy_from_slice(v4);
+        }
+        let meta_palette = Palette::default_palette();
+        let file = WorkFile {
+            canvas_size: 512,
+            params: SimParams::default(),
+            palette: meta_palette.clone(),
+            layers: vec![StoredLayer { slot: 0, visible: true }],
+            layer_palettes: Vec::new(), // 旧ファイル相当
+            textures: WorkTextures {
+                wet: [Vec::new(), Vec::new(), Vec::new()],
+                dried: vec![Vec::new()], // 層1枚(正規化は個数だけ見る)
+                lines: [Vec::new(), Vec::new(), Vec::new()],
+                latents,
+            },
+        };
+
+        let normalized = normalized_layer_palettes(&file);
+        assert_eq!(normalized.len(), 1);
+        let p0 = &normalized[0].pigments[0];
+        // 色は latent 逆変換(mixbox 往復で ±1 の量子化誤差を許容)
+        for c in 0..3 {
+            assert!(
+                (p0.rgb[c] as i32 - recorded.pigments[0].rgb[c] as i32).abs() <= 1,
+                "latent 逆変換の色がずれています: {:?}",
+                p0.rgb
+            );
+        }
+        assert_eq!(p0.name, fallback_pigment_name(0, 0));
+        // ρ/ω/γ は保存時パレットの同番スロット値
+        assert_eq!(p0.density, meta_palette.pigments[0].density);
+        assert_eq!(p0.staining, meta_palette.pigments[0].staining);
+
+        // 記録がある場合はそのまま返る(補完しない)
+        let mut with_record = file;
+        with_record.layer_palettes = vec![recorded.clone()];
+        assert_eq!(normalized_layer_palettes(&with_record), vec![recorded]);
     }
 
     /// 壊れたデータ(識別子違い・サイズ不足・未対応キャンバスサイズ)は Err になること
@@ -258,6 +377,7 @@ mod tests {
             params: SimParams::default(),
             palette: Palette::default_palette(),
             layers: Vec::new(),
+            layer_palettes: Vec::new(),
         })
         .unwrap();
         let mut bytes = Vec::new();
