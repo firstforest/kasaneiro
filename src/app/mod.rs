@@ -119,6 +119,12 @@ pub struct PaintApp {
     active_layer: ActiveLayer,
     /// 水彩レイヤーで最後に使っていたツール。別レイヤーへ移って戻ったときに復元する
     last_wet_tool: WetTool,
+    /// スポイト(I キー)を押しっぱなしで一時待機にしている間 true。離したら待機解除する
+    /// (ペンタブレットのキー割当を想定した spring-loaded。UI のトグルとは独立に動く)
+    eyedropper_hold: bool,
+    /// 消す(E キー)を押しっぱなしで「今いる描画レイヤーの消しゴム」に一時切替している間の、
+    /// 離したとき戻す元ツール(水彩=Wet(Erase) / 線画=Raster{eraser:true} / 乾燥=無反応)
+    erase_hold: Option<Tool>,
     stroke: StrokeState,
     /// M1.5: ペン入力(egui Touch 経由、筆圧付き)。接地中はマウスより優先される
     pen: PenSource,
@@ -231,6 +237,8 @@ impl PaintApp {
             tool: Tool::Wet(WetTool::Paint),
             active_layer: ActiveLayer::Wet,
             last_wet_tool: WetTool::Paint,
+            eyedropper_hold: false,
+            erase_hold: None,
             stroke: StrokeState::default(),
             pen: PenSource::default(),
             mouse: MouseSource,
@@ -548,6 +556,68 @@ impl PaintApp {
         }
         if redo {
             self.redo();
+        }
+    }
+
+    /// スポイト・消すをキーに割り当てる spring-loaded ショートカット(ペンタブレットのキー用)。
+    /// 押している間だけ一時的に切り替え、離すと元へ戻す:
+    /// - **I** = スポイト(押している間だけ色拾い待機。離すと解除)。どのレイヤーでも効く
+    /// - **E** = いま描いているレイヤーに応じた消しゴム(押している間だけ。離すと元ツール):
+    ///   水彩レイヤー=`Wet(Erase)`(完全消去)/ 線画レイヤー(鉛筆・ペン・ハイライト)=そのレイヤーの
+    ///   消しゴム(`Raster { eraser: true }`)。乾燥レイヤー選択中は描画不可なので何もしない
+    ///
+    /// ペンタブレット側はキーを I / E に割り当てる(ドライバ設定)。修飾キーのように「押している間ずっと」
+    /// キーを送る割当を推奨。テキスト入力中(名前欄など)はキーを奪わず、保持中の一時切替は解除する。
+    /// `ui()` 冒頭(パネル描画前)で呼ぶので、設定した self.tool / 待機フラグは同フレームで反映される
+    /// (線画は raster_tool_header が self.tool から eraser を読み直して line_eraser に同期する)。
+    fn handle_tool_shortcuts(&mut self, ctx: &egui::Context) {
+        let typing = ctx.egui_wants_keyboard_input();
+        let (i_down, e_down) = ctx.input(|i| {
+            (
+                !typing && i.key_down(egui::Key::I),
+                !typing && i.key_down(egui::Key::E),
+            )
+        });
+
+        // スポイト(I): 押している間だけ M5e の待機フラグを立てる(離すと解除)。
+        // 待機中にキャンバスをクリックすると canvas.rs が色を拾って一旦フラグを落とすが、
+        // 押しっぱなしなら次フレームでここが再び立てるので連続で拾える
+        if i_down {
+            self.palette_ui.eyedropper = true;
+            self.eyedropper_hold = true;
+        } else if self.eyedropper_hold {
+            self.palette_ui.eyedropper = false;
+            self.eyedropper_hold = false;
+        }
+
+        // 消す(E): 押している間だけ「今いる描画レイヤーの消しゴム」へ一時切替(離すと元ツール)。
+        // 元ツールを erase_hold に退避し、レイヤー種別で消しゴムの実体を選ぶ。
+        // 乾燥レイヤー(Dried)は描画不可なので対象外(退避もしない=E は無反応)。
+        let erasing = e_down
+            && match self.active_layer {
+                ActiveLayer::Wet => {
+                    // 水彩=完全消去。params.tool も直接同期し、パネル非表示でも効くようにする
+                    self.erase_hold.get_or_insert(self.tool);
+                    self.tool = Tool::Wet(WetTool::Erase);
+                    self.params.tool = WetTool::Erase.gpu_id();
+                    true
+                }
+                ActiveLayer::Pencil | ActiveLayer::Pen | ActiveLayer::Highlight => {
+                    // 線画=そのレイヤーの消しゴム。raster_tool_header が self.tool から
+                    // eraser を読み直して line_eraser を同期するので、ここは self.tool を立てるだけ
+                    self.erase_hold.get_or_insert(self.tool);
+                    if let Tool::Raster { kind, .. } = self.tool {
+                        self.tool = Tool::Raster { kind, eraser: true };
+                    }
+                    true
+                }
+                ActiveLayer::Dried(_) => false,
+            };
+        if !erasing && let Some(prev) = self.erase_hold.take() {
+            self.tool = prev;
+            if let Some(wt) = self.tool.wet() {
+                self.params.tool = wt.gpu_id();
+            }
         }
     }
 
@@ -968,6 +1038,10 @@ impl eframe::App for PaintApp {
 
         // M4.5d/M6: 統一 Undo/Redo(Ctrl+Z / Ctrl+Shift+Z)。線画・水彩の両方を振り分ける
         self.handle_undo_shortcuts(ui.ctx());
+
+        // スポイト(I)・消す(E)の押しっぱなし一時切替(ペンタブレットのキー割当用)。
+        // パネル描画前に self.tool / 待機フラグを確定させる
+        self.handle_tool_shortcuts(ui.ctx());
 
         // UI スクショ(AI 用): 外部(AI の Bash)が request-shot を書いたら撮影要求を出す。
         // 続けて、撮影要求済みなら結果イベントを受け取って固定パスへ保存する

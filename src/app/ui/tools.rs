@@ -155,7 +155,16 @@ impl PaintApp {
                         .fill(ui.visuals().selection.bg_fill)
                         .stroke((3.0, ui.visuals().selection.stroke.color));
                 }
-                if ui.add(button).on_hover_text(wt.hint()).clicked() {
+                // 消すは E キー押しっぱなしでも一時的に使える(ペンタブのキー割当)ことをホバーで案内
+                let hover = if wt == WetTool::Erase {
+                    format!(
+                        "{}\nE キーを押している間だけ一時的に消すにもできます(ペンタブレットのキーに E を割り当て)",
+                        wt.hint()
+                    )
+                } else {
+                    wt.hint().to_owned()
+                };
+                if ui.add(button).on_hover_text(hover).clicked() {
                     self.tool = Tool::Wet(wt);
                     self.last_wet_tool = wt;
                 }
@@ -212,7 +221,9 @@ impl PaintApp {
         ui.label(egui::RichText::new(kind.hint()).weak());
         let mut eraser = matches!(self.tool, Tool::Raster { eraser: true, .. });
         ui.checkbox(&mut eraser, "消しゴム")
-            .on_hover_text("このレイヤーの線を削る(splat を減算に反転)");
+            .on_hover_text(
+                "このレイヤーの線を削る(splat を減算に反転)。\nE キーを押している間だけ一時的に消しゴムにもできます(ペンタブレットのキーに E を割り当て)",
+            );
         self.tool = Tool::Raster { kind, eraser };
         self.params.line_mode = match kind {
             RasterTool::Pencil => 0,
