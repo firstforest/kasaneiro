@@ -137,7 +137,7 @@ prepare(毎フレーム):
   sim_steps 回(H6 の速度倍率):
     速度更新(velocity。ペン線で速度/にじみ拡張に透水率 M4.5b) → 発散緩和(relax)× relax_iters
     → FlowOutward(edge_eta > 0 のときだけ) → 移流(advect: 水+浮遊顔料)
-    → 顔料拡散(diffuse。ペン線で隣接流束に透水率 M4.5b)× diffuse_iters → 吸着/脱着+蒸発(transfer)
+    → 顔料+水の拡散(diffuse。水は毛細管拡散 note/07。ペン線で隣接流束に透水率 M4.5b)× diffuse_iters → 吸着/脱着+蒸発(transfer)
 paint:
   display.wgsl でフルスクリーン三角形を描画(合成・発色・デバッグ表示)
 ```
@@ -156,7 +156,7 @@ paint:
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
 | flowout.wgsl | FlowOutward(縁の水を抜く。既定オフ=edge_eta 0、M2 方式に置き換え済みで残置) |
 | advect.wgsl | セミラグランジアン移流(水+浮遊顔料。差し替え用に分離) |
-| diffuse.wgsl | 浮遊顔料の拡散(フィックの法則の陽解法。濡れセル間のみ・保存則あり)。ペン線を挟む隣接流束に透水率を掛ける(M4.5b) |
+| diffuse.wgsl | 浮遊顔料+水の拡散(フィックの法則の陽解法。濡れセル間のみ・保存則あり)。水は毛細管拡散(max^γ 重み、note/07)=置いた水が濡れた紙を伝って広がる。ペン線を挟む隣接流束に透水率を掛ける(M4.5b) |
 | transfer.wgsl | 吸着/脱着(顔料個性 ρ/ω で per-channel 変調)+蒸発 |
 | bake.wgsl | 「乾かす」= 乾燥レイヤーへの焼き込み+湿レイヤー全ゼロ |
 | fastdry.wgsl | Fast Dry(浮遊→沈着に落として水と流れをゼロに。焼き込まない) |
@@ -211,7 +211,7 @@ paint:
 ```
 
 - `PointerSource` trait で Mouse / Pen を抽象(将来の wasm Pointer もここ)。ペン接地中はマウス入力を無視(egui-winit が Touch からポインタをエミュレートするため二重ストローク防止)
-- **筆の含み(2026-07-09)**: 塗る筆(Wet::Paint)を置いたまま動かないフレームは、含み(`brush_charge` 秒。筆を下ろすたび満たす)が残る間、CPU(`PaintApp::feed_charge`)が毎フレーム **feed splat**(`Splat.feed=1`)を1つ積む。splat.wgsl の描画ブランチが分岐し、一括注入の代わりに広がり(`paint_spread`)の水補充+外向きの流れ+少量の顔料(splat.wgsl の定数 `CHARGE_PIGMENT`)を注ぎ続ける=置くだけで色水が流れ出て広がる。ストローク記録(H5)は生ポインタ点のみなので feed は再生で再現されない(既知の制約)
+- **筆の含み(2026-07-09)**: 塗る筆(Wet::Paint)を置いたまま動かないフレームは、含み(`brush_charge` 秒。筆を下ろすたび満たす)が残る間、CPU(`PaintApp::feed_charge`)が毎フレーム **feed splat**(`Splat.feed=1`)を1つ積む。splat.wgsl の描画ブランチが分岐し、一括注入の代わりに目標水位への水補充(max)+少量の顔料(splat.wgsl の定数 `CHARGE_PIGMENT`)を注ぎ続け、その水を毛細管拡散(diffuse.wgsl、note/07)が外へ運ぶ=置くだけで色水が流れ出て広がる。ストローク記録(H5)は生ポインタ点のみなので feed は再生で再現されない(既知の制約)
 - 筆圧マッピングは `実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に適用(splat.wgsl と CPU 側で同式)
 - ストローク記録(H5)は splat 列ではなく**補間前の生ポインタ入力**を保存 — 再生時にブラシ半径等を変えて同一ストロークで A/B 比較できる
 

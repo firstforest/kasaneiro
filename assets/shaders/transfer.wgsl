@@ -21,10 +21,18 @@
 // アクティブタイル(M6): タイル有効フラグ。非アクティブなタイルは素通しして計算を省く
 @group(0) @binding(11) var<storage, read> tile_active: array<u32>;
 
-// 水持ち(docs/note/06 §3): 水が多いセルほど吸着を抑える度合い(吸着率に (1−WET_HOLD×w) を
-// 掛ける)。たっぷりの水の中では顔料が沈まず浮遊し続け、沈着は水が引いてから始まる。
-// 調整済みの定数。再調整はホットリロード(H1)でここを直接編集(0 で従来どおり)
-const WET_HOLD: f32 = 0.7;
+// 吸着の水依存カーブ(note/07 で1本化): 乾きかけ(w→0)で 2.0、たっぷり(w→1)で
+// DEPOSIT_WET_FLOOR まで単調減少。たっぷりの水の中では顔料が沈まず浮遊し続けて自由に
+// 流れ・混ざり、沈着は水が引いてから始まる(旧「水持ち」)。
+// 旧実装の (2−w)×(1−0.7w) の2重ヒューリスティックを単一カーブに置き換えたもので、
+// mix(2.0, 0.3, w^0.7) は旧カーブとほぼ一致する(w=0.5 で 0.95 vs 旧 0.975)。
+// 再調整はホットリロード(H1)でここを直接編集
+const DEPOSIT_WET_FLOOR: f32 = 0.3; // w=1 での吸着倍率(0 にすると水中で全く沈まない)
+const DEPOSIT_GAMMA: f32 = 0.7;     // カーブの立ち上がり(小さいほど早めに吸着が戻る)
+
+fn deposit_weight(w: f32) -> f32 {
+    return mix(2.0, DEPOSIT_WET_FLOOR, pow(w, DEPOSIT_GAMMA));
+}
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
@@ -63,13 +71,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let rho = pigment[c].x;    // 密度: 重い顔料ほど早く沈着
         let omega = pigment[c].y;  // ステイニング: 高いほど剥がれない(脱着を (1−ω) で抑制)
         let gamma = pigment[c].z;  // 粒状感: 紙目への反応(paper_gran を顔料ごとにスケール)
-        // 吸着(沈着): 水が少ないほど強い → 乾きかけで定着。
+        // 吸着(沈着): 水が少ないほど強い → 乾きかけで定着(deposit_weight の単一カーブ)。
         // 粒状化(M1d/M3): 凹部(h=0)で強め・凸部(h=1)で弱め、効き幅は顔料の γ に比例
         let gran = max(1.0 + params.paper_gran * gamma * (1.0 - 2.0 * h), 0.0);
-        // 水持ち: 水がたっぷりのセルでは顔料が沈まず浮遊し続ける(自由に流れて混ざる)。
-        // 沈着が始まるのは水が引いてから(WET_HOLD 定数)
-        let hold = max(1.0 - WET_HOLD * w, 0.0);
-        let down_rate = clamp(params.deposit_rate * rho * params.dt * (2.0 - w) * gran * hold, 0.0, 1.0);
+        let down_rate = clamp(params.deposit_rate * rho * params.dt * deposit_weight(w) * gran, 0.0, 1.0);
         // 脱着(再浮遊): 水が多い場所ほど浮き上がるが、ステイニング顔料は (1−ω) で残る
         let up_rate = clamp(params.lift_rate * params.dt * w * (1.0 - omega), 0.0, 1.0);
         down[c] = susp[c] * down_rate;

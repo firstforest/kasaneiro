@@ -5,6 +5,8 @@
 01〜05 の技術調査ノートと違い、これは**実装後の設計記録**。パラメータの現在の既定値・範囲は [../parameters.md](../parameters.md)(§1 ブラシ・§4 顔料の輸送)が正典。
 
 > **追記(同日の整理、§8)**: 調整完了を受けてパラメータを3ノブ(広がり `paint_spread`・下の色を溶かす `paint_pickup`・筆の含み `brush_charge`)に絞り込んだ。§1〜5 に出てくる `paint_soak`/`paint_soak_radius`/`wet_hold`/`charge_pigment`/`diffuse_gamma` は**実装当時のパラメータ名**で、現在は WGSL 定数(または `paint_spread` へ統合)。仕組みの説明自体は今も正しい。
+>
+> **追記2(同日、[note/07](07-capillary-water.md))**: さらに「そもそもアルゴリズムが複雑では」という指摘を受け、置き馴染み(水の足場)と広がる勢い(放射流)を**水の毛細管拡散1本**で置き換える試作をブランチ `refactor/capillary-water` で開始。採用されると本ノートの §1・§3 の機構と `paint_spread` は消える。
 
 関連ノート: [01-fluid-simulation.md](01-fluid-simulation.md)(Curtis 1997 の流体モデル。本ノートの仕組みは全てこの上に乗る)
 

@@ -1,7 +1,6 @@
 // splat.wgsl — ブラシ入力の compute パス。ツール(params.tool)で3分岐する(M3):
-//   0 = 描画: 水+初速+顔料を置く(M1a/M1b)。既に描いてある(濡れた)部分では
-//       広がり(paint_spread: 周囲へ水の足場+外向きの流れ。水が多いほど強い)
-//       +色の溶かし戻し(paint_pickup)が加わり、筆の色が遠くへ広がって下の色と馴染む
+//   0 = 描画: 水+初速+顔料を置く(M1a/M1b)。置いた水は毛細管拡散(diffuse.wgsl、note/07)が
+//       濡れた紙を伝ってひとりでに広げ、色の溶かし戻し(paint_pickup)で下の色と馴染む
 //   1 = リフト(削り): 沈着顔料を浮遊層へ戻し、その場を濡らして流す。ステイニング顔料(ω)は
 //       残り、紙の凸部から先に剥がれる(粒状化 γ の顔料は谷に残る) — Curtis の削りレシピ
 //   2 = 消去: 湿レイヤーの水・速度・顔料・濡れマスクを機械的にゼロへ(紙の白まで戻す完全消去)
@@ -21,9 +20,7 @@
 // アクティブタイル(M6): タイル有効フラグ。非アクティブなタイルは素通しして計算を省く
 @group(0) @binding(11) var<storage, read> tile_active: array<u32>;
 
-// 広がり(paint_spread)の調整済み定数(docs/note/06)。ノブは強さ(paint_spread)1本に
-// 絞ったので、範囲と含みの顔料比はここで固定する。再調整はホットリロード(H1)で直接編集
-const SOAK_RADIUS: f32 = 3.0;     // 水の足場・外向きの流れが届く範囲(×ブラシ実効半径)
+// 筆の含み(brush_charge)の調整済み定数(docs/note/06)。再調整はホットリロード(H1)で直接編集
 const CHARGE_PIGMENT: f32 = 0.15; // feed splat 1フレームが注ぐ顔料の通常 splat に対する比
 
 @compute @workgroup_size(8, 8)
@@ -49,9 +46,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var water = cell.r;
     var vel = cell.gb;
     var wet = cell.a;
-    // 置き馴染みのゲート: このストロークが触れる前から濡れていた(=既に描いてある)か。
-    // ループ内で wet が 1 に立つ前の値で判定する
-    let was_wet = is_wet(cell);
     let h = textureLoad(paper_tex, ip, 0).r;
     // 水筆(tool=3)の均し用: このセルにかかったブラシの最大効き(カバレッジ×筆圧)。ループ後に使う
     var wb_w = 0.0;
@@ -117,9 +111,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         } else {
             // 描画(既定): 水+初速+顔料の注入。
             // s.feed > 0.5 は「筆の含み」splat(置いたまま動かない間、CPU が毎フレーム積む):
-            // 一括注入(+=)を毎フレーム繰り返すと溢れるので、水は下の水の足場(max 補充)に
-            // 任せ、顔料は CHARGE_PIGMENT ぶんだけ注ぎ、外向きの流れを毎フレームかけ直す。
-            // これで「筆に含まれた色水が置いている間ずっと流れ出る」動きになる
+            // 一括注入(+=)を毎フレーム繰り返すと溢れるので、水は目標水位への max 補充
+            // (なでても積み上がらない。水筆と同じ流儀)、顔料は CHARGE_PIGMENT ぶんだけ注ぐ。
+            // 補充され続ける水を毛細管拡散(diffuse.wgsl)が外へ運ぶので、
+            // 「筆に含まれた色水が置いている間ずっと流れ出て広がる」動きになる
             let feed = s.feed > 0.5;
             if (!feed) {
                 water += coverage * params.brush_water * mix(1.0, press, params.pressure_water);
@@ -127,6 +122,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 // 顔料は浮遊層の選択チャンネル(brush_channel = パレットの顔料スロット)へ注入する
                 susp[min(params.brush_channel, 3u)] += coverage * params.brush_pigment * mix(1.0, press, params.pressure_pigment);
             } else {
+                water = max(water, coverage * params.brush_water * mix(1.0, press, params.pressure_water));
                 susp[min(params.brush_channel, 3u)] += coverage * params.brush_pigment * CHARGE_PIGMENT
                     * mix(1.0, press, params.pressure_pigment);
             }
@@ -134,28 +130,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             // 水を置く範囲(coverage > 0)と一致させ、マスク外に水が取り残されないようにする
             if (dist < radius) {
                 wet = 1.0;
-            }
-            // 広がり①水の足場: 既に描いてある(=このストローク前から濡れマスクが立っている)
-            // セルに限り、ブラシの外周(SOAK_RADIUS×半径)まで水を目標水位へ持ち上げる
-            // (max = なでても積み上がらない)。筆を置いた点の水の山とこの足場がつながり、
-            // 拡散・移流が働いて筆の色が既存の塗りへ広がって馴染む。
-            // 乾いた紙にはマスクも水も広げないので、白紙へのストローク輪郭は従来どおり
-            if (params.paint_spread > 0.0 && was_wet) {
-                let soak_r = radius * SOAK_RADIUS;
-                let soak_cov = 1.0 - smoothstep(radius * 0.6, soak_r, dist);
-                let soak_target = soak_cov * params.brush_water * min(params.paint_spread, 1.0)
-                    * mix(1.0, press, params.pressure_water);
-                water = max(water, soak_target);
-            }
-            // 広がり②外向きの流れ: 置いた点から放射流を与える。効きは筆圧と「そのセルの水量」で
-            // スケールするので、水がたっぷりの場所ほど色が遠くまで自由に流れて混ざる。
-            // 水の山の勾配(自然に減衰する)と違い、明示的な放射流で確実に外へ運ぶ。
-            // 白紙(was_wet=false)には効かない。速度はループ後の vel_max クランプが安全弁
-            if (params.paint_spread > 0.0 && was_wet && dist > 1e-3) {
-                let spread_r = radius * SOAK_RADIUS;
-                let ring = 1.0 - smoothstep(radius * 0.3, spread_r, dist);
-                let dir = (p - s.pos) / dist;
-                vel += dir * params.paint_spread * press * ring * clamp(water, 0.0, 1.0);
             }
             // 色の溶かし戻し: 筆が触れた沈着顔料を浮遊層へ戻す(リフト tool=1 の弱い版)。
             // 筆の色と下の色が同じ浮遊層で混ざるので、置いた境界が濁らず馴染む。

@@ -201,13 +201,6 @@ impl PaintApp {
         // F5: ツール固有スライダーは、そのツールを選んでいるときだけ出す(通常時の壁を減らす)
         match self.tool.wet() {
             Some(WetTool::Paint) => {
-                ui.add(egui::Slider::new(&mut self.params.paint_spread, 0.0..=2.0).text("広がり"))
-                    .on_hover_text(
-                        "既に描いてある(濡れている)ところに筆を置いたとき、筆の色が外へ広がる強さ。\
-                         ブラシの周りまで水を足しつつ外向きに色を流す。水が多い場所ほど強く乗るので、\
-                         たっぷり濡れた上では遠くまで自由に流れて混ざる。白紙へのストロークには\
-                         効かない(輪郭は従来どおり)。0=広がらない",
-                    );
                 ui.add(
                     egui::Slider::new(&mut self.params.brush_charge, 0.0..=5.0)
                         .text("筆の含み")
@@ -215,8 +208,8 @@ impl PaintApp {
                 )
                 .on_hover_text(
                     "筆を置いたまま動かさなくても、この秒数だけ色水が流れ出続ける\
-                     (なぞり直さなくても広がっていく)。筆を上げて下ろし直すと含み直す。\
-                     0=置いた瞬間だけ(従来どおり)",
+                     (なぞり直さなくても水を伝って広がっていく)。筆を上げて下ろし直すと含み直す。\
+                     広がる距離は「水量」と含みの長さで決まる。0=置いた瞬間だけ",
                 );
                 ui.add(egui::Slider::new(&mut self.params.paint_pickup, 0.0..=1.0).text("下の色を溶かす"))
                     .on_hover_text(

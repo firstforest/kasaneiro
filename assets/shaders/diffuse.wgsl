@@ -1,9 +1,11 @@
-// diffuse.wgsl — 浮遊顔料の拡散パス(M1b)。フィックの法則の陽解法。
+// diffuse.wgsl — 浮遊顔料+水の拡散パス(M1b、毛細管化で水も対象に)。フィックの法則の陽解法。
 // 1 dispatch = 1 反復。CPU 側(gpu/mod.rs)が diffuse_iters 回 ping-pong で呼ぶ
 // (relax.wgsl と同じ方式)。陽解法の安定条件で 1 反復の係数は 0.2 までなので、
 // 速いにじみは反復回数で稼ぐ: 実効的な拡散速度 = pigment_diffuse × diffuse_iters。
 // 水筆で描いた水路に顔料溜まりを接続したとき、色が水路へ広がっていく動きはここが作る。
-// 水と沈着顔料はこのパスでは変更しない(素通しで dst へコピー)。
+// 水の拡散(毛細管、note/07)は「筆で置いた水が濡れた紙を伝ってひとりでに広がる」を作る:
+// 旧・置き馴染み(水のテレポート)と広がる勢い(relax と綱引きする放射流)の置き換え。
+// 沈着顔料はこのパスでは変更しない(素通しで dst へコピー)。
 // 先頭に common.wgsl が連結される。
 
 @group(0) @binding(0) var src_water: texture_2d<f32>;
@@ -36,6 +38,20 @@ fn wet_weight(a: f32, b: f32) -> f32 {
     return pow(clamp(0.5 * (a + b), 0.0, 1.0), DIFFUSE_GAMMA);
 }
 
+// 水の毛細管拡散(note/07): 濡れマスク内で水量そのものを拡散させる(簡易 Richards)。
+// 「たっぷりの水を置けば濡れた紙を伝ってひとりでに広がり、水位が下がるにつれ止まる」を
+// 一次原理で作る。重みは両セルの max^γ: 平均ではなく max なのは、濡れ側の水が乾きかけ側へ
+// 「吸い込まれる」毛細管の向き(受け側が乾いているほど吸引は強い)を殺さないため。
+// 水量が全体に低くなると max も下がって流束が消える=水が引くと自然に止まる。
+// 顔料は wet_weight(平均^4)で後追いするので、水が先行して顔料がにじみ寄る
+// (クロマトグラフィー的な水の輪も出る)。係数は per-iter 0.2 が陽解法の安定上限
+const WATER_DIFFUSE: f32 = 0.15;  // 実効速度 = min(この値×dt, 0.2) × diffuse_iters
+const WATER_GAMMA: f32 = 2.0;     // 水量→毛細管の効きのカーブ(pigment の γ=4 より緩め)
+
+fn cap_weight(a: f32, b: f32) -> f32 {
+    return pow(clamp(max(a, b), 0.0, 1.0), WATER_GAMMA);
+}
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
     let dims = textureDimensions(src_water);
@@ -54,12 +70,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let cell = textureLoad(src_water, ip, 0);
     let susp = textureLoad(src_susp, ip, 0);
 
-    // 水と沈着顔料は素通し(ping-pong のため必ず書く)
-    textureStore(dst_water, ip, cell);
+    // 沈着顔料は素通し(ping-pong のため必ず書く)
     textureStore(dst_dep, ip, textureLoad(src_dep, ip, 0));
 
     // 乾いたセルは拡散に参加しない(wet-area mask)
     if (!is_wet(cell)) {
+        textureStore(dst_water, ip, cell);
         textureStore(dst_susp, ip, susp);
         return;
     }
@@ -75,23 +91,35 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // 透水率(M4.5b): 自セルのペン濃度と各隣接の max で流束を絞る(線を挟むと拡散しない)
     let pen_c = textureLoad(pen_line_tex, ip, 0).r;
     var flux = vec4f(0.0);
+    var wflux = 0.0;
     if (is_wet(n_l)) {
-        flux += wet_weight(cell.r, n_l.r) * edge_perm(pen_c, ip + vec2i(-1, 0))
+        let perm = edge_perm(pen_c, ip + vec2i(-1, 0));
+        flux += wet_weight(cell.r, n_l.r) * perm
             * (load_clamped(src_susp, ip + vec2i(-1, 0)) - susp);
+        wflux += cap_weight(cell.r, n_l.r) * perm * (n_l.r - cell.r);
     }
     if (is_wet(n_r)) {
-        flux += wet_weight(cell.r, n_r.r) * edge_perm(pen_c, ip + vec2i(1, 0))
+        let perm = edge_perm(pen_c, ip + vec2i(1, 0));
+        flux += wet_weight(cell.r, n_r.r) * perm
             * (load_clamped(src_susp, ip + vec2i(1, 0)) - susp);
+        wflux += cap_weight(cell.r, n_r.r) * perm * (n_r.r - cell.r);
     }
     if (is_wet(n_u)) {
-        flux += wet_weight(cell.r, n_u.r) * edge_perm(pen_c, ip + vec2i(0, -1))
+        let perm = edge_perm(pen_c, ip + vec2i(0, -1));
+        flux += wet_weight(cell.r, n_u.r) * perm
             * (load_clamped(src_susp, ip + vec2i(0, -1)) - susp);
+        wflux += cap_weight(cell.r, n_u.r) * perm * (n_u.r - cell.r);
     }
     if (is_wet(n_d)) {
-        flux += wet_weight(cell.r, n_d.r) * edge_perm(pen_c, ip + vec2i(0, 1))
+        let perm = edge_perm(pen_c, ip + vec2i(0, 1));
+        flux += wet_weight(cell.r, n_d.r) * perm
             * (load_clamped(src_susp, ip + vec2i(0, 1)) - susp);
+        wflux += cap_weight(cell.r, n_d.r) * perm * (n_d.r - cell.r);
     }
     // 陽解法の安定条件: 係数は 4 近傍合計で 1 を超えないよう 0.2 に制限
     let k = min(params.pigment_diffuse * params.dt, 0.2);
     textureStore(dst_susp, ip, max(susp + k * flux, vec4f(0.0)));
+    // 水の毛細管拡散: 対称な流束なので水の総量は保存される(速度・マスクは変えない)
+    let kw = min(WATER_DIFFUSE * params.dt, 0.2);
+    textureStore(dst_water, ip, vec4f(max(cell.r + kw * wflux, 0.0), cell.gb, cell.a));
 }
