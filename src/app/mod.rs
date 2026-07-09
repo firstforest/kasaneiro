@@ -775,6 +775,19 @@ impl PaintApp {
         }
     }
 
+    /// F18: Ctrl+Alt+ドラッグでのブラシ半径調整。現在のツールの半径(テクセル)へ delta を
+    /// 加算し、各スライダーと同じ 1〜64 にクランプする。ツールごとに独立半径を持つため
+    /// active_base_radius と同じ対応で書き込み先を選ぶ
+    fn adjust_active_radius(&mut self, delta: f32) {
+        let r = match self.tool {
+            Tool::Raster { kind: RasterTool::Pencil, .. } => &mut self.params.pencil_radius,
+            Tool::Raster { kind: RasterTool::Pen, .. } => &mut self.params.pen_radius,
+            Tool::Raster { kind: RasterTool::Highlight, .. } => &mut self.params.highlight_radius,
+            _ => &mut self.params.brush_radius,
+        };
+        *r = (*r + delta).clamp(1.0, 64.0);
+    }
+
     /// ラスタ線画ツール(M4.5a/c)選択中の描画先。流体ツールのときは None。
     /// CanvasCallback へ渡し、Some なら splat を linesplat.wgsl へ流す
     fn line_target(&self) -> Option<LineTarget> {

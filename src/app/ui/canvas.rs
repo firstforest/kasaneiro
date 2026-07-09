@@ -23,7 +23,7 @@ impl PaintApp {
         // 依らない)なので input から直接読む。回転は離散させたいので MouseWheel イベント(未平滑)で拾う
         // 名前入力欄などにフォーカス中はスペースを奪わない
         let typing = ui.ctx().egui_wants_keyboard_input();
-        let (scroll_y, wheel_notch, shift, space, middle_down, primary_down, ptr_delta, hover) =
+        let (scroll_y, wheel_notch, shift, ctrl, alt, space, middle_down, primary_down, ptr_delta, hover) =
             ui.input(|i| {
                 let wheel_notch: f32 = i
                     .events
@@ -37,6 +37,8 @@ impl PaintApp {
                     i.smooth_scroll_delta.y,
                     wheel_notch,
                     i.modifiers.shift,
+                    i.modifiers.ctrl,
+                    i.modifiers.alt,
                     i.key_down(egui::Key::Space),
                     i.pointer.middle_down(),
                     i.pointer.primary_down(),
@@ -71,6 +73,16 @@ impl PaintApp {
         // スペース押下中(左ドラッグでのパン意図)は描画を抑止する
         let panning = panning || (space_hold && over_canvas);
 
+        // F18: Ctrl+Alt+左ドラッグでブラシ半径を変える(描く前でも最中でも太さを即調整できる)。
+        // 横ドラッグ量(画面px)を現ツール半径(テクセル)へ加算する。画面px = テクセル×scale なので
+        // px/scale 加算にすると「リングの縁がカーソルにぴたり追従」= 拡大率やキャンバスサイズに依らず
+        // 一定の手応えになる。このジェスチャ中は描画を抑止し、リングと数値でサイズを見せる
+        let resizing = ctrl && alt && primary_down && over_canvas;
+        if resizing && ptr_delta.x != 0.0 {
+            let scale = rect.width() / self.canvas_size as f32 * self.view_zoom;
+            self.adjust_active_radius(ptr_delta.x / scale.max(1e-3));
+        }
+
         // M1.5: ペン(egui Touch、筆圧付き)を優先し、接地中はマウスを無視する
         // (egui-winit は Touch からポインタもエミュレートするため、両方を処理すると
         // 二重ストロークになる)
@@ -101,8 +113,9 @@ impl PaintApp {
                         .to_owned(),
                 );
             }
-        } else if !panning {
-            // M6: パン中(中ボタンドラッグ)は描画イベントを流さない(ビュー操作専念)
+        } else if !panning && !resizing {
+            // M6: パン中(中ボタンドラッグ)は描画イベントを流さない(ビュー操作専念)。
+            // F18: Ctrl+Alt+ドラッグでの半径調整中も同様に描かない
             self.apply_pointer_events(&events, rect, &mut splats);
         }
 
@@ -141,6 +154,36 @@ impl PaintApp {
             (1.0, ui.visuals().weak_text_color()),
             egui::StrokeKind::Outside,
         );
+
+        // F18: ブラシサイズのカーソルリング。カーソル位置に実際の描画半径の輪郭を重ね、
+        // 「今どのくらいの太さで描くか」を描く前・描いてる最中に見えるようにする。
+        // 半径はテクセル単位(active_base_radius)なので画面 px へ = ×(rect幅/canvas_size)×zoom。
+        // 明暗どちらの下地でも見えるよう黒→白の二重リングにする。パン中・スポイト待機・
+        // 乾燥レイヤー(描画不可)では出さない
+        let show_cursor = over_canvas
+            && (resizing || (!panning && !self.palette_ui.eyedropper && !self.drawing_locked()));
+        if show_cursor
+            && let Some(pos) = hover
+        {
+            let base = self.active_base_radius();
+            let scale = rect.width() / self.canvas_size as f32 * self.view_zoom;
+            let r = (base * scale).max(1.5);
+            let painter = ui.painter();
+            painter.circle_stroke(pos, r + 0.5, (1.5, egui::Color32::from_black_alpha(140)));
+            painter.circle_stroke(pos, r, (1.0, egui::Color32::from_white_alpha(210)));
+            // F18: サイズ調整中は現在の半径(px)をリングの右に出す(黒縁つき白文字で下地に依らず読める)
+            if resizing {
+                let text = format!("{base:.0} px");
+                let anchor = pos + egui::vec2(r + 8.0, 0.0);
+                let font = egui::FontId::proportional(13.0);
+                for (off, col) in [
+                    (egui::vec2(1.0, 1.0), egui::Color32::from_black_alpha(180)),
+                    (egui::Vec2::ZERO, egui::Color32::WHITE),
+                ] {
+                    painter.text(anchor + off, egui::Align2::LEFT_CENTER, &text, font.clone(), col);
+                }
+            }
+        }
 
         // F15: 初回ガイド。まだ一度も描いていない間だけ、空キャンバス中央に淡いヒントを出す。
         // 最初の一筆(has_painted)で消える。開発機能・描画には一切影響しない
