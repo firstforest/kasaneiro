@@ -20,6 +20,13 @@
 // アクティブタイル(M6): タイル有効フラグ。非アクティブなタイルは素通しして計算を省く
 @group(0) @binding(11) var<storage, read> tile_active: array<u32>;
 
+// 薄い水膜は流れない(潤滑近似。実物の薄膜の流量は厚さの3乗に比例して消える)。
+// この水量以下で流れが止まりはじめる。吸着の立ち上がり(transfer.wgsl の
+// DEPOSIT_DRY_POINT=0.35)よりわずかに下にして「流れが止まる→定着が仕上がる」の順にする。
+// 乾きかけの紙目(paper_amp)駆動の流れが、まだ浮遊している顔料を谷へ寄せ集めて
+// ざらつくのを防ぐ(note/07 目視4回目)。再調整はホットリロード(H1)で直接編集
+const FLOW_MIN: f32 = 0.3;
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
     let dims = textureDimensions(src_water);
@@ -84,6 +91,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // 勾配で加速(水は低い方へ)+ 減衰(粘性の代用)
     var vel = (cell.gb - params.accel * params.dt * grad) * (1.0 - params.damping);
+    // 薄い水膜は流れない(FLOW_MIN、潤滑近似): 乾きかけは動きが止まり、その場で定着する
+    vel *= smoothstep(0.0, FLOW_MIN, cell.r);
     // 透水率(M4.5b): ペン線のセルは速度を殺す = 水がその線を越えて流れない
     vel *= perm;
 

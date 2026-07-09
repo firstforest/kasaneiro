@@ -232,9 +232,11 @@ impl Default for SimParams {
             diffuse_iters: 12,
             brush_channel: 0,
             pigment_density: 1.0,
-            paper_amp: 0.3,
-            paper_gran: 0.4,
-            paper_wet: 0.5,
+            // 紙の質感再現はユーザー判断で既定オフ(2026-07-09、capillary ブランチ)。
+            // 機構・テクスチャ・スライダーは残してあるので、欲しくなったら値を上げるだけで戻る
+            paper_amp: 0.0,
+            paper_gran: 0.0,
+            paper_wet: 0.0,
             edge_eta: 0.0,
             edge_radius: 4,
             pressure_radius: 0.6,
