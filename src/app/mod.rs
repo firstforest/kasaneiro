@@ -658,16 +658,14 @@ impl PaintApp {
 
     /// H5: キャンバスをリセットして記録済みストロークの再生を始める
     /// (同一入力での A/B 比較のため、必ず白紙から)。
-    /// M5d: 記録にパレットがあれば現行パレットをそれへ切り替える(顔料を編集済みでも
-    /// 「当時の色」で再生される)。無い旧記録は現行パレットのまま再生する
-    fn start_replay(&mut self, recording: Recording, palette: Option<pigment::Palette>) {
+    /// M5d: 現行パレットを記録時のパレットへ切り替える(顔料を編集済みでも
+    /// 「当時の色」で再生される)
+    fn start_replay(&mut self, recording: Recording, palette: pigment::Palette) {
         self.clear_canvas();
         self.stroke.end();
         self.painting = false;
-        if let Some(palette) = palette {
-            self.palette = palette;
-            self.apply_palette();
-        }
+        self.palette = palette;
+        self.apply_palette();
         // 再生前の顔料スロットを退避(再生終了時に stop_replay が戻す)。
         // 再生中の再開でも最初の値を保つよう、既に退避済みなら上書きしない
         self.replay_ui.saved_channel.get_or_insert(self.params.brush_channel);
@@ -989,9 +987,6 @@ impl PaintApp {
         if file.canvas_size != self.canvas_size {
             self.recreate_canvas(file.canvas_size);
         }
-        // M5h: 記録時パレットを層数に揃えてから渡す(旧ファイルは latent 逆変換で補完)。
-        // 以降は canvas.layer_palettes.len() == layers.len() の不変条件が成立する
-        let layer_palettes = work::normalized_layer_palettes(&file);
         // GPU 側(テクスチャ・レイヤー・パレット)を復元
         let result: Result<(), String> = {
             let mut renderer = self.render_state.renderer.write();
@@ -1008,7 +1003,8 @@ impl PaintApp {
                                     visible: l.visible,
                                 })
                                 .collect();
-                            canvas.layer_palettes = layer_palettes;
+                            // M5h: 記録時パレット(decode が層数一致を検査済み=不変条件を引き継ぐ)
+                            canvas.layer_palettes = file.layer_palettes.clone();
                             canvas.sync_layers(&self.render_state.queue);
                             // physics(ρ/ω/γ)と live latent 枠を現行パレットで整える
                             // (latent 本体は import_state が丸ごと復元済み。同値で上書き)

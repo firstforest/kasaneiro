@@ -6,7 +6,6 @@
 
 use crate::app::{ActiveLayer, PaintApp};
 use crate::gpu::GpuCanvas;
-use crate::work;
 use paint_core::tool::{RasterTool, Tool, ToolInfo, WetTool};
 use eframe::egui;
 
@@ -369,19 +368,6 @@ impl PaintApp {
             self.palette = rec.clone();
             self.apply_palette();
             self.status_msg = Some(format!("層{layer_no}のパレットを取り込みました"));
-        }
-        // 旧 .kasane 由来のフォールバック復元(自動命名「層nの色i」)には出所を注記する
-        if slot.is_some_and(|s| {
-            rec.pigments
-                .iter()
-                .enumerate()
-                .any(|(i, p)| p.name == work::fallback_pigment_name(s, i))
-        }) {
-            ui.label(
-                egui::RichText::new("※古い作品のため色のみ復元(性質は保存時パレット由来)")
-                    .weak()
-                    .small(),
-            );
         }
     }
 

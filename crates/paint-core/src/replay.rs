@@ -21,12 +21,10 @@ pub struct TimedPoint {
 }
 
 /// 1 ストローク = ドラッグ開始〜終了。channel はそのとき選ばれていた顔料スロット、
-/// tool はツール(0=描画/1=リフト/2=消去。M3)。tool は後から足したので serde default で
-/// 古いストローク JSON(tool 無し)も 0=描画として読める
+/// tool はツール(0=描画/1=リフト/2=消去。M3)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordedStroke {
     pub channel: u32,
-    #[serde(default)]
     pub tool: u32,
     pub points: Vec<TimedPoint>,
 }

@@ -48,20 +48,20 @@ impl PaintApp {
             }
         });
         // 記録直後: 名前を付けて保存(共通 NamedStore)+ そのまま試し再生。
-        // M5d: 保存には記録時のパレット(現行パレット)を添える。試し再生は現行パレットのまま
-        let mut replay_now: Option<(Recording, Option<pigment::Palette>)> = None;
+        // M5d: 保存には記録時のパレット(現行パレット)を添える。試し再生も現行パレット
+        let mut replay_now: Option<(Recording, pigment::Palette)> = None;
         if let Some(recording) = self.replay_ui.pending_recording.clone() {
             let palette = self.palette.clone();
             if let Some(status) = self.replay_ui.store.save_controls(
                 ui,
                 "ストローク名",
-                |name| replay::save(name, &recording, Some(&palette)),
+                |name| replay::save(name, &recording, &palette),
                 replay::list,
             ) {
                 self.status_msg = Some(status);
             }
             if ui.button("試し再生").clicked() {
-                replay_now = Some((recording, None));
+                replay_now = Some((recording, self.palette.clone()));
             }
         }
         if let Some(name) = self.replay_ui.store.list_rows(ui, "▶ 再生") {

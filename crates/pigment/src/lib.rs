@@ -110,27 +110,6 @@ impl Palette {
     }
 }
 
-/// 顔料 latent ブロック([`PIGMENT_LATENTS`] vec4、[`Palette::pigment_latents`] の逆)から
-/// 4顔料の基本色を復元する(M5h)。旧 .kasane(CPU 側パレット記録なし)の乾燥レイヤーから
-/// 「当時の色」を取り出すフォールバックに使う。名前・ρ/ω/γ は latent に含まれないため
-/// 復元できない(呼び出し側で補完する)。mixbox の逆変換はこの crate に閉じる(隔離点)
-pub fn latent_block_to_rgbs(block: &[[f32; 4]; PIGMENT_LATENTS]) -> [[u8; 3]; PIGMENT_COUNT] {
-    let mut out = [[0u8; 3]; PIGMENT_COUNT];
-    for (i, rgb) in out.iter_mut().enumerate() {
-        let z = [
-            block[i * 2][0],
-            block[i * 2][1],
-            block[i * 2][2],
-            block[i * 2][3],
-            block[i * 2 + 1][0],
-            block[i * 2 + 1][1],
-            block[i * 2 + 1][2],
-        ];
-        *rgb = mixbox::latent_to_rgb(&z);
-    }
-    out
-}
-
 /// パレットに依存しないグローバル光学 latent(紙 / 白 / 黒)を固める。
 /// レイアウト(display.wgsl の latents 先頭 [`GLOBAL_LATENTS`] vec4 と対応):
 ///   [0],[1] = 紙色 / [2],[3] = 白(R_w 用)/ [4],[5] = 黒(R_b 用、KM 合成)
@@ -203,25 +182,6 @@ mod tests {
                     "{} の latent 復元がずれています: {:?} != {:?}",
                     pigment.name,
                     rgb,
-                    pigment.rgb
-                );
-            }
-        }
-    }
-
-    /// latent ブロック → 基本色の一括復元(M5h)が pigment_latents() の逆になっていること。
-    /// 旧 .kasane フォールバック(レイヤー記録 latent から色を取り出す)の要
-    #[test]
-    fn latent_block_roundtrip() {
-        let pal = Palette::default_palette();
-        let rgbs = latent_block_to_rgbs(&pal.pigment_latents());
-        for (i, pigment) in pal.pigments.iter().enumerate() {
-            for c in 0..3 {
-                assert!(
-                    (rgbs[i][c] as i32 - pigment.rgb[c] as i32).abs() <= 1,
-                    "{} のブロック復元がずれています: {:?} != {:?}",
-                    pigment.name,
-                    rgbs[i],
                     pigment.rgb
                 );
             }

@@ -272,7 +272,7 @@ pub struct GpuCanvas {
     /// 色 latent しか持たないのに対し、こちらは名前・ρ/ω/γ 込みの**正典**
     /// (GPU 枠は表示用キャッシュ)。UI の「乾いた層からパレット抽出」が読む。
     /// 不変条件: `layer_palettes.len() == layers.len()`(bake_dry で push / clear で全消去 /
-    /// 作品読込は app::load_work が正規化して代入)。slot は layers.len() 連番で採番し
+    /// 作品読込は work::decode が個数一致を検査した値を代入)。slot は layers.len() 連番で採番し
     /// 解放は全消去のみなので添字=slot が常に成立する。将来レイヤー個別削除を入れる場合は
     /// この前提が崩れる → HashMap 化等の再設計が必要
     pub layer_palettes: Vec<pigment::Palette>,

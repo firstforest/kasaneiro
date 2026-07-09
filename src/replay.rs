@@ -19,14 +19,13 @@ pub use paint_core::replay::*;
 /// 編集しても記録が「当時の色」で再生される(スロット番号だけでは色が変わり A/B が壊れる)。
 ///
 /// `#[serde(flatten)]` で `Recording` の `strokes` を直下に展開するので、JSON は
-/// `{"strokes":[...],"palette":{...}}`。`palette` 無しの旧ファイルは None=現行パレットで再生。
+/// `{"strokes":[...],"palette":{...}}`。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoredRecording {
     #[serde(flatten)]
     pub recording: Recording,
-    /// 記録時のパレット。旧ファイル(パレット未保存)は None。None のときは書き出しにも出さない
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub palette: Option<Palette>,
+    /// 記録時のパレット(必須。再生は常にこのパレットへ切り替える)
+    pub palette: Palette,
 }
 
 pub fn strokes_dir() -> PathBuf {
@@ -38,13 +37,13 @@ pub fn list() -> Vec<String> {
     list_json_names(&strokes_dir())
 }
 
-pub fn save(name: &str, recording: &Recording, palette: Option<&Palette>) -> Result<PathBuf, String> {
+pub fn save(name: &str, recording: &Recording, palette: &Palette) -> Result<PathBuf, String> {
     let dir = strokes_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("{} を作れません: {e}", dir.display()))?;
     let path = dir.join(format!("{name}.json"));
     let stored = StoredRecording {
         recording: recording.clone(),
-        palette: palette.cloned(),
+        palette: palette.clone(),
     };
     let json = serde_json::to_string(&stored).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("{} に書けません: {e}", path.display()))?;
@@ -62,8 +61,7 @@ pub fn load(name: &str) -> Result<StoredRecording, String> {
 mod tests {
     use super::*;
 
-    /// リポジトリ同梱のテストストロークが全部読めること(壊れた JSON のコミットを防ぐ)。
-    /// パレット未保存の旧ファイルも読める(palette=None)ことを兼ねて確認する(M5d)
+    /// リポジトリ同梱のテストストロークが全部読めること(壊れた JSON のコミットを防ぐ)
     #[test]
     fn bundled_strokes_load() {
         for name in list() {
@@ -72,7 +70,7 @@ mod tests {
         }
     }
 
-    /// M5d: パレット付きで保存 → 読込でパレットが復元されること + palette 無し JSON も読めること
+    /// M5d: パレット付きで保存 → 読込でパレットが復元されること
     #[test]
     fn stored_recording_roundtrip_with_palette() {
         let mut rec = Recording::default();
@@ -82,15 +80,10 @@ mod tests {
             points: vec![TimedPoint { frame: 0, pos: [1.0, 2.0], pressure: 1.0 }],
         });
         let pal = pigment::Palette::default_palette();
-        let stored = StoredRecording { recording: rec, palette: Some(pal.clone()) };
+        let stored = StoredRecording { recording: rec, palette: pal.clone() };
         let json = serde_json::to_string(&stored).unwrap();
         let back: StoredRecording = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.palette, Some(pal));
+        assert_eq!(back.palette, pal);
         assert_eq!(back.recording.strokes.len(), 1);
-
-        // palette キーの無い旧形式(strokes だけ)も flatten + default で読める
-        let legacy: StoredRecording =
-            serde_json::from_str(r#"{"strokes":[]}"#).unwrap();
-        assert!(legacy.palette.is_none());
     }
 }
