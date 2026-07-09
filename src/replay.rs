@@ -2,7 +2,7 @@
 //!
 //! モデル本体(TimedPoint / RecordedStroke / Recording / Recorder / Player)は
 //! CPU 純粋部として [`paint_core::replay`] にある(refactoring.md R1)。ここはそれを
-//! 再エクスポートしつつ、アセットディレクトリ解決(assets.rs、CARGO_MANIFEST_DIR 基準)に
+//! 再エクスポートしつつ、アセットディレクトリ解決(assets.rs)に
 //! 依存するファイル保存/読込だけを持つ。呼び出し側は従来どおり `crate::replay::*` で使える。
 //!
 //! assets/strokes/*.json は git にコミットする(代表的なテストストロークの同梱)。

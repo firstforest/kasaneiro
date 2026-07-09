@@ -71,10 +71,11 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
 │  ├─ work.rs             作品保存(M7)。全状態を独自バイナリ1ファイル works/*.kasane に保存/読込
 │  │                      (M5h: メタに layer_palettes を追加。decode が層数一致を検査=
 │  │                       GpuCanvas::layer_palettes の不変条件の入口。リリース前なので後方互換なし)
-│  └─ assets.rs           assets/ ディレクトリ解決(CARGO_MANIFEST_DIR 基準なのでバイナリ crate に残す)
+│  └─ assets.rs           基準ディレクトリ解決(base_dir: 通常= CARGO_MANIFEST_DIR / embed-assets = exe 隣)
+│                         と配布ビルドの既定 JSON 書き出し(seed_default_assets)
 ├─ tests/shader_compile.rs  WGSL コンパイル可能性テスト(naga)
 └─ assets/
-   ├─ shaders/*.wgsl      実行時ロード(ビルドに埋め込まない)
+   ├─ shaders/*.wgsl      実行時ロード(通常ビルドは埋め込まない。配布用 embed-assets のみ埋め込み)
    ├─ presets/*.json      SimParams プリセット(git 管理)
    ├─ strokes/*.json      テストストローク(git 管理。M5d でパレット同梱=StoredRecording)
    ├─ palettes/*.json     顔料パレット・ライブラリ(git 管理。M5d)
@@ -82,7 +83,7 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
    (works/*.kasane は作品保存の出力先。ユーザーの制作物なので snapshots/ 同様 git 管理外。M7)
 ```
 
-`replay` の**モデル**(Recorder / Player / Recording)は paint-core、**永続化**(strokes の save/load、assets ディレクトリ解決に依存)はバイナリ crate、と分けてある。`asset_dir` が `env!("CARGO_MANIFEST_DIR")` でワークスペースルート基準の `assets/` を指すため、これを使うコードはバイナリ crate に置く必要がある。
+`replay` の**モデル**(Recorder / Player / Recording)は paint-core、**永続化**(strokes の save/load、assets ディレクトリ解決に依存)はバイナリ crate、と分けてある。パスの基準は `assets::base_dir()` に1本化: 通常ビルドは `env!("CARGO_MANIFEST_DIR")`(リポジトリ直下。どこから起動しても効く)、配布ビルド(feature `embed-assets`)は **exe のあるディレクトリ**(ポータブルアプリ流儀。CWD 非依存)。assets/ works/ snapshots/ screenshots/ すべてこの直下。これを使うコードはバイナリ crate に置く。
 
 ## 3. GPU リソース
 
@@ -214,6 +215,7 @@ paint:
 ## 8. ホットリロードとパラメータ反映(試行錯誤ループの実装)
 
 - WGSL は `assets/shaders/` から実行時ロード。notify で監視し、保存で `rebuild_pipelines()`。コンパイルエラー時は `pipelines = None` にして描画をスキップ(クラッシュしない)+エラーオーバーレイ表示、直前の正常なパイプラインで続行
+- **リリース配布ビルドのみ例外**: feature `embed-assets`(`cargo build --release --features embed-assets`)で exe 単体配布にする。(1) `assets/shaders/` 全体を `include_dir!` でバイナリへ埋め込み(取得元の分岐は `GpuCanvas::shader_source` の1箇所。ファイル監視は無効 = ShaderWatcher が早期 return)、(2) 既定 JSON アセット(pigments/palettes/presets/strokes)も埋め込み、初回起動時に `assets::seed_default_assets()` が exe 隣へ書き出す(ディレクトリ単位で「無ければ書く」— ユーザーの編集・削除を復活させない)、(3) パス基準が exe ディレクトリになる(`assets::base_dir`)。通常ビルドには include_dir はコンパイルされない(optional 依存)
 - compute パイプラインは `COMPUTE_SHADERS` の表(WGSL ファイル名 → レイアウト種別)を回して作る(R3。**シェーダー追加 = 表に1行**)。名前引き `Pipelines::compute("splat.wgsl")` で参照し、パス実行順は `prepare()` のハードコードが正典。コンパイルエラーの行番号は common.wgsl 連結分ずれるので `remap_shader_error_lines` で補正して表示(R3。純関数、cargo test 対象)
 - SimParams / Splat の WGSL 構造体定義は common.wgsl に1箇所化し、Rust 側で各シェーダーの先頭に連結 — 「パラメータ追加 = WGSL 1行」をシェーダーが増えても維持。**連結は3段**(M8): `shader_prelude`(キャンバスサイズ依存の const 2行を Rust が生成)+ common.wgsl + シェーダー本体。行番号補正(R3)はプレリュード込みのプレフィックス行数で行う
 - SimParams は毎フレーム uniform へ書くのでスライダーは即時反映。WGSL uniform 規則(16 バイト整列)に合わせ、末尾の `_pad` を置き換えてからフィールドを増やす

@@ -12,7 +12,7 @@ pub fn shader_dir() -> PathBuf {
 
 /// AI レビュー用スクショの出力先ディレクトリ(固定パス保存とトリガー監視の両方が使う)
 pub fn screenshots_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("screenshots")
+    crate::assets::base_dir().join("screenshots")
 }
 
 /// AI が撮影を指示するトリガーファイル名(screenshots/ 直下)。
@@ -91,6 +91,14 @@ pub struct ShaderWatcher {
 impl ShaderWatcher {
     /// 監視の初期化に失敗してもアプリは起動させる(ホットリロードが効かないだけ)。
     pub fn new(dir: &Path) -> Self {
+        // embed-assets(リリース配布)ではディスク上の .wgsl を使わないので監視しない
+        // (編集が反映されないのに再ビルドだけ走る、という誤解を防ぐ)
+        if cfg!(feature = "embed-assets") {
+            return Self {
+                _watcher: None,
+                rx: None,
+            };
+        }
         let (tx, rx) = channel();
         let watcher = notify::recommended_watcher(tx).and_then(|mut w| {
             w.watch(dir, RecursiveMode::Recursive)?;

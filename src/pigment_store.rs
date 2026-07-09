@@ -2,7 +2,7 @@
 //!
 //! 顔料1個([`pigment::Pigment`] = 名前・基本色・ρ/ω/γ)を JSON で `assets/pigments/` に
 //! 保存・読込する。パレット丸ごとの [`crate::palette_store`](M5d)と同じ流儀(アセット
-//! ディレクトリ解決 = CARGO_MANIFEST_DIR 基準、`list_json_names` で一覧)。
+//! ディレクトリ解決 = assets.rs、`list_json_names` で一覧)。
 //! **assets/pigments/*.json は git にコミットする**(「昨日作った色」を失わないため)。
 //!
 //! **保存名 = 顔料名の1本化**: [`save`] は書き込む前に `pigment.name` を保存名で上書きする。

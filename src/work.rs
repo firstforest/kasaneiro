@@ -16,7 +16,7 @@ use paint_core::sim::CANVAS_SIZES;
 use pigment::Palette;
 use paint_core::sim::SimParams;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// ファイル先頭の識別子(かさねいろ形式バージョン 1)。読込時に検査する。
 /// リリース前は互換を持たない方針なので、形式を変えたらここを上げて古いファイルは拒否する
@@ -63,9 +63,9 @@ pub struct WorkFile {
 }
 
 pub fn works_dir() -> PathBuf {
-    // アセット(git 管理)ではなくユーザーの制作物なのでリポジトリ直下 works/ に置く
-    // (snapshots/ と同じ扱い。.gitignore 済み)
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("works")
+    // アセット(git 管理)ではなくユーザーの制作物なので基準ディレクトリ直下 works/ に置く
+    // (snapshots/ と同じ扱い。.gitignore 済み。配布ビルドでは exe 隣 — assets.rs)
+    crate::assets::base_dir().join("works")
 }
 
 /// 保存済み作品名の一覧(拡張子なし・ソート済み)

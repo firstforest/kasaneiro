@@ -17,6 +17,10 @@ use eframe::egui;
 fn main() -> eframe::Result {
     env_logger::init();
 
+    // 配布ビルド(embed-assets)の初回起動時、既定の顔料・パレット・プリセット等を
+    // exe 隣へ書き出す(通常ビルドでは何もしない)。ストア読込より前に呼ぶこと
+    assets::seed_default_assets();
+
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()

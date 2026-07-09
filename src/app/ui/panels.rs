@@ -134,7 +134,11 @@ impl PaintApp {
     pub(in crate::app) fn shader_status(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.heading("シェーダー(開発)");
-        ui.label(format!("{} を監視中", shader_dir().display()));
+        if cfg!(feature = "embed-assets") {
+            ui.label("埋め込みシェーダー使用中(ホットリロード無効)");
+        } else {
+            ui.label(format!("{} を監視中", shader_dir().display()));
+        }
         match &self.shader_error {
             None => {
                 ui.colored_label(egui::Color32::from_rgb(64, 160, 64), "コンパイル OK");

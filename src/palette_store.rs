@@ -2,7 +2,7 @@
 //!
 //! ランタイム編集した顔料パレット([`pigment::Palette`])を JSON で `assets/palettes/` に
 //! 保存・読込する。プリセット(H3、[`crate::preset`])・ストローク(H5、[`crate::replay`])と
-//! 同じ流儀(アセットディレクトリ解決 = CARGO_MANIFEST_DIR 基準、`list_json_names` で一覧)。
+//! 同じ流儀(アセットディレクトリ解決 = assets.rs、`list_json_names` で一覧)。
 //! **assets/palettes/*.json は git にコミットする**(「昨日作った顔料」を失わないため)。
 //!
 //! Pigment のフィールドは `#[serde(default)]` ではなく素の derive だが、顔料の意味的な最小単位は

@@ -212,7 +212,15 @@ struct LayerUniform {
     order: [u32; MAX_LAYERS],
 }
 
+/// リリース配布用(embed-assets): assets/shaders/ 全体をコンパイル時に埋め込む。
+/// 通常ビルドは実行時ロード(H1 ホットリロード)のままにして試行錯誤の速度を守る
+#[cfg(feature = "embed-assets")]
+static EMBEDDED_SHADERS: include_dir::Dir<'static> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/assets/shaders");
+
 pub struct GpuCanvas {
+    // embed-assets では実行時ロードしないため未読になる
+    #[cfg_attr(feature = "embed-assets", allow(dead_code))]
     shader_dir: PathBuf,
     target_format: wgpu::TextureFormat,
     /// キャンバス1辺(テクセル。M8 でサイズ可変化=R9 の値化)。全テクスチャ・dispatch・
@@ -633,15 +641,28 @@ impl GpuCanvas {
         Ok(())
     }
 
-    /// assets/shaders/ から WGSL を読み直してパイプラインを作り直す(H1)。
+    /// WGSL ソースを1本ぶん取得する(通常ビルド: assets/shaders/ から実行時ロード。H1)
+    #[cfg(not(feature = "embed-assets"))]
+    fn shader_source(&self, name: &str) -> Result<String, String> {
+        let path = self.shader_dir.join(name);
+        std::fs::read_to_string(&path).map_err(|e| format!("{} を読めません: {e}", path.display()))
+    }
+
+    /// WGSL ソースを1本ぶん取得する(embed-assets: コンパイル時に埋め込んだものを返す)
+    #[cfg(feature = "embed-assets")]
+    fn shader_source(&self, name: &str) -> Result<String, String> {
+        EMBEDDED_SHADERS
+            .get_file(name)
+            .and_then(|f| f.contents_utf8())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("埋め込みシェーダー {name} がありません"))
+    }
+
+    /// WGSL を読み直してパイプラインを作り直す(H1。取得元は shader_source を参照)。
     /// common.wgsl(SimParams 等の共通定義)を各シェーダーの先頭に連結してコンパイルする。
     /// 失敗したら Err(表示用メッセージ) を返し、直前の正常なパイプラインを保持する。
     pub fn rebuild_pipelines(&mut self, device: &wgpu::Device) -> Result<(), String> {
-        let read = |name: &str| {
-            let path = self.shader_dir.join(name);
-            std::fs::read_to_string(&path)
-                .map_err(|e| format!("{} を読めません: {e}", path.display()))
-        };
+        let read = |name: &str| self.shader_source(name);
         // キャンバスサイズ依存の定数(M8)を common.wgsl の前にさらに連結する。
         // 各シェーダー = プレリュード + common.wgsl + 本体、の3段
         let common = format!("{}{}", shader_prelude(self.size), read("common.wgsl")?);

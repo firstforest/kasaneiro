@@ -28,7 +28,7 @@ use paint_core::tool::{RasterTool, Tool, WetTool};
 use ui::{NamedStore, PaletteUi, PresetUi, ReplayUi, WorkUi};
 use eframe::egui;
 use eframe::egui_wgpu;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// UI フォントを M PLUS 1p(Google Fonts / OFL、`assets/fonts/`)に差し替える。
 /// egui のデフォルトフォントは日本語グリフを含まないため、実行ファイルに埋め込んだ
@@ -859,7 +859,7 @@ impl PaintApp {
                     .ok_or("キャンバスが初期化されていません")?;
                 canvas.snapshot(&self.render_state.device, &self.render_state.queue)?
             };
-            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("snapshots");
+            let dir = crate::assets::base_dir().join("snapshots");
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("{} を作れません: {e}", dir.display()))?;
             let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
