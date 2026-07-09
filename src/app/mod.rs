@@ -110,6 +110,8 @@ pub(in crate::app) enum FileModal {
     NewCanvas,
     /// 全部消す(確認)
     Clear,
+    /// かさねいろについて(バージョン・ライセンス表示)
+    About,
 }
 
 pub struct PaintApp {

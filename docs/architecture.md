@@ -50,7 +50,7 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
 │  │     ├─ layers.rs     右パネルのレイヤースタック(layer_stack_panel。選択=ツール系統切替・可視性・並べ替え・合成方式)
 │  │     ├─ tuning.rs     制作者向けの調整・診断・シミュ制御(tuning_dev_panel。開発モード時のみ表示)
 │  │     ├─ panels.rs     表示/記録再生/シェーダー状態+status_bar(view/replay/shader_status/status_bar)
-│  │     ├─ file_menu.rs  上部「ファイル」メニューバー+モーダル(menu_bar / file_modals。作品保存/開く統合・設定プリセット・パレット(M5g、4色見本チップ付き一覧+既定に戻す)・色ライブラリ(M5f、スロットミニセレクタ+即保存+性質ホバー付き一覧)・新規キャンバス・全部消す。破壊操作はモーダル内の明示ボタンで確認)
+│  │     ├─ file_menu.rs  上部メニューバー(ファイル+ヘルプ)+モーダル(menu_bar / file_modals。ファイル=作品保存/開く統合・設定プリセット・パレット(M5g、4色見本チップ付き一覧+既定に戻す)・色ライブラリ(M5f、スロットミニセレクタ+即保存+性質ホバー付き一覧)・新規キャンバス・全部消す。ヘルプ=かさねいろについて(バージョン+ライセンス表示。exe 単体配布のためライセンス文同梱の正典)。破壊操作はモーダル内の明示ボタンで確認)
 │  │     └─ canvas.rs     キャンバス描画・初回ガイド・エラーオーバーレイ(canvas_ui / error_overlay)
 │  ├─ gpu/                GpuCanvas。リソース定義と型・実行時メソッドを持ち、長い処理は分離
 │  │  ├─ mod.rs           型定義(GpuCanvas / Pipelines / DriedLayer)・COMPUTE_SHADERS 表・
@@ -79,7 +79,9 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
    ├─ presets/*.json      SimParams プリセット(git 管理)
    ├─ strokes/*.json      テストストローク(git 管理。M5d でパレット同梱=StoredRecording)
    ├─ palettes/*.json     顔料パレット・ライブラリ(git 管理。M5d)
-   └─ pigments/*.json     色単体ライブラリ(顔料1個=1ファイル。git 管理。M5f。既定4顔料を同梱)
+   ├─ pigments/*.json     色単体ライブラリ(顔料1個=1ファイル。git 管理。M5f。既定4顔料を同梱)
+   └─ licenses/third-party.txt  依存クレートのライセンス一覧(git 管理。include_str で埋め込み、
+                          「かさねいろについて」が表示。再生成コマンドはファイル冒頭)
    (works/*.kasane は作品保存の出力先。ユーザーの制作物なので snapshots/ 同様 git 管理外。M7)
 ```
 

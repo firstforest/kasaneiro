@@ -9,7 +9,7 @@ use eframe::egui;
 use paint_core::sim::CANVAS_SIZES;
 
 impl PaintApp {
-    /// 上端の「ファイル」メニューバー(1メニュー)。項目クリックで menu_button は自動で閉じる
+    /// 上端のメニューバー(ファイル+ヘルプ)。項目クリックで menu_button は自動で閉じる
     /// (既定 PopupCloseBehavior=CloseOnClick)ので明示 close は不要。破壊操作はモーダル側で確認する
     pub(in crate::app) fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
@@ -43,6 +43,12 @@ impl PaintApp {
                     self.file_modal = Some(FileModal::Clear);
                 }
             });
+            ui.menu_button("ヘルプ", |ui| {
+                // バージョンとライセンス表示。exe 単体配布なのでライセンス文の同梱先はここ
+                if ui.button("かさねいろについて…").clicked() {
+                    self.file_modal = Some(FileModal::About);
+                }
+            });
         });
     }
 
@@ -54,6 +60,7 @@ impl PaintApp {
             Some(FileModal::Preset) => self.preset_modal(ctx),
             Some(FileModal::NewCanvas) => self.new_canvas_modal(ctx),
             Some(FileModal::Clear) => self.clear_modal(ctx),
+            Some(FileModal::About) => self.about_modal(ctx),
             None => {}
         }
     }
@@ -217,6 +224,77 @@ impl PaintApp {
                     self.file_modal = None;
                 }
             });
+        });
+        if response.should_close() {
+            self.file_modal = None;
+        }
+    }
+
+    /// かさねいろについて: バージョン+ライセンス表示。
+    /// exe 単体配布(embed-assets)のためライセンス文の「同梱」はこの画面が正典:
+    /// mixbox のクレジット(CC BY-NC 4.0 の表示義務)、M PLUS 1p の OFL 全文
+    /// (フォントは include_bytes 埋め込みなのでファイル同梱されない)、依存クレート一覧。
+    /// クレート一覧は assets/licenses/third-party.txt(git 管理)を include_str で埋め込む。
+    /// 再生成コマンドは同ファイル冒頭のコメント参照(依存を追加・更新したら更新する)
+    fn about_modal(&mut self, ctx: &egui::Context) {
+        let response = egui::Modal::new(egui::Id::new("file_modal_about")).show(ctx, |ui| {
+            ui.set_max_width(520.0);
+            ui.heading(format!("かさねいろ v{}", env!("CARGO_PKG_VERSION")));
+            ui.label(
+                egui::RichText::new("水彩シミュレーションペイントツール")
+                    .weak()
+                    .small(),
+            );
+            ui.separator();
+
+            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                ui.label(egui::RichText::new("混色エンジン").strong());
+                ui.label("Mixbox © Secret Weapons — CC BY-NC 4.0(非商用)ライセンスで使用");
+                ui.horizontal(|ui| {
+                    ui.hyperlink_to("Mixbox", "https://scrtwpns.com/mixbox/");
+                    ui.hyperlink_to(
+                        "CC BY-NC 4.0",
+                        "https://creativecommons.org/licenses/by-nc/4.0/",
+                    );
+                });
+                ui.label(
+                    egui::RichText::new("このため、かさねいろ自体も非商用利用に限られます")
+                        .weak()
+                        .small(),
+                );
+                ui.add_space(8.0);
+
+                ui.label(egui::RichText::new("UI フォント").strong());
+                ui.label("M PLUS 1p © The M+ FONTS Project — SIL Open Font License 1.1");
+                egui::CollapsingHeader::new("OFL 1.1 全文")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(include_str!("../../../assets/fonts/OFL.txt"))
+                                .weak()
+                                .small(),
+                        );
+                    });
+                ui.add_space(8.0);
+
+                ui.label(egui::RichText::new("依存ライブラリ").strong());
+                egui::CollapsingHeader::new("Rust クレート一覧(名前 — ライセンス)")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(include_str!(
+                                "../../../assets/licenses/third-party.txt"
+                            ))
+                            .weak()
+                            .small(),
+                        );
+                    });
+            });
+
+            ui.separator();
+            if ui.button("閉じる").clicked() {
+                self.file_modal = None;
+            }
         });
         if response.should_close() {
             self.file_modal = None;
