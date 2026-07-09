@@ -27,9 +27,13 @@ fn edge_perm(here: f32, at: vec2i) -> f32 {
 
 // 隣接2セル間の流束の水依存重み: (両セルの水量平均)^γ。
 // γ=1 は従来の線形。γ>1 で「水がたっぷりのときは傾斜がなくても自由に混ざり、
-// 水が引いてくると急に混ざらなくなる」カーブになる(乾きかけの縁は形が残る)
+// 水が引いてくると急に混ざらなくなる」カーブになる(乾きかけの縁は形が残る)。
+// γ=4 は調整済みの定数(docs/note/06 §5: w=1.0 で全開・w=0.7 で約1/4・w=0.5 で約1/16)。
+// 再調整はホットリロード(H1)でここを直接編集
+const DIFFUSE_GAMMA: f32 = 4.0;
+
 fn wet_weight(a: f32, b: f32) -> f32 {
-    return pow(clamp(0.5 * (a + b), 0.0, 1.0), max(params.diffuse_gamma, 0.01));
+    return pow(clamp(0.5 * (a + b), 0.0, 1.0), DIFFUSE_GAMMA);
 }
 
 @compute @workgroup_size(8, 8)
@@ -63,7 +67,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // 濡れたセル同士だけで交換し(乾いた隣はフラックス 0 = Neumann 境界)、
     // 対になるフラックスが対称なので顔料の総量は保存される。
     // 重みは双方の水量平均^γ(wet_weight): 水がたっぷりなら傾斜がなくても濃度差だけで
-    // 自由に混ざり、水が引いてくると急に混ざらなくなる(diffuse_gamma)
+    // 自由に混ざり、水が引いてくると急に混ざらなくなる(DIFFUSE_GAMMA)
     let n_l = load_clamped(src_water, ip + vec2i(-1, 0));
     let n_r = load_clamped(src_water, ip + vec2i(1, 0));
     let n_u = load_clamped(src_water, ip + vec2i(0, -1));

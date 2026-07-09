@@ -21,6 +21,11 @@
 // アクティブタイル(M6): タイル有効フラグ。非アクティブなタイルは素通しして計算を省く
 @group(0) @binding(11) var<storage, read> tile_active: array<u32>;
 
+// 水持ち(docs/note/06 §3): 水が多いセルほど吸着を抑える度合い(吸着率に (1−WET_HOLD×w) を
+// 掛ける)。たっぷりの水の中では顔料が沈まず浮遊し続け、沈着は水が引いてから始まる。
+// 調整済みの定数。再調整はホットリロード(H1)でここを直接編集(0 で従来どおり)
+const WET_HOLD: f32 = 0.7;
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
     let dims = textureDimensions(src_water);
@@ -62,8 +67,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         // 粒状化(M1d/M3): 凹部(h=0)で強め・凸部(h=1)で弱め、効き幅は顔料の γ に比例
         let gran = max(1.0 + params.paper_gran * gamma * (1.0 - 2.0 * h), 0.0);
         // 水持ち: 水がたっぷりのセルでは顔料が沈まず浮遊し続ける(自由に流れて混ざる)。
-        // 沈着が始まるのは水が引いてから。wet_hold=0 で従来どおり
-        let hold = max(1.0 - params.wet_hold * w, 0.0);
+        // 沈着が始まるのは水が引いてから(WET_HOLD 定数)
+        let hold = max(1.0 - WET_HOLD * w, 0.0);
         let down_rate = clamp(params.deposit_rate * rho * params.dt * (2.0 - w) * gran * hold, 0.0, 1.0);
         // 脱着(再浮遊): 水が多い場所ほど浮き上がるが、ステイニング顔料は (1−ω) で残る
         let up_rate = clamp(params.lift_rate * params.dt * w * (1.0 - omega), 0.0, 1.0);

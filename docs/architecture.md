@@ -211,7 +211,7 @@ paint:
 ```
 
 - `PointerSource` trait で Mouse / Pen を抽象(将来の wasm Pointer もここ)。ペン接地中はマウス入力を無視(egui-winit が Touch からポインタをエミュレートするため二重ストローク防止)
-- **筆の含み(2026-07-09)**: 塗る筆(Wet::Paint)を置いたまま動かないフレームは、含み(`brush_charge` 秒。筆を下ろすたび満たす)が残る間、CPU(`PaintApp::feed_charge`)が毎フレーム **feed splat**(`Splat.feed=1`)を1つ積む。splat.wgsl の描画ブランチが分岐し、一括注入の代わりに置き馴染みの水補充+広がる勢い+少量の顔料(`charge_pigment`)を注ぎ続ける=置くだけで色水が流れ出て広がる。ストローク記録(H5)は生ポインタ点のみなので feed は再生で再現されない(既知の制約)
+- **筆の含み(2026-07-09)**: 塗る筆(Wet::Paint)を置いたまま動かないフレームは、含み(`brush_charge` 秒。筆を下ろすたび満たす)が残る間、CPU(`PaintApp::feed_charge`)が毎フレーム **feed splat**(`Splat.feed=1`)を1つ積む。splat.wgsl の描画ブランチが分岐し、一括注入の代わりに広がり(`paint_spread`)の水補充+外向きの流れ+少量の顔料(splat.wgsl の定数 `CHARGE_PIGMENT`)を注ぎ続ける=置くだけで色水が流れ出て広がる。ストローク記録(H5)は生ポインタ点のみなので feed は再生で再現されない(既知の制約)
 - 筆圧マッピングは `実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に適用(splat.wgsl と CPU 側で同式)
 - ストローク記録(H5)は splat 列ではなく**補間前の生ポインタ入力**を保存 — 再生時にブラシ半径等を変えて同一ストロークで A/B 比較できる
 

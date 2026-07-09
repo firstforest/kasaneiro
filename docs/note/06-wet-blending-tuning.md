@@ -4,6 +4,8 @@
 
 01〜05 の技術調査ノートと違い、これは**実装後の設計記録**。パラメータの現在の既定値・範囲は [../parameters.md](../parameters.md)(§1 ブラシ・§4 顔料の輸送)が正典。
 
+> **追記(同日の整理、§8)**: 調整完了を受けてパラメータを3ノブ(広がり `paint_spread`・下の色を溶かす `paint_pickup`・筆の含み `brush_charge`)に絞り込んだ。§1〜5 に出てくる `paint_soak`/`paint_soak_radius`/`wet_hold`/`charge_pigment`/`diffuse_gamma` は**実装当時のパラメータ名**で、現在は WGSL 定数(または `paint_spread` へ統合)。仕組みの説明自体は今も正しい。
+
 関連ノート: [01-fluid-simulation.md](01-fluid-simulation.md)(Curtis 1997 の流体モデル。本ノートの仕組みは全てこの上に乗る)
 
 ---
@@ -80,30 +82,47 @@
 
 ## 6. 調整ガイド(どのノブがどの体感に効くか)
 
-スライダーの場所: 塗るツール選択時のパネル(置き馴染み・広がる勢い・下の色を溶かす・筆の含み)/ 開発モード → 味付け(広がる範囲・水持ち・含みから出る顔料・混ざりの水依存 γ・拡散率・拡散反復)。
+スライダーは3つとも塗るツール選択時のパネルにある(§8 の整理後)。それ以外は WGSL 定数=ホットリロードで編集。
 
 | 体感を変えたい | 触るノブ |
 |---|---|
-| 広がる**距離** | 広がる勢い(paint_spread)・広がる範囲(paint_soak_radius)・筆の含み(brush_charge) |
-| 広がる**速さ・自由さ** | 拡散率×反復(pigment_diffuse / diffuse_iters)・水持ち(wet_hold) |
-| たっぷり/乾きかけの**メリハリ** | 混ざりの水依存 γ(diffuse_gamma)。上げるほど「たっぷりの時だけ」が極端に |
-| 下の色との**馴染み** | 下の色を溶かす(paint_pickup)・水持ち(wet_hold) |
-| 置くだけで出る**色の濃さ** | 含みから出る顔料(charge_pigment)。0 で水だけ |
-| **従来に戻す** | 各ノブ 0(γ は 1)。プリセット H3 に封じ込めて A/B するのが速い |
+| 広がる**距離・勢い** | 広がり(paint_spread)・筆の含み(brush_charge) |
+| 下の色との**馴染み** | 下の色を溶かす(paint_pickup) |
+| 広がる**速さ・自由さ** | 拡散率×反復(pigment_diffuse / diffuse_iters、開発モード → 味付け) |
+| たっぷり/乾きかけの**メリハリ**・広がる**範囲**・置くだけで出る**色の濃さ**・**水持ち** | WGSL 定数(§8 の表)。ホットリロードで直接編集 |
+| **従来に戻す** | 3ノブを 0。プリセット H3 に封じ込めて A/B するのが速い |
 
 副作用の把握:
 
-- **wet_hold と diffuse_gamma は塗る筆専用ではなく全体の性質**。白紙への単ストロークも内部の均一化が速くなる(マスクは広がらないので輪郭は不変)
+- **水持ち(WET_HOLD)と水依存 γ(DIFFUSE_GAMMA)は塗る筆専用ではなく全体の性質**。白紙への単ストロークも内部の均一化が速くなる(マスクは広がらないので輪郭は不変)
 - paint_spread を上げすぎると置いた中心が薄くなりリング状になる(実物のバックランに近い見た目。嫌なら中心の顔料保持を足す改修が次の一手)
-- feed 中の pickup 0.1 倍・γ の WGSL クランプ(0.01)・soak_radius のクランプ(1〜8)は splat.wgsl / diffuse.wgsl 側にハードコード
+- feed 中の pickup 0.1 倍・soak_cov / ring の減衰カーブは splat.wgsl 側にハードコード
 
 ## 7. 実装ファイル対応表
 
 | 何 | どこ |
 |---|---|
-| 置き馴染み・広がる勢い・溶かし戻し・feed 分岐 | [assets/shaders/splat.wgsl](../../assets/shaders/splat.wgsl) 描画ブランチ(tool=0) |
-| 水持ち | [assets/shaders/transfer.wgsl](../../assets/shaders/transfer.wgsl) 吸着率 |
-| 混ざりの水依存 | [assets/shaders/diffuse.wgsl](../../assets/shaders/diffuse.wgsl) `wet_weight` |
+| 広がり(水の足場+外向きの流れ)・溶かし戻し・feed 分岐、定数 SOAK_RADIUS / CHARGE_PIGMENT | [assets/shaders/splat.wgsl](../../assets/shaders/splat.wgsl) 描画ブランチ(tool=0) |
+| 水持ち(定数 WET_HOLD) | [assets/shaders/transfer.wgsl](../../assets/shaders/transfer.wgsl) 吸着率 |
+| 混ざりの水依存(定数 DIFFUSE_GAMMA) | [assets/shaders/diffuse.wgsl](../../assets/shaders/diffuse.wgsl) `wet_weight` |
 | 筆の含みの状態機械(charge_left / feed_pos / feed_charge) | [src/app/mod.rs](../../src/app/mod.rs)(呼び出しは [src/app/ui/canvas.rs](../../src/app/ui/canvas.rs)) |
 | `Splat.feed` フラグ・パラメータ定義と既定値 | [crates/paint-core/src/sim.rs](../../crates/paint-core/src/sim.rs) |
-| スライダー | [src/app/ui/tools.rs](../../src/app/ui/tools.rs)(塗るツール)/ [src/app/ui/tuning.rs](../../src/app/ui/tuning.rs)(味付け) |
+| スライダー(広がり・筆の含み・下の色を溶かす) | [src/app/ui/tools.rs](../../src/app/ui/tools.rs)(塗るツール) |
+
+## 8. パラメータの整理(同日): 3ノブ+WGSL 定数へ
+
+§1〜5 を実装した結果 SimParams に8個のパラメータが増え、把握が難しくなった(ユーザーの言葉:「かなりパラメーターが増えてきてしまい把握が難しくなっています」)。4ラウンドの要望を**体感**で仕分けし直すと、描きながら動かす意味があるノブは3つしかない:
+
+| 残したノブ(SimParams) | 体感 | 理由 |
+|---|---|---|
+| `paint_spread`(広がり) | 置いた色がどれだけ外へ広がるか | 旧 `paint_soak`(水の足場)と旧 `paint_spread`(外向きの流れ)は常に一緒に動かす対だった(足場だけ・流れだけでは体感が成立しない)。既定値も同じ 0.8 だったので1本に統合(足場の係数 = min(値,1)) |
+| `brush_charge`(筆の含み) | 置いたままどれだけ流れ出続けるか | 「筆に色水をたっぷり含んだ」感覚に直結する作画中のノブ |
+| `paint_pickup`(下の色を溶かす) | 下の色とどれだけ馴染むか | 広がりとは独立の意図(輪郭を守りたい/溶かしたい)なので別ノブ |
+
+残り5つは**一度調整すれば作画中に変えないシミュの性格**なので、調整結果の値を WGSL 定数に封じて SimParams から削除した(定数表は [../parameters.md](../parameters.md) §4)。判断の根拠:
+
+- `paint_soak_radius`(→ `SOAK_RADIUS`=3.0): 「広がる距離」の体感は勢い(paint_spread)×含み時間(brush_charge)で既に2自由度あり、範囲まで独立に動かす意味が薄い
+- `charge_pigment`(→ `CHARGE_PIGMENT`=0.15): §4 の設計結論が「流れ出るのは主に水」。色の濃さを変えたければ `brush_pigment`(feed は brush_pigment×定数)で足りる
+- `wet_hold`(→ `WET_HOLD`=0.7)/ `diffuse_gamma`(→ `DIFFUSE_GAMMA`=4.0): 「水がたっぷり=自由に混ざる/引く=止まる」という**このツールの水の性格そのもの**。ストロークごとに変える芸術的意図がなく、γ=1 や hold=0 に戻したくなるトリガーも想定していない
+
+定数化しても試行錯誤の速度(CLAUDE.md の核心原則)は落ちない: WGSL はホットリロード(H1)なので、シェーダー内の `const` を書き換えて保存すれば**再起動なしで**効く(SimParams のレイアウトが変わらないため uniform 不一致も起きない)。再びスライダーに戻したくなったら parameters.md §11 の定型作業(3行)で昇格できる。プリセット JSON に旧フィールドが残っていても serde が未知フィールドとして無視するので読み込みは壊れない。
