@@ -118,7 +118,7 @@ display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 late
 
 **ビューポート変換(binding 11、M6)**: `ViewUniform { center: vec2f, span: f32, cos_t: f32, sin_t: f32, _pad×3 }`(32B。WGSL の末尾パディングは vec3f だと align 16 で 48B に膨らむため f32×3 で詰めて Rust 側と一致させる)。fs_main が画面 uv → キャンバス uv を `canvas_uv = center + R(θ)·(画面uv − 0.5)·span`(`span = 1/zoom`、`R(θ)` は表示中心まわりの回転)で写してからサンプルするため、拡大/パン/**回転**が全サンプル(水/浮遊/沈着/紙/乾燥/線画)に一括で効く。SimParams とは分けた display 専用 uniform で(プリセット H3・記録 H5 を汚さない)、`CanvasCallback` がフレームごとに `write_buffer`。app 側で `zoom ∈ [1, 32]`。**回転で窓の隅がキャンバス外に出るぶん(`canvas_uv` が [0,1] の外)は `BG_COLOR`(紙の周りの机)で塗る**。クランプは回転なしなら窓をキャンバス内に(`center` を各軸 `[half, 1−half]`)、回転時は `center` のみ `[0,1]` に留める。ポインタ→テクセル変換(描画・スポイト)も同じ写像 `PaintApp::screen_to_texel`(逆回転込み)を通す。**スポイト(M5e)の snapshot 読み戻しは画面 uv で索引する**(snapshot は display と同じビュー変換込みで焼くため。テクセル索引では拡大・回転時にズレる)。回転操作は Shift+ホイールで15°刻み・「ビュー」パネルのスライダーで自由角。パン は中ボタンまたはスペース+左ドラッグ。
 
-**顔料 latent(binding 4)のレイアウト(M5c、`array<vec4f, LATENT_TOTAL=78>`)**: 先頭 `GLOBAL_LATENTS=6` vec4 = パレット非依存のグローバル光学(`[0,1]`紙 / `[2,3]`白 R_w / `[4,5]`黒 R_b)。以降は**パレット枠**を `PALETTE_SLOTS = MAX_LAYERS+1 = 9` 個並べ、各枠 `PIGMENT_LATENTS=8` vec4(顔料4種 × c0..c3/RGB残差)。枠 `0..MAX_LAYERS-1` は乾燥レイヤーのスロット別、枠 `LIVE_PALETTE=MAX_LAYERS` は現行(湿レイヤー)のパレット。**乾かすと現行パレットの色を対応スロット枠へ焼き込む**(`GpuCanvas::record_layer_palette`)ため、顔料を後から編集しても乾燥済みレイヤーの色は変わらない。編集時は `set_palette` が physics(ρ/ω/γ、全レイヤー共通)と live 枠だけを `write_buffer`(パイプライン再構築不要)。定数は [crates/pigment](../crates/pigment/src/lib.rs) と [src/gpu/mod.rs](../src/gpu/mod.rs)、WGSL の `pal_base()` が対応。**M5h**: latent 枠は色しか持たないため、`bake_dry(…, palette)` が同時に `GpuCanvas::layer_palettes`(index=slot)へ Palette を丸ごと clone する。こちらが名前・ρ/ω/γ 込みの**正典**(GPU 枠は表示用キャッシュ)で、乾燥層パネルの「パレット抽出」UI が読む。
+**顔料 latent(binding 4)のレイアウト(M5c、`array<vec4f, LATENT_TOTAL=78>`)**: 先頭 `GLOBAL_LATENTS=6` vec4 = パレット非依存のグローバル光学(`[0,1]`紙 / `[2,3]`白 R_w / `[4,5]`黒 R_b)。以降は**パレット枠**を `PALETTE_SLOTS = MAX_LAYERS+1 = 9` 個並べ、各枠 `PIGMENT_LATENTS=8` vec4(顔料4種 × c0..c3/RGB残差)。枠 `0..MAX_LAYERS-1` は乾燥レイヤーのスロット別、枠 `LIVE_PALETTE=MAX_LAYERS` は現行(湿レイヤー)のパレット。**乾かすと現行パレットの色を対応スロット枠へ焼き込む**(`GpuCanvas::record_layer_palette`)ため、顔料を後から編集しても乾燥済みレイヤーの色は変わらない。編集時は `set_palette` が physics(ρ/ω/γ/μ、全レイヤー共通)と live 枠だけを `write_buffer`(パイプライン再構築不要)。定数は [crates/pigment](../crates/pigment/src/lib.rs) と [src/gpu/mod.rs](../src/gpu/mod.rs)、WGSL の `pal_base()` が対応。**M5h**: latent 枠は色しか持たないため、`bake_dry(…, palette)` が同時に `GpuCanvas::layer_palettes`(index=slot)へ Palette を丸ごと clone する。こちらが名前・ρ/ω/γ 込みの**正典**(GPU 枠は表示用キャッシュ)で、乾燥層パネルの「パレット抽出」UI が読む。
 
 ## 4. フレームの流れ
 
@@ -151,12 +151,12 @@ paint:
 | ファイル | 役割 |
 |---|---|
 | common.wgsl | 共通定義(SimParams / Splat 構造体、濡れ判定、バイリニア補間)。Rust 側が各シェーダーの先頭に連結してコンパイル。さらに前にキャンバスサイズ依存の const 2行(TILE_SIZE / TILES_PER_SIDE)を `shader_prelude`(gpu/mod.rs)が生成して連結する(M8) |
-| splat.wgsl | ブラシ入力。tool(描画/リフト/消去/ぼかし筆/吸い取り)で分岐 |
+| splat.wgsl | ブラシ入力。tool(描画/リフト/消去/ぼかし筆/吸い取り)で分岐。描画は分離色(brush_mix)で brush_channel / brush_channel2 の2チャンネルへ顔料を按分注入 |
 | velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率 `perm` を速度場・にじみ拡張に掛ける(M4.5b) |
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
 | flowout.wgsl | FlowOutward(縁の水を抜く。既定オフ=edge_eta 0、M2 方式に置き換え済みで残置) |
 | advect.wgsl | セミラグランジアン移流(水+浮遊顔料。差し替え用に分離) |
-| diffuse.wgsl | 浮遊顔料+水の拡散(フィックの法則の陽解法。濡れセル間のみ・保存則あり)。水は毛細管拡散(max^γ 重み、note/07)=置いた水が濡れた紙を伝って広がる。ペン線を挟む隣接流束に透水率を掛ける(M4.5b) |
+| diffuse.wgsl | 浮遊顔料+水の拡散(フィックの法則の陽解法。濡れセル間のみ・保存則あり)。顔料は粒の細かさ μ(顔料個性の w 成分)で per-channel に拡散倍率が変わる=分離色の主役。水は毛細管拡散(max^γ 重み、note/07)=置いた水が濡れた紙を伝って広がる。ペン線を挟む隣接流束に透水率を掛ける(M4.5b) |
 | transfer.wgsl | 吸着/脱着(顔料個性 ρ/ω で per-channel 変調)+蒸発 |
 | bake.wgsl | 「乾かす」= 乾燥レイヤーへの焼き込み+湿レイヤー全ゼロ |
 | fastdry.wgsl | Fast Dry(浮遊→沈着に落として水と流れをゼロに。焼き込まない) |

@@ -95,6 +95,14 @@ impl PaintApp {
             .add(egui::Slider::new(&mut p.granulation, 0.0..=1.0).text("粒状感(紙目のザラつき)"))
             .on_hover_text("粒状感 γ: 大きいほど紙の凹部に溜まりザラつく")
             .changed();
+        changed |= ui
+            .add(egui::Slider::new(&mut p.mobility, 0.1..=2.0).text("粒の細かさ(伸び)"))
+            .on_hover_text(
+                "粒の細かさ μ: にじみで広がる速さの倍率。大きいほど水に乗って遠くまで伸び、\
+                 小さいほどその場に残る。細かい色と粗い色を「2色目を混ぜる」(塗るツール)で\
+                 混ぜると、紙の上で2色が分かれる=分離色になる",
+            )
+            .changed();
 
         if changed {
             self.apply_palette();
@@ -160,10 +168,11 @@ impl PaintApp {
                 if ui
                     .add(button)
                     .on_hover_text(format!(
-                        "{name}\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2}\nクリックでスロット #{} に読み込みます",
+                        "{name}\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2} / 粒の細かさ {:.2}\nクリックでスロット #{} に読み込みます",
                         p.density,
                         p.staining,
                         p.granulation,
+                        p.mobility,
                         ch + 1
                     ))
                     .clicked()

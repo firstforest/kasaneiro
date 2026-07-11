@@ -112,8 +112,8 @@ impl PaintApp {
                 (
                     egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]),
                     format!(
-                        "{}で塗る\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2}",
-                        p.name, p.density, p.staining, p.granulation
+                        "{}で塗る\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2} / 粒の細かさ {:.2}",
+                        p.name, p.density, p.staining, p.granulation, p.mobility
                     ),
                 )
             })
@@ -183,10 +183,21 @@ impl PaintApp {
             ui.label(egui::RichText::new(wt.short_hint()).weak().small())
                 .on_hover_text(wt.hint());
         }
-        // 塗るときは選択中の顔料名を出す(削り等では顔料は無関係なので出さない)
+        // 塗るときは選択中の顔料名を出す(削り等では顔料は無関係なので出さない)。
+        // 分離色(2色目を混ぜている)なら組み合わせと比率も見えるように
         if self.tool == Tool::Wet(WetTool::Paint) {
             let pg = &self.palette.pigments[self.params.brush_channel.min(3) as usize];
-            ui.label(format!("塗る色: {}", pg.name));
+            if self.params.brush_mix > 0.0 {
+                let pg2 = &self.palette.pigments[self.params.brush_channel2.min(3) as usize];
+                ui.label(format!(
+                    "塗る色: {} + {}({:.0}%)",
+                    pg.name,
+                    pg2.name,
+                    self.params.brush_mix * 100.0
+                ));
+            } else {
+                ui.label(format!("塗る色: {}", pg.name));
+            }
         }
         // 共通スライダー(どのツールでも使う)
         ui.add(
@@ -216,6 +227,46 @@ impl PaintApp {
                         "筆が触れた沈着顔料を浮かせて筆の色と混ぜる割合。\
                          染みつき(ω)が強い色は剥がれず残る",
                     );
+                // 分離色: 2色目の混合比と、混ぜる相手のスロット選択。
+                // 分かれ方は色の性質(粒の細かさ・沈みやすさ・染みつき)の差で決まるので、
+                // 細かい色(フタロ等)×粗い色(シェンナ等)の組み合わせがよく分かれる
+                ui.add(egui::Slider::new(&mut self.params.brush_mix, 0.0..=1.0).text("2色目を混ぜる"))
+                    .on_hover_text(
+                        "分離色: 筆に2色目を混ぜて同時に置く割合(0=単色)。\
+                         濡れた紙の上で、粒の細かい色は水に乗って縁へ伸び、粗い色はその場に残って\
+                         2色に分かれる。分かれ方は「色をつくる」の粒の細かさ・沈みやすさの差で決まる",
+                    );
+                if self.params.brush_mix > 0.0 {
+                    let colors: Vec<egui::Color32> = self
+                        .palette
+                        .pigments
+                        .iter()
+                        .map(|p| egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]))
+                        .collect();
+                    let names: Vec<String> =
+                        self.palette.pigments.iter().map(|p| p.name.clone()).collect();
+                    ui.horizontal(|ui| {
+                        ui.label("2色目:");
+                        for (i, color) in colors.iter().enumerate() {
+                            let selected = self.params.brush_channel2 == i as u32;
+                            let mut button = egui::Button::new("")
+                                .fill(*color)
+                                .corner_radius(4.0)
+                                .min_size(egui::vec2(20.0, 20.0));
+                            if selected {
+                                button =
+                                    button.stroke((3.0, ui.visuals().selection.stroke.color));
+                            }
+                            if ui
+                                .add(button)
+                                .on_hover_text(format!("2色目を{}にする", names[i]))
+                                .clicked()
+                            {
+                                self.params.brush_channel2 = i as u32;
+                            }
+                        }
+                    });
+                }
             }
             Some(WetTool::Lift) => {
                 ui.add(egui::Slider::new(&mut self.params.lift_strength, 0.0..=1.0).text("削りの強さ"));
@@ -365,11 +416,12 @@ impl PaintApp {
                 if ui
                     .add(button)
                     .on_hover_text(format!(
-                        "{}\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2}\nクリックでこの1色をスロット #{} に取り込む",
+                        "{}\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2} / 粒の細かさ {:.2}\nクリックでこの1色をスロット #{} に取り込む",
                         p.name,
                         p.density,
                         p.staining,
                         p.granulation,
+                        p.mobility,
                         i + 1
                     ))
                     .clicked()

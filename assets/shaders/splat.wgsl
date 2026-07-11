@@ -129,16 +129,21 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             // 補充され続ける水を毛細管拡散(diffuse.wgsl)が外へ運ぶので、
             // 「筆に含まれた色水が置いている間ずっと流れ出て広がる」動きになる
             let feed = s.feed > 0.5;
+            // 顔料は浮遊層の選択チャンネル(brush_channel = パレットの顔料スロット)へ注入する。
+            // 分離色(brush_mix > 0): 総顔料量はそのまま、brush_channel / brush_channel2 の
+            // 2チャンネルへ比率で按分する。紙の上で2色が分かれるのは注入の仕事ではなく、
+            // 顔料個性の差(粒の細かさ μ・密度 ρ・染みつき ω)が起こす物理
+            var pig = coverage * params.brush_pigment * mix(1.0, press, params.pressure_pigment);
             if (!feed) {
                 water += coverage * params.brush_water * mix(1.0, press, params.pressure_water);
                 vel += coverage * params.brush_velocity * s.vel;
-                // 顔料は浮遊層の選択チャンネル(brush_channel = パレットの顔料スロット)へ注入する
-                susp[min(params.brush_channel, 3u)] += coverage * params.brush_pigment * mix(1.0, press, params.pressure_pigment);
             } else {
                 water = max(water, coverage * params.brush_water * mix(1.0, press, params.pressure_water));
-                susp[min(params.brush_channel, 3u)] += coverage * params.brush_pigment * CHARGE_PIGMENT
-                    * mix(1.0, press, params.pressure_pigment);
+                pig *= CHARGE_PIGMENT;
             }
+            let mix2 = clamp(params.brush_mix, 0.0, 1.0);
+            susp[min(params.brush_channel, 3u)] += pig * (1.0 - mix2);
+            susp[min(params.brush_channel2, 3u)] += pig * mix2;
             // 筆が届いた範囲を濡らす(wet-area mask)。水が動けるのはこの領域だけ。
             // 水を置く範囲(coverage > 0)と一致させ、マスク外に水が取り残されないようにする
             if (dist < radius) {

@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | [docs/status.md](docs/status.md) | **現在の実装状況の正典**。作業開始時にまず読む |
 | [docs/requirements.md](docs/requirements.md) | 要件仕様(3要件の判定基準・ツール構成・UI/入力要件・非機能要件) |
 | [docs/architecture.md](docs/architecture.md) | 実装構造(スタック・モジュール構成・テクスチャ・パス順序・シェーダー一覧・混色の2段構え) |
-| [docs/parameters.md](docs/parameters.md) | 全パラメータ(`SimParams`)と顔料個性 ρ/ω/γ のリファレンス(既定値・UI 範囲・意味・実効式) |
+| [docs/parameters.md](docs/parameters.md) | 全パラメータ(`SimParams`)と顔料個性 ρ/ω/γ/μ のリファレンス(既定値・UI 範囲・意味・実効式) |
 | [docs/plan.md](docs/plan.md) | 実装計画(マイルストーン M0〜M8・装備 H1〜H6・先送り判断 §4) |
 | [docs/refactoring.md](docs/refactoring.md) | リファクタリング計画(R1〜R9。各項目をどのマイルストーン前に適用するか・やらないことの表) |
 | [docs/note/00-overview.md](docs/note/00-overview.md) | 技術調査5ノートの起点。設計判断に迷ったら参照 |

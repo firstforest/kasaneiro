@@ -9,8 +9,9 @@
 // CPU(src/paper.rs)が起動時に生成する静的テクスチャで、ping-pong しない。
 // compute パスの binding は全シェーダー共通:
 //   0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats, 8 = 紙ハイト
-//   9 = 顔料個性(M3): array<vec4f, 4>、各 vec4 = (密度 ρ, ステイニング ω, 粒状感 γ, 予備)。
-//       起動時に1回だけ書く静的 uniform(src/pigment.rs の physics_uniform)。splat/transfer が読む
+//   9 = 顔料個性(M3): array<vec4f, 4>、各 vec4 = (密度 ρ, ステイニング ω, 粒状感 γ, 粒の細かさ μ)。
+//       パレット編集で書き替わる uniform(crates/pigment の physics_uniform)。
+//       splat(ω/γ)/ transfer(ρ/ω/γ)/ diffuse(μ=分離色のチャンネル別拡散)が読む
 //   10 = 清書ペンの線画テクスチャ(M4.5b、r32float、read only)。ペン濃度から透水率を出して
 //        velocity(速度場・にじみ拡張)/ diffuse(拡散流束)が水の境界として使う。線画パスが書く
 // dst は毎パス全テクセルを書くこと(変更しないテクスチャも素通しで write する。ping-pong のため)
@@ -73,8 +74,8 @@ struct SimParams {
     paint_pickup: f32,      // 色の溶かし戻し: 筆が触れた沈着顔料を浮遊層へ戻す割合(0=無効)
     brush_charge: f32,      // 筆の含み(秒): 置いたまま色水が流れ出続ける時間(CPU 側で消費。0=無効)
     absorb_rate: f32,       // 吸い取り(tool=4): 1 splat で自由水+浮遊顔料を取り除く割合(沈着は残る)
-    _pad_paint: f32,        // 16B 整列の予備×2(次のパラメータ追加時はここから置き換える)
-    _pad_paint2: f32,
+    brush_channel2: u32,    // 分離色: 2色目の顔料スロット(brush_mix > 0 のとき按分注入)
+    brush_mix: f32,         // 分離色の混合比: 0=単色 / 0.5=半々 / 1=2色目のみ(総顔料量は不変)
 };
 
 // アクティブタイル(M6): シミュレーションを「濡れているタイル+ブラシ近傍」だけに絞る土台。

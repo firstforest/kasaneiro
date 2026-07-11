@@ -50,11 +50,23 @@ pub struct Pigment {
     /// 粒状感 γ ∈ [0,1](M3): 紙ハイトへの反応。高いほど凹部(谷)に沈着し凸部で剥がれる
     /// = 粒状化。粗い重い粒子(バーントシェンナ等)で高く、微細粒子(フタロ)で低い
     pub granulation: f32,
+    /// 粒の細かさ μ(分離色): 顔料拡散の倍率。細かい顔料(フタロ等)は水に乗って遠くまで
+    /// 運ばれ(>1)、粗い粒(シェンナ等)はその場に残る(<1)。diffuse.wgsl が per-channel で
+    /// 流束に掛ける(安定上限 0.2 はチャンネルごとにクランプ)。μ の差が分離色
+    /// (2顔料が紙の上で分かれる)の主役: 混ぜて置くと細かい方だけ縁へ走る。
+    /// serde default 1.0 = 旧 JSON(ライブラリ・.kasane)は従来どおりの拡散(SimParams の
+    /// 前進互換と同じ扱い。CLAUDE.md の試行錯誤速度のための例外)
+    #[serde(default = "default_mobility")]
+    pub mobility: f32,
+}
+
+fn default_mobility() -> f32 {
+    1.0
 }
 
 impl Pigment {
-    fn new(name: &str, rgb: [u8; 3], density: f32, staining: f32, granulation: f32) -> Self {
-        Self { name: name.to_owned(), rgb, density, staining, granulation }
+    fn new(name: &str, rgb: [u8; 3], density: f32, staining: f32, granulation: f32, mobility: f32) -> Self {
+        Self { name: name.to_owned(), rgb, density, staining, granulation, mobility }
     }
 }
 
@@ -74,13 +86,14 @@ impl Palette {
         Self {
             pigments: [
                 // 半透明・中程度のステイニング・ほぼ非粒状
-                Pigment::new("ハンザイエロー", [252, 211, 0], 1.0, 0.5, 0.1),
-                // 微細粒子: 強ステイニング(剥がれない)・非粒状・軽い
-                Pigment::new("フタロブルー", [13, 27, 68], 0.8, 0.9, 0.05),
+                Pigment::new("ハンザイエロー", [252, 211, 0], 1.0, 0.5, 0.1, 1.0),
+                // 微細粒子: 強ステイニング(剥がれない)・非粒状・軽い・よく伸びる
+                Pigment::new("フタロブルー", [13, 27, 68], 0.8, 0.9, 0.05, 1.2),
                 // 透明・強ステイニング・非粒状
-                Pigment::new("キナクリドンマゼンタ", [128, 2, 46], 0.9, 0.85, 0.05),
+                Pigment::new("キナクリドンマゼンタ", [128, 2, 46], 0.9, 0.85, 0.05, 1.1),
                 // アース系: 重く早く沈着・低ステイニング(よく剥がれる)・強粒状(紙目に溜まる)
-                Pigment::new("バーントシェンナ", [123, 72, 0], 1.3, 0.2, 0.8),
+                // ・粗い粒でその場に残る(フタロと混ぜると分離色になる対比の要)
+                Pigment::new("バーントシェンナ", [123, 72, 0], 1.3, 0.2, 0.8, 0.3),
             ],
         }
     }
@@ -97,14 +110,14 @@ impl Palette {
         out
     }
 
-    /// 顔料個性(ρ/ω/γ)を compute uniform 用に固める(M3)。
+    /// 顔料個性(ρ/ω/γ/μ)を compute uniform 用に固める(M3、μ は分離色で追加)。
     /// レイアウト(common.wgsl の binding 9 = `array<vec4f, 4>` と対応):
-    ///   [i] = 顔料 i の (密度 ρ, ステイニング ω, 粒状感 γ, 予備 0)
+    ///   [i] = 顔料 i の (密度 ρ, ステイニング ω, 粒状感 γ, 粒の細かさ μ)
     /// M5 でランタイム化。編集時に再計算して write_buffer する(全レイヤー共通=湿シミュ専用)
     pub fn physics_uniform(&self) -> [[f32; 4]; PIGMENT_COUNT] {
         let mut out = [[0.0; 4]; PIGMENT_COUNT];
         for (i, p) in self.pigments.iter().enumerate() {
-            out[i] = [p.density, p.staining, p.granulation, 0.0];
+            out[i] = [p.density, p.staining, p.granulation, p.mobility];
         }
         out
     }
@@ -141,8 +154,8 @@ mod tests {
         assert!(g > r && g > b, "黄+青の混色が緑になっていません: rgb = {mix:?}");
     }
 
-    /// 顔料個性(M3)の値が妥当な範囲か。ステイニング/粒状感は [0,1]、密度は正。
-    /// physics_uniform のレイアウト(vec4 の xyz に ρ/ω/γ)も合わせて検証する
+    /// 顔料個性(M3)の値が妥当な範囲か。ステイニング/粒状感は [0,1]、密度・粒の細かさは正。
+    /// physics_uniform のレイアウト(vec4 の xyzw に ρ/ω/γ/μ)も合わせて検証する
     #[test]
     fn physics_in_range() {
         let pal = Palette::default_palette();
@@ -151,13 +164,28 @@ mod tests {
             assert!(p.density > 0.0, "{} の密度が非正です", p.name);
             assert!((0.0..=1.0).contains(&p.staining), "{} の ω が範囲外です", p.name);
             assert!((0.0..=1.0).contains(&p.granulation), "{} の γ が範囲外です", p.name);
-            assert_eq!(phys[i], [p.density, p.staining, p.granulation, 0.0]);
+            assert!(p.mobility > 0.0, "{} の μ が非正です", p.name);
+            assert_eq!(phys[i], [p.density, p.staining, p.granulation, p.mobility]);
         }
         // ステイニングの対比が付いていること(リフトで残る/残らないの見た目差の前提)
         assert!(
             pal.pigments[1].staining > pal.pigments[3].staining,
             "フタロブルーはバーントシェンナよりステイニングが強いはず"
         );
+        // 粒の細かさの対比(分離色の前提): フタロは伸び、シェンナはその場に残る
+        assert!(
+            pal.pigments[1].mobility > pal.pigments[3].mobility,
+            "フタロブルーはバーントシェンナより粒が細かい(拡散が速い)はず"
+        );
+    }
+
+    /// 旧 JSON(mobility フィールドなし)が serde default 1.0 で読めること
+    /// (色ライブラリ・.kasane の layer_palettes の前進互換。SimParams と同じ扱い)
+    #[test]
+    fn pigment_json_without_mobility_defaults_to_one() {
+        let json = r#"{"name":"旧顔料","rgb":[1,2,3],"density":1.0,"staining":0.5,"granulation":0.1}"#;
+        let p: Pigment = serde_json::from_str(json).expect("旧形式の顔料 JSON が読めません");
+        assert_eq!(p.mobility, 1.0);
     }
 
     /// 顔料 latent ブロックのレイアウト検証: latent → rgb の復元が基本色と(量子化誤差内で)一致

@@ -16,6 +16,8 @@
 @group(0) @binding(5) var dst_dep: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(6) var<uniform> params: SimParams;
 @group(0) @binding(7) var<storage, read> splat_buf: SplatBuffer;
+// 顔料個性: [i] = (密度 ρ, ステイニング ω, 粒状感 γ, 粒の細かさ μ)。ここでは μ だけ読む
+@group(0) @binding(9) var<uniform> pigment: array<vec4f, 4>;
 // 清書ペンの線画(M4.5b): 隣接流束の透水率境界。ペン線を挟む2セル間は顔料が拡散しにくい
 @group(0) @binding(10) var pen_line_tex: texture_2d<f32>;
 // アクティブタイル(M6): タイル有効フラグ。非アクティブなタイルは素通しして計算を省く
@@ -116,8 +118,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             * (load_clamped(src_susp, ip + vec2i(0, 1)) - susp);
         wflux += cap_weight(cell.r, n_d.r) * perm * (n_d.r - cell.r);
     }
-    // 陽解法の安定条件: 係数は 4 近傍合計で 1 を超えないよう 0.2 に制限
-    let k = min(params.pigment_diffuse * params.dt, 0.2);
+    // 粒の細かさ μ(分離色): 顔料ごとの拡散倍率。細かい顔料(μ>1)は水に乗って遠くまで
+    // 運ばれ、粗い粒(μ<1)はその場に残る。2顔料を混ぜて置いたとき μ の差で縁と中心に
+    // 色が分かれる=分離色の主役。μ は per-channel の定数なので隣接ペアの流束は対称のまま
+    // (質量保存は崩れない)。
+    // 陽解法の安定条件: 係数は 4 近傍合計で 1 を超えないよう、チャンネルごとに 0.2 に制限
+    let mob = vec4f(pigment[0].w, pigment[1].w, pigment[2].w, pigment[3].w);
+    let k = min(vec4f(params.pigment_diffuse * params.dt) * mob, vec4f(0.2));
     textureStore(dst_susp, ip, max(susp + k * flux, vec4f(0.0)));
     // 水の毛細管拡散: 対称な流束なので水の総量は保存される(速度・マスクは変えない)
     let kw = min(WATER_DIFFUSE * params.dt, 0.2);

@@ -244,7 +244,8 @@ pub struct GpuCanvas {
     /// 顔料+光学 latent(M1c/M5c)。display の binding 4。set_palette / bake_dry が書き替える。
     /// レイアウト = グローバル光学 6 vec4 + パレット PALETTE_SLOTS 個 × PIGMENT_LATENTS vec4
     latents_buffer: wgpu::Buffer,
-    /// 顔料個性 ρ/ω/γ(M3)。compute の binding 9。M5 で set_palette がランタイム書き替え
+    /// 顔料個性 ρ/ω/γ/μ(M3。μ=粒の細かさは分離色で追加)。compute の binding 9。
+    /// M5 で set_palette がランタイム書き替え
     physics_buffer: wgpu::Buffer,
     /// パン/ズーム(M6)。display の binding 11。フレームごとに CanvasCallback が書き替える
     view_buffer: wgpu::Buffer,
