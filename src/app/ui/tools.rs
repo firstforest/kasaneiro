@@ -112,7 +112,7 @@ impl PaintApp {
                 (
                     egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]),
                     format!(
-                        "{}で塗る\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2} / 粒の細かさ {:.2}\n右クリック: ライブラリ保存・2色目指定",
+                        "{}で塗る\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2} / 粒の細かさ {:.2}\nダブルクリック: 色をつくる / 右クリック: ライブラリ保存・2色目指定",
                         p.name, p.density, p.staining, p.granulation, p.mobility
                     ),
                 )
@@ -138,6 +138,11 @@ impl PaintApp {
                     self.params.brush_channel = i as u32;
                     // レイヤーを離れて戻ったときの復元用(select_layer が読む)
                     self.last_wet_tool = WetTool::Paint;
+                }
+                // ダブルクリック: この色の「色をつくる」をモーダルで開く(1回目のクリックで
+                // 上の clicked() が走りスロット選択済みなので、開くだけでその色が編集対象になる)
+                if resp.double_clicked() {
+                    self.palette_ui.color_modal = true;
                 }
                 // 右クリック: ライブラリ保存と分離色の2色目指定(色の管理の近道)
                 resp.context_menu(|ui| {

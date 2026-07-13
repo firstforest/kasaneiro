@@ -7,7 +7,8 @@
 //! - [`tools`] — 乾燥ボタン(常時表示)と、アクティブレイヤーごとのツールパネル
 //!   (`dry_controls` / `active_tools_panel` が水彩・鉛筆・ペン・ハイライト・乾燥を出し分け)
 //! - [`palette`] — 顔料パレット編集(`palette_panel`。M5。水彩レイヤー選択時のみ表示。
-//!   色をつくる・色ライブラリ・パレット保存/読込を常時表示セクションとして持つ)
+//!   色ライブラリ・パレット保存/読込を常時表示セクションとして持ち、「色をつくる」は
+//!   色スウォッチのダブルクリックで開くモーダル `color_edit_modal`)
 //! - [`layers`] — 右パネルのレイヤースタック(選択=ツール系統の切替・可視性・並べ替え・合成方式。
 //!   `layer_stack_panel`)
 //! - [`tuning`] — 乾燥・筆圧・味付けスライダー・診断・シミュ制御(`tuning_panel`)
@@ -118,6 +119,9 @@ pub struct PaletteUi {
     pub pigment_cache: Vec<(String, pigment::Pigment)>,
     /// M5g: パレット一覧のキャッシュ(4色見本チップ用。更新タイミングは pigment_cache と同じ)
     pub palette_cache: Vec<(String, pigment::Palette)>,
+    /// 「色をつくる」モーダルの開閉。ツールバーの色スウォッチをダブルクリックで開く
+    /// (編集対象は選択中スロット=1回目のクリックで切り替わったスロット)
+    pub color_modal: bool,
 }
 
 /// ストローク記録・再生(H5)の UI 状態をまとめる(R4 で PaintApp の 5 フィールドを集約)。

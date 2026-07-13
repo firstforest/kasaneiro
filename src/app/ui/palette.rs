@@ -6,9 +6,11 @@
 //! ρ/ω/γ は湿シミュ専用なので即座に効き、色(latent)は現行(live)パレット枠だけ更新される。
 //! 乾燥済みレイヤーは「乾かす」時に色を記録済みなので、後から顔料を編集しても変色しない(M5c)。
 //!
-//! 色作り・パレット編集はメイン機能なので**常時表示**(モーダル・折りたたみに隠さない):
-//! 「色をつくる」(選択中スロットの編集)+「色ライブラリ」(1色のスウォッチグリッド)+
+//! パレット編集はメイン機能なので**常時表示**: 「色ライブラリ」(1色のスウォッチグリッド)+
 //! 「パレット」(4色一式の保存/読込)を左パネルに並べる。旧 FileModal::Palette / Pigment は廃止。
+//! 「色をつくる」(選択中スロットの編集)だけは**ツールバーの色スウォッチのダブルクリックで開く
+//! モーダル**([`PaintApp::color_edit_modal`])。編集対象の色ボタンを直接叩く動線のほうが
+//! 自然なため、常時表示セクションは廃止した(ユーザー判断 2026-07-13)。
 
 use crate::app::PaintApp;
 use crate::palette_store;
@@ -52,11 +54,9 @@ fn hue_order(cache: &[(String, pigment::Pigment)]) -> Vec<usize> {
 }
 
 impl PaintApp {
-    /// パレット(M5): 色をつくる・色ライブラリ・パレットの3セクションを常時表示する。
-    /// 編集対象はブラシの顔料セレクタ(brush_panel の色スウォッチ)と連動する(M5g)
+    /// パレット(M5): 色ライブラリ・パレットの2セクションを常時表示する。
+    /// 色の編集(色をつくる)はツールバーの色スウォッチのダブルクリックで開くモーダル
     pub(in crate::app) fn palette_panel(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        self.color_edit_section(ui);
         ui.separator();
         self.pigment_library_section(ui);
         ui.separator();
@@ -84,18 +84,32 @@ impl PaintApp {
         }
     }
 
-    /// 色をつくる: 選択中スロットの色・性質(ρ/ω/γ)編集と1クリック保存。
-    /// ラベルは平易な日本語を主に、数式記号 ρ/ω/γ はホバーへ温存(F2)。
-    /// M5g: 編集対象を選択中スロット1つに絞る=ツールバーの色スウォッチが編集対象の切替を兼ねる
-    fn color_edit_section(&mut self, ui: &mut egui::Ui) {
-        let ch = self.params.brush_channel.min(3) as usize;
-        ui.strong("色をつくる");
-        ui.label(
-            egui::RichText::new("編集する色は上の色ボタン(スウォッチ)で選びます")
-                .weak()
-                .small(),
-        );
+    /// 「色をつくる」モーダル: ツールバーの色スウォッチをダブルクリックで開く。
+    /// 選択中スロットの色・性質(ρ/ω/γ)編集と1クリック保存(M5g: 編集対象は
+    /// brush_channel 連動=どのスウォッチをダブルクリックしたかで決まる)。
+    /// 背景クリック/Esc で閉じる(編集は即時反映済みなので閉じても失われない)
+    pub(in crate::app) fn color_edit_modal(&mut self, ctx: &egui::Context) {
+        if !self.palette_ui.color_modal {
+            return;
+        }
+        let response = egui::Modal::new(egui::Id::new("color_edit_modal")).show(ctx, |ui| {
+            ui.set_max_width(320.0);
+            ui.heading("色をつくる");
+            self.color_edit_body(ui);
+            ui.separator();
+            if ui.button("閉じる").clicked() {
+                self.palette_ui.color_modal = false;
+            }
+        });
+        if response.should_close() {
+            self.palette_ui.color_modal = false;
+        }
+    }
 
+    /// 「色をつくる」の本体(色・名前・性質スライダー・1クリック保存)。
+    /// ラベルは平易な日本語を主に、数式記号 ρ/ω/γ はホバーへ温存(F2)
+    fn color_edit_body(&mut self, ui: &mut egui::Ui) {
+        let ch = self.params.brush_channel.min(3) as usize;
         let mut changed = false;
         let p = &mut self.palette.pigments[ch];
         ui.horizontal(|ui| {

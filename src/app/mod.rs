@@ -307,6 +307,7 @@ impl PaintApp {
                 // (以降は保存時と ↻ ボタンで更新)
                 pigment_cache: pigment_store::load_all(),
                 palette_cache: palette_store::load_all(),
+                color_modal: false,
             },
             view_zoom: 1.0,
             view_center: egui::vec2(0.5, 0.5),
@@ -1168,6 +1169,8 @@ impl eframe::App for PaintApp {
         // &mut self を捕捉する closure と ui.ctx() の同時借用を回避する(Modal は foreground Area)
         let ctx = ui.ctx().clone();
         self.file_modals(&ctx);
+        // 「色をつくる」モーダル(色スウォッチのダブルクリックで開く。palette.rs)
+        self.color_edit_modal(&ctx);
 
         // 常時シミュレーションが走るため連続再描画
         ui.ctx().request_repaint();

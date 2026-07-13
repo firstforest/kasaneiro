@@ -46,7 +46,7 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
 │  │     ├─ mod.rs        UI 状態(PresetUi / WorkUi / PaletteUi / ReplayUi)+ 共通部品 NamedStore
 │  │     ├─ tools.rs      乾燥ボタン+開発モードトグルと、アクティブレイヤーごとのツールパネル(dry_controls /
 │  │     │                 active_tools_panel が brush/pencil/pen/highlight/dried を Frame::group で囲んで出し分け)
-│  │     ├─ palette.rs    顔料パレット編集(palette_panel。M5。スポイトは常時+選択中スロットの色・ρ/ω/γ 編集を「色をつくる」に折りたたみ(M5g で1スロット化。編集対象は brush_channel 連動)+色ライブラリ/パレットモーダルへの動線。水彩レイヤー選択時のみ表示)
+│  │     ├─ palette.rs    顔料パレット編集(palette_panel=色ライブラリ+パレット(4色一式)の常時表示。M5。水彩レイヤー選択時のみ表示。「色をつくる」(選択中スロットの色・ρ/ω/γ/μ 編集。M5g で1スロット化=編集対象は brush_channel 連動)はツールバー色スウォッチのダブルクリックで開くモーダル color_edit_modal)
 │  │     ├─ layers.rs     右パネルのレイヤースタック(layer_stack_panel。選択=ツール系統切替・可視性・並べ替え・合成方式)
 │  │     ├─ tuning.rs     制作者向けの調整・診断・シミュ制御(tuning_dev_panel。開発モード時のみ表示)
 │  │     ├─ panels.rs     表示/記録再生/シェーダー状態+status_bar(view/replay/shader_status/status_bar)
