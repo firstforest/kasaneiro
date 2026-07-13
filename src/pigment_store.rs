@@ -35,6 +35,13 @@ pub fn save(name: &str, pigment: &Pigment) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// 保存済みの色を削除する(ファイルごと消す)。色ライブラリの右クリックメニューから使う。
+/// assets/pigments/ は git 管理なので、誤削除してもコミット済みなら復元できる
+pub fn delete(name: &str) -> Result<(), String> {
+    let path = pigments_dir().join(format!("{name}.json"));
+    std::fs::remove_file(&path).map_err(|e| format!("{} を削除できません: {e}", path.display()))
+}
+
 pub fn load(name: &str) -> Result<Pigment, String> {
     let path = pigments_dir().join(format!("{name}.json"));
     let json = std::fs::read_to_string(&path)
@@ -55,6 +62,10 @@ pub fn load_all() -> Vec<(String, Pigment)> {
 mod tests {
     use super::*;
 
+    /// assets/pigments/ を実際に触るテストの直列化(一時色の save/delete と同梱一覧の
+    /// 検査が並列に走ると、一覧と読込の間で件数が食い違う)
+    static DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// JSON 往復で顔料が保たれること(serde レイアウトの回帰チェック)。
     /// save は name を保存名で上書きするので、その正規化も含めて検査する
     #[test]
@@ -65,10 +76,24 @@ mod tests {
         assert_eq!(p, back);
     }
 
+    /// save → delete の往復(一覧に現れて、消えること)。テスト名は同梱色と衝突しない一時名
+    #[test]
+    fn save_then_delete() {
+        let _guard = DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let name = "テスト用一時色(自動テスト)";
+        let p = pigment::Palette::default_palette().pigments[0].clone();
+        save(name, &p).unwrap();
+        assert!(list().contains(&name.to_owned()));
+        delete(name).unwrap();
+        assert!(!list().contains(&name.to_owned()));
+        assert!(delete(name).is_err(), "二重削除はエラーを返すはず");
+    }
+
     /// リポジトリ同梱の色が全部読めること + 保存名=顔料名の1本化が守られていること
     /// (壊れた JSON や名前のズレたファイルのコミットを防ぐ)
     #[test]
     fn bundled_pigments_load() {
+        let _guard = DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let all = load_all();
         assert!(!all.is_empty(), "同梱の色が1つもありません(assets/pigments/)");
         assert_eq!(all.len(), list().len(), "読めない同梱 JSON があります");

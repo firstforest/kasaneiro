@@ -112,7 +112,7 @@ impl PaintApp {
                 (
                     egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]),
                     format!(
-                        "{}で塗る\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2} / 粒の細かさ {:.2}",
+                        "{}で塗る\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2} / 粒の細かさ {:.2}\n右クリック: ライブラリ保存・2色目指定",
                         p.name, p.density, p.staining, p.granulation, p.mobility
                     ),
                 )
@@ -132,12 +132,51 @@ impl PaintApp {
                 if selected {
                     button = button.stroke((3.0, ui.visuals().selection.stroke.color));
                 }
-                if ui.add(button).on_hover_text(hover.clone()).clicked() {
+                let resp = ui.add(button).on_hover_text(hover.clone());
+                if resp.clicked() {
                     self.tool = Tool::Wet(WetTool::Paint);
                     self.params.brush_channel = i as u32;
                     // レイヤーを離れて戻ったときの復元用(select_layer が読む)
                     self.last_wet_tool = WetTool::Paint;
                 }
+                // 右クリック: ライブラリ保存と分離色の2色目指定(色の管理の近道)
+                resp.context_menu(|ui| {
+                    let pname = self.palette.pigments[i].name.trim().to_owned();
+                    ui.label(egui::RichText::new(self.palette.pigments[i].name.as_str()).strong());
+                    if ui
+                        .add_enabled(
+                            !pname.is_empty(),
+                            egui::Button::new("この色をとっておく(ライブラリへ)"),
+                        )
+                        .on_hover_text("名前・色・性質を色ライブラリへ保存します(同名は上書き)")
+                        .clicked()
+                    {
+                        let p = self.palette.pigments[i].clone();
+                        self.status_msg = Some(match crate::pigment_store::save(&pname, &p) {
+                            Ok(path) => {
+                                self.palette_ui.pigment_cache = crate::pigment_store::load_all();
+                                format!("保存: {}", path.display())
+                            }
+                            Err(e) => e,
+                        });
+                    }
+                    if ui
+                        .button("2色目にする(分離色)")
+                        .on_hover_text(
+                            "塗るツールの2色目をこの色にします。比率が 0 なら 0.3 に上げて分離色を有効化",
+                        )
+                        .clicked()
+                    {
+                        self.params.brush_channel2 = i as u32;
+                        if self.params.brush_mix == 0.0 {
+                            self.params.brush_mix = 0.3;
+                        }
+                        self.status_msg = Some(format!(
+                            "2色目を{}にしました(比率は「2色目を混ぜる」で調整)",
+                            self.palette.pigments[i].name
+                        ));
+                    }
+                });
             }
             // 「塗る4色」と「削り以降の4ツール」の意味グループを小さいギャップで区切る
             // (horizontal_wrapped の折返し挙動を壊さないよう要素の追加はしない)

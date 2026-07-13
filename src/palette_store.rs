@@ -31,6 +31,13 @@ pub fn save(name: &str, palette: &Palette) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// 保存済みパレットを削除する(ファイルごと消す)。パレット一覧の「…」メニューから使う。
+/// assets/palettes/ は git 管理なので、誤削除してもコミット済みなら復元できる
+pub fn delete(name: &str) -> Result<(), String> {
+    let path = palettes_dir().join(format!("{name}.json"));
+    std::fs::remove_file(&path).map_err(|e| format!("{} を削除できません: {e}", path.display()))
+}
+
 pub fn load(name: &str) -> Result<Palette, String> {
     let path = palettes_dir().join(format!("{name}.json"));
     let json = std::fs::read_to_string(&path)
@@ -51,6 +58,10 @@ pub fn load_all() -> Vec<(String, Palette)> {
 mod tests {
     use super::*;
 
+    /// assets/palettes/ を実際に触るテストの直列化(一時パレットの save/delete と同梱一覧の
+    /// 検査が並列に走ると、一覧と読込の間で件数が食い違う)
+    static DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// JSON 往復でパレットが保たれること(serde レイアウトの回帰チェック)
     #[test]
     fn roundtrip() {
@@ -60,9 +71,23 @@ mod tests {
         assert_eq!(pal, back);
     }
 
+    /// save → delete の往復(一覧に現れて、消えること)。テスト名は同梱パレットと衝突しない一時名
+    #[test]
+    fn save_then_delete() {
+        let _guard = DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let name = "テスト用一時パレット(自動テスト)";
+        let pal = Palette::default_palette();
+        save(name, &pal).unwrap();
+        assert!(list().contains(&name.to_owned()));
+        delete(name).unwrap();
+        assert!(!list().contains(&name.to_owned()));
+        assert!(delete(name).is_err(), "二重削除はエラーを返すはず");
+    }
+
     /// リポジトリ同梱のパレットが全部読めること(壊れた JSON のコミットを防ぐ)
     #[test]
     fn bundled_palettes_load() {
+        let _guard = DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         for name in list() {
             load(&name).unwrap_or_else(|e| panic!("パレット {name}: {e}"));
         }

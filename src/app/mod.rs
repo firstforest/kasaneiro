@@ -237,6 +237,20 @@ impl PaintApp {
             .and_then(|s| s.get_string("dev_mode"))
             .map(|v| v == "true")
             .unwrap_or(false);
+        // 色の管理: 前回終了時のパレット(4色+性質)を復元する。スライダー調整と同じく
+        // 「作った色がセッション限りで消える」のを防ぐ(JSON が壊れていれば既定へフォールバック)。
+        // 一緒に、そのパレットの元になった保存名も復元する(「変更あり」表示の基準)
+        let palette = cc
+            .storage
+            .and_then(|s| s.get_string("palette"))
+            .and_then(|json| serde_json::from_str::<pigment::Palette>(&json).ok())
+            .unwrap_or_else(pigment::Palette::default_palette);
+        let palette_name = cc
+            .storage
+            .and_then(|s| s.get_string("palette_name"))
+            .unwrap_or_default();
+        // GpuCanvas::new は既定パレットで初期化するので、復元したパレットを書き込んでから挿す
+        canvas.set_palette(&render_state.queue, &palette);
         render_state
             .renderer
             .write()
@@ -279,10 +293,15 @@ impl PaintApp {
             file_modal: None,
             line_history: LineHistory::default(),
             undo_stack: Vec::new(),
-            // GpuCanvas::new が既定パレットを両バッファへ書き込み済み(同じ値で開始)
-            palette: pigment::Palette::default_palette(),
+            // 前回終了時のパレットで開始(上で復元済み。GPU 側も set_palette で同期済み)
+            palette,
             palette_ui: PaletteUi {
-                store: NamedStore::new(palette_store::list()),
+                store: {
+                    // 名前欄=「いま使っているパレットの保存名」。前回の名前で始める
+                    let mut store = NamedStore::new(palette_store::list());
+                    store.name = palette_name;
+                    store
+                },
                 eyedropper: false,
                 // 色ライブラリ・パレット一覧は左パネルに常時表示するので起動時に読む
                 // (以降は保存時と ↻ ボタンで更新)
@@ -1054,6 +1073,9 @@ impl PaintApp {
         // app 側の状態を復元。読込後は履歴を破棄する(退避テクスチャ・線画履歴は旧キャンバスのもの)
         self.params = file.params;
         self.palette = file.palette;
+        // 作品のパレットは保存済みパレット(assets/palettes)とは別物なので名前追跡をリセット
+        // (残すと「変更あり」表示が旧パレット名基準で誤誘導する)
+        self.palette_ui.store.name.clear();
         self.line_history.clear();
         self.undo_stack.clear();
         self.stroke.end();
@@ -1080,9 +1102,14 @@ impl PaintApp {
 }
 
 impl eframe::App for PaintApp {
-    /// F11: 開発モードのトグル状態を永続化(次回起動時に new() が復元)
+    /// F11: 開発モードのトグル状態と、現在のパレット(+保存名)を永続化(次回起動時に new() が復元)。
+    /// 作った色が再起動で既定4色に戻ってしまうのを防ぐ(色の管理はメイン機能)
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string("dev_mode", self.dev_mode.to_string());
+        if let Ok(json) = serde_json::to_string(&self.palette) {
+            storage.set_string("palette", json);
+        }
+        storage.set_string("palette_name", self.palette_ui.store.name.clone());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
