@@ -5,7 +5,8 @@
     26,
     30
   ],
-  "density": 1.2,
-  "staining": 0.55,
-  "granulation": 0.1
+  "density": 0.9,
+  "staining": 0.65,
+  "granulation": 0.05,
+  "mobility": 1.0
 }

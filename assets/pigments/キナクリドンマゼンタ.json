@@ -1,12 +1,12 @@
 {
   "name": "キナクリドンマゼンタ",
   "rgb": [
-    198,
-    20,
-    96
+    128,
+    2,
+    46
   ],
-  "density": 0.85,
-  "staining": 0.88,
+  "density": 0.9,
+  "staining": 0.85,
   "granulation": 0.05,
   "mobility": 1.1
 }

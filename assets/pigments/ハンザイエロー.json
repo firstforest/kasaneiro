@@ -2,10 +2,10 @@
   "name": "ハンザイエロー",
   "rgb": [
     252,
-    205,
+    211,
     0
   ],
-  "density": 0.9,
+  "density": 1.0,
   "staining": 0.5,
   "granulation": 0.1,
   "mobility": 1.0
