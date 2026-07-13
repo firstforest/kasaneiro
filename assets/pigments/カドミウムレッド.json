@@ -1,0 +1,12 @@
+{
+  "name": "カドミウムレッド",
+  "rgb": [
+    255,
+    39,
+    2
+  ],
+  "density": 1.2,
+  "staining": 0.4,
+  "granulation": 0.25,
+  "mobility": 0.6
+}

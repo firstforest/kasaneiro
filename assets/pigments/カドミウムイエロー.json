@@ -1,0 +1,12 @@
+{
+  "name": "カドミウムイエロー",
+  "rgb": [
+    254,
+    236,
+    0
+  ],
+  "density": 1.1,
+  "staining": 0.35,
+  "granulation": 0.2,
+  "mobility": 0.7
+}

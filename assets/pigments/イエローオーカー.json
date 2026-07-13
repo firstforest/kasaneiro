@@ -1,0 +1,12 @@
+{
+  "name": "イエローオーカー",
+  "rgb": [
+    210,
+    150,
+    45
+  ],
+  "density": 1.2,
+  "staining": 0.2,
+  "granulation": 0.6,
+  "mobility": 0.4
+}

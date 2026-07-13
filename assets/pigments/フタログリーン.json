@@ -1,0 +1,12 @@
+{
+  "name": "フタログリーン",
+  "rgb": [
+    0,
+    60,
+    50
+  ],
+  "density": 0.8,
+  "staining": 0.9,
+  "granulation": 0.05,
+  "mobility": 1.2
+}

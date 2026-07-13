@@ -1,0 +1,12 @@
+{
+  "name": "ペインズグレー",
+  "rgb": [
+    45,
+    55,
+    70
+  ],
+  "density": 1.0,
+  "staining": 0.5,
+  "granulation": 0.4,
+  "mobility": 0.8
+}
