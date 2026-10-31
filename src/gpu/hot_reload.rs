@@ -119,7 +119,8 @@ impl ShaderWatcher {
         }
     }
 
-    /// 前回呼び出し以降に .wgsl への変更イベントがあったか(イベントは読み捨てる)
+    /// 前回呼び出し以降に .wgsl への作成/変更イベントがあったか(イベントは読み捨てる)。
+    /// 再ビルド自体が .wgsl を読むので、アクセス系イベントは拾わない(拾うと再ビルドが連鎖する)
     pub fn take_dirty(&mut self) -> bool {
         let Some(rx) = &self.rx else {
             return false;
@@ -127,6 +128,10 @@ impl ShaderWatcher {
         let mut dirty = false;
         while let Ok(event) = rx.try_recv() {
             if let Ok(event) = event
+                && matches!(
+                    event.kind,
+                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Any
+                )
                 && event
                     .paths
                     .iter()

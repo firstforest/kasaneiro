@@ -671,6 +671,13 @@ impl GpuCanvas {
         // 補正のため連結プレフィックス(プレリュード + common + "\n")の行数を数えておく(R3)
         let prefix_lines = common.matches('\n').count() + 1;
         let load = |name: &str| -> Result<String, String> { Ok(format!("{common}\n{}", read(name)?)) };
+        // 読込失敗で早期 return してもエラースコープを pop し損ねないよう、
+        // スコープを push する前に全シェーダーを読み切る
+        let mut compute_sources = Vec::with_capacity(COMPUTE_SHADERS.len());
+        for &(name, layout) in COMPUTE_SHADERS {
+            compute_sources.push((name, layout, load(name)?));
+        }
+        let display_source = load("display.wgsl")?;
 
         // エラースコープで検証エラーを捕捉し、クラッシュさせない
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -684,8 +691,8 @@ impl GpuCanvas {
 
         // compute パイプラインは COMPUTE_SHADERS の表を回して作る(シェーダー追加 = 表に1行。R3)
         let mut compute = HashMap::new();
-        for &(name, layout) in COMPUTE_SHADERS {
-            let module = make_module(name, load(name)?);
+        for (name, layout, source) in compute_sources {
+            let module = make_module(name, source);
             let pipeline_layout = match layout {
                 ComputeLayout::Common => &self.compute_layout,
                 // bake(M2)だけ専用レイアウト(binding 9 = 乾燥レイヤースライス)
@@ -707,7 +714,7 @@ impl GpuCanvas {
             compute.insert(name, pipeline);
         }
 
-        let display_module = make_module("display.wgsl", load("display.wgsl")?);
+        let display_module = make_module("display.wgsl", display_source);
         // 同じ display シェーダーを、画面用とスナップショット用(H6)の2フォーマットで作る
         let make_display = |label: &str, format: wgpu::TextureFormat| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
