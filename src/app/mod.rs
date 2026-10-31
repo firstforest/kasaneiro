@@ -489,7 +489,7 @@ impl PaintApp {
         {
             let mut renderer = self.render_state.renderer.write();
             if let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() {
-                canvas.clear(&self.render_state.queue);
+                canvas.clear(&self.render_state.device, &self.render_state.queue);
             }
         }
         // 線画テクスチャは canvas.clear() がゼロにする。履歴も破棄する(M4.5d)
@@ -567,7 +567,7 @@ impl PaintApp {
             .map(|s| (s.params, stroke_splats(s)))
             .collect();
         self.run_canvas_action(move |c, d, q| {
-            c.clear_line(q, target);
+            c.clear_line(d, q, target);
             for (params, splats) in &strokes {
                 c.rasterize_line(d, q, target, params, splats)?;
             }

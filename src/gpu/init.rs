@@ -737,7 +737,7 @@ impl GpuCanvas {
             immediate_size: 0,
         });
 
-        let mut canvas = Self {
+        let canvas = Self {
             shader_dir,
             target_format,
             size,
@@ -776,8 +776,11 @@ impl GpuCanvas {
             snapshot_texture,
             snapshot_view,
             snapshot_buffer,
+            clear_texture: device.features().contains(wgpu::Features::CLEAR_TEXTURE),
         };
-        canvas.clear(queue);
+        // テクスチャ・バッファは wgpu が作成時にゼロ初期化する(= 乾いた白い紙・線なし)。
+        // レイヤー uniform だけ空の構成で明示的に書いておく
+        canvas.sync_layers(queue);
         canvas
     }
 }

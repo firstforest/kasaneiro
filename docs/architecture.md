@@ -89,7 +89,7 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
 
 ## 3. GPU リソース
 
-キャンバス = シミュレーション解像度。**M8 でサイズ可変化(R9 の値化)**: 選択肢は `CANVAS_SIZES = [512, 1024, 2048]`(正方形のみ)、既定は `DEFAULT_CANVAS_SIZE = 512`(試行錯誤は軽いサイズで回す)。実行時の値は `GpuCanvas.size` が正典で、全テクスチャ・dispatch・読み戻しの寸法がここから決まる。**サイズ変更 = GpuCanvas の作り直し**(`PaintApp::recreate_canvas`。テクスチャ・タイルバッファ・bind group が全てサイズ依存のため部分再構築より単純で安全。旧インスタンスは callback_resources の差し替えで drop)。UI は「制御 (H6)」のサイズ選択+「新規キャンバス」。64 の倍数に限定しているので読み戻し(snapshot/persist)の行バイト数は常に 256B 整列=パディング不要。用途は「広い紙」(テクセル密度据え置き)なので `diffuse_iters` 等のテクセル単位パラメータは再調整不要(plan §3 M8)。VRAM は 2048² で計 ~1.2GB(乾燥レイヤー8枚 512MB が支配的。窮屈なら `MAX_LAYERS` 削減)。
+キャンバス = シミュレーション解像度。**M8 でサイズ可変化(R9 の値化)**: 選択肢は `CANVAS_SIZES = [512, 1024, 2048]`(正方形のみ)、既定は `DEFAULT_CANVAS_SIZE = 512`(試行錯誤は軽いサイズで回す)。実行時の値は `GpuCanvas.size` が正典で、全テクスチャ・dispatch・読み戻しの寸法がここから決まる。**サイズ変更 = GpuCanvas の作り直し**(`PaintApp::recreate_canvas`。テクスチャ・タイルバッファ・bind group が全てサイズ依存のため部分再構築より単純で安全。旧インスタンスは callback_resources の差し替えで drop)。UI は「制御 (H6)」のサイズ選択+「新規キャンバス」。64 の倍数に限定しているので読み戻し(snapshot/persist)の行バイト数は常に 256B 整列=パディング不要。用途は「広い紙」(テクセル密度据え置き)なので `diffuse_iters` 等のテクセル単位パラメータは再調整不要(plan §3 M8)。VRAM は 2048² で計 ~1.2GB(乾燥レイヤー8枚 512MB が支配的。窮屈なら `MAX_LAYERS` 削減)。テクスチャ・バッファは作成時に wgpu がゼロ初期化する(`GpuCanvas::new` では明示クリアしない)。「全部消す」(`clear`)と線画 Undo(`clear_line`)のゼロ化は、`Features::CLEAR_TEXTURE`(main.rs がアダプタ対応時だけ要求)があれば `encoder.clear_texture`、なければゼロ埋めの `write_texture`。
 
 | テクスチャ | 形式 | 内容 |
 |---|---|---|

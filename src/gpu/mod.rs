@@ -294,6 +294,8 @@ pub struct GpuCanvas {
     snapshot_texture: wgpu::Texture,
     snapshot_view: wgpu::TextureView,
     snapshot_buffer: wgpu::Buffer,
+    /// デバイスで `Features::CLEAR_TEXTURE` が有効か(clear / clear_line の実装を選ぶ)
+    clear_texture: bool,
 }
 
 impl GpuCanvas {
@@ -304,57 +306,64 @@ impl GpuCanvas {
 
     /// キャンバスをリセット(水・速度・濡れマスク・顔料をゼロに = 乾いた白い紙)。
     /// 乾燥レイヤー(M2)も全て破棄する(スロットは焼き込み時に上書きされるため
-    /// テクスチャ自体はクリア不要。count=0 で表示から消える)
-    pub fn clear(&mut self, queue: &wgpu::Queue) {
-        let size = self.size;
-        // rgba32float 1 テクセル = 16 バイト。全ゼロ = 水なし・顔料なし・全面乾燥
-        let zeros = vec![0u8; (size * size * 16) as usize];
-        for texture in self.textures.iter().flatten() {
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &zeros,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(size * 16),
-                    rows_per_image: None,
-                },
-                wgpu::Extent3d {
-                    width: size,
-                    height: size,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-        // 線画(M4.5a): r32float = 4 バイト/テクセル。全ゼロ = 線なし
-        for texture in &self.line_textures {
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &zeros[..(size * size * 4) as usize],
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(size * 4),
-                    rows_per_image: None,
-                },
-                wgpu::Extent3d {
-                    width: size,
-                    height: size,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
+    /// テクスチャ自体はクリア不要。count=0 で表示から消える)。
+    /// 作成直後のテクスチャは wgpu がゼロ初期化するので、new() からは呼ばない
+    pub fn clear(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let textures: Vec<&wgpu::Texture> = self
+            .textures
+            .iter()
+            .flatten()
+            .chain(self.line_textures.iter())
+            .collect();
+        self.zero_textures(device, queue, &textures);
         self.layers.clear();
         self.layer_palettes.clear();
         self.sync_layers(queue);
+    }
+
+    /// 2D テクスチャ(1 スライス・1 mip)群をゼロにする。`CLEAR_TEXTURE` が使えるデバイス
+    /// (main.rs がアダプタ対応時に要求する)では GPU 上の clear_texture、使えなければ
+    /// ゼロ埋めのバイト列を write_texture する(sim は rgba32float=16B、線画は r32float=4B)
+    fn zero_textures(&self, device: &wgpu::Device, queue: &wgpu::Queue, textures: &[&wgpu::Texture]) {
+        if self.clear_texture {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("clear_textures"),
+            });
+            for texture in textures {
+                encoder.clear_texture(texture, &wgpu::ImageSubresourceRange::default());
+            }
+            queue.submit([encoder.finish()]);
+            return;
+        }
+        let size = self.size;
+        let max_texel = textures
+            .iter()
+            .filter_map(|t| t.format().block_copy_size(None))
+            .max()
+            .unwrap_or(0);
+        let zeros = vec![0u8; (size * size * max_texel) as usize];
+        for texture in textures {
+            let texel = texture.format().block_copy_size(None).unwrap_or(0);
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &zeros[..(size * size * texel) as usize],
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size * texel),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
     }
 
     /// 乾燥レイヤー slot の記録時パレット(M5h)。UI のパレット抽出が読む。
@@ -410,29 +419,9 @@ impl GpuCanvas {
         &self.raster_bind_groups[target.index()]
     }
 
-    /// 線画テクスチャ1枚をゼロに戻す(M4.5d の Undo で対象を再ラスタライズする前に呼ぶ)。
-    /// r32float = 4 バイト/テクセル
-    pub fn clear_line(&self, queue: &wgpu::Queue, target: LineTarget) {
-        let zeros = vec![0u8; (self.size * self.size * 4) as usize];
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.line_textures[target.index()],
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &zeros,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(self.size * 4),
-                rows_per_image: None,
-            },
-            wgpu::Extent3d {
-                width: self.size,
-                height: self.size,
-                depth_or_array_layers: 1,
-            },
-        );
+    /// 線画テクスチャ1枚をゼロに戻す(M4.5d の Undo で対象を再ラスタライズする前に呼ぶ)
+    pub fn clear_line(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: LineTarget) {
+        self.zero_textures(device, queue, &[&self.line_textures[target.index()]]);
     }
 
     /// 1ストロークを対象の線画テクスチャへ引き直す(M4.5d の Undo/Redo 再ラスタライズ)。
