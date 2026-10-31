@@ -3,7 +3,7 @@
 //! ([`headless`] = GPU シミュ単体、`egui_kittest` = UI 込みのアプリ全体)。
 //!
 //! CPU 純粋部(sim / brush / paper / replay モデル)は paint-core crate、
-//! 顔料・混色は pigment crate、Kubelka-Munk 参照実装は km crate にある(refactoring.md R1)。
+//! 顔料・混色は pigment crate、Kubelka-Munk 参照実装は km crate にある。
 
 pub mod app;
 pub mod assets;

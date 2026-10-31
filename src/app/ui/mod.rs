@@ -1,4 +1,4 @@
-//! app の UI(R4)。UI 状態の構造体と、各パネル描画の `impl PaintApp`(per-file 分割)。
+//! app の UI。UI 状態の構造体と、各パネル描画の `impl PaintApp`(per-file 分割)。
 //!
 //! [`super::PaintApp`] の肥大化していたフィールドを意味ごとの構造体にまとめる:
 //! プリセット([`PresetUi`])・ストローク記録再生([`ReplayUi`])。各セクションの描画は
@@ -31,7 +31,7 @@ use eframe::egui;
 use paint_core::replay::{Player, Recorder, Recording};
 use std::path::PathBuf;
 
-/// 名前入力+保存+一覧の共通状態(プリセット H3 / ストローク H5 で重複していたパターン。R4)。
+/// 名前入力+保存+一覧の共通状態(プリセット H3 / ストローク H5 で共通のパターン)。
 pub struct NamedStore {
     /// 保存名の入力欄
     pub name: String,
@@ -138,7 +138,7 @@ pub struct PaletteUi {
     pub color_modal: bool,
 }
 
-/// ストローク記録・再生(H5)の UI 状態をまとめる(R4 で PaintApp の 5 フィールドを集約)。
+/// ストローク記録・再生(H5)の UI 状態をまとめる。
 pub struct ReplayUi {
     pub store: NamedStore,
     /// 記録中の状態(Some の間はポインタ入力を記録)

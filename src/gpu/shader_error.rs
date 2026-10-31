@@ -1,4 +1,4 @@
-//! WGSL コンパイルエラーの行番号補正(R3 QoL)の純関数群。
+//! WGSL コンパイルエラーの行番号補正の純関数群。
 //!
 //! common.wgsl を連結してコンパイルしている都合で、エラーの行番号はプレフィックス
 //! (common + "\n")の行数分だけ後ろにずれる。エラー文字列中の行番号から `prefix_lines`
@@ -52,7 +52,7 @@ fn remap_error_line(line: &str, shift: &impl Fn(usize) -> usize) -> String {
 mod tests {
     use super::*;
 
-    /// common.wgsl 連結でずれた行番号が、位置指定・ガターの両方で補正されること(R3)
+    /// common.wgsl 連結でずれた行番号が、位置指定・ガターの両方で補正されること
     #[test]
     fn remaps_concatenated_error_lines() {
         let prefix = 30; // common.wgsl が 30 行を占めると仮定

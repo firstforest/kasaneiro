@@ -9,7 +9,7 @@
 //!
 //! egui-winit は Touch から通常のポインタ(カーソル移動+左ボタン)もエミュレート
 //! するため、ペン接地中は PenSource を優先し MouseSource を無視する(二重ストローク
-//! 防止)。将来の入力(wasm Pointer 等)は PointerSource の実装を足す(plan.md §4)。
+//! 防止)。将来の入力(wasm Pointer 等)は PointerSource の実装を足す(plan.md §3)。
 
 use eframe::egui;
 

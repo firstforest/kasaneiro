@@ -25,7 +25,7 @@
 //! - [`persist`] — `GpuCanvas::export_state` / `import_state`(作品保存の GPU 読み戻し/書き戻し。M7)
 //! - [`prelude`] — Rust と WGSL で共有する定数(MAX_LAYERS・latent 枠・タイル)と、それを
 //!   WGSL の const として各シェーダー先頭に連結するプレリュードの生成
-//! - [`shader_error`] — WGSL エラーの行番号補正(R3 QoL)
+//! - [`shader_error`] — WGSL エラーの行番号補正
 
 pub mod hot_reload;
 
@@ -64,7 +64,7 @@ const MAX_RELAX_ITERS: u32 = 64;
 const MAX_DIFFUSE_ITERS: u32 = 32;
 
 
-/// compute シェーダーのバインドグループレイアウト種別(R3)。
+/// compute シェーダーのバインドグループレイアウト種別。
 /// ほとんどは共通レイアウト、bake だけ専用(乾燥レイヤースライス binding 9)。
 #[derive(Clone, Copy)]
 enum ComputeLayout {
@@ -98,7 +98,7 @@ impl LineTarget {
     }
 }
 
-/// compute パイプラインの定義表(R3)。**シェーダー追加 = ここに1行**。
+/// compute パイプラインの定義表。**シェーダー追加 = ここに1行**。
 /// キーは WGSL ファイル名で、`Pipelines::compute()` の名前引きと prepare() の
 /// パス実行順(ハードコード)が同じ名前を参照する。ここが持つのは「どのファイルを
 /// どのレイアウトでビルドするか」だけで、実行順は心臓部なので prepare() 側に残す。
@@ -200,7 +200,7 @@ pub struct GpuCanvas {
     #[cfg_attr(feature = "embed-assets", allow(dead_code))]
     shader_dir: PathBuf,
     target_format: wgpu::TextureFormat,
-    /// キャンバス1辺(テクセル。M8 でサイズ可変化=R9 の値化)。全テクスチャ・dispatch・
+    /// キャンバス1辺(テクセル)。全テクスチャ・dispatch・
     /// 読み戻しの寸法がここから決まる。サイズ変更はキャンバスの作り直し(app::recreate_canvas)
     size: u32,
     /// キャンバス1辺あたりのタイル数(= size / TILE_SIZE。M6 アクティブタイル)。
@@ -636,7 +636,7 @@ impl GpuCanvas {
         // 各シェーダー = プレリュード + common.wgsl + 本体、の3段
         let common = format!("{}{}", shader_prelude(self.size), read("common.wgsl")?);
         // 連結プレフィックスの分、コンパイルエラーの行番号がずれる。
-        // 補正のため連結プレフィックス(プレリュード + common + "\n")の行数を数えておく(R3)
+        // 補正のため連結プレフィックス(プレリュード + common + "\n")の行数を数えておく
         let prefix_lines = common.matches('\n').count() + 1;
         let load = |name: &str| -> Result<String, String> { Ok(format!("{common}\n{}", read(name)?)) };
         // 読込失敗で早期 return してもエラースコープを pop し損ねないよう、
@@ -657,7 +657,7 @@ impl GpuCanvas {
             })
         };
 
-        // compute パイプラインは COMPUTE_SHADERS の表を回して作る(シェーダー追加 = 表に1行。R3)
+        // compute パイプラインは COMPUTE_SHADERS の表を回して作る(シェーダー追加 = 表に1行)
         let mut compute = HashMap::new();
         for (name, layout, source) in compute_sources {
             let module = make_module(name, source);
@@ -715,7 +715,7 @@ impl GpuCanvas {
         let snapshot = make_display("snapshot_pipeline", self.snapshot_format);
 
         if let Some(error) = pollster::block_on(scope.pop()) {
-            // common.wgsl 連結でずれた行番号をシェーダー内の行に補正して表示(R3 QoL)
+            // common.wgsl 連結でずれた行番号をシェーダー内の行に補正して表示
             return Err(remap_shader_error_lines(&error.to_string(), prefix_lines));
         }
         self.pipelines = Some(Pipelines {

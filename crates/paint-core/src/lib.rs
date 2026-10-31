@@ -1,4 +1,4 @@
-//! paint-core: GPU に触らない CPU 純粋部(refactoring.md R1)。
+//! paint-core: GPU に触らない CPU 純粋部。
 //!
 //! シミュレーションパラメータ・splat(sim)、ストローク補間(brush)、
 //! 記録再生モデル(replay)、紙ノイズ生成(paper)を持つ。依存は bytemuck + serde のみで、

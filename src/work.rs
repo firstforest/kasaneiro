@@ -9,7 +9,7 @@
 //!
 //! GPU ⇄ f32 配列の変換は [`crate::gpu::WorkTextures`](GPU 依存)、ここはファイル形式だけを扱う。
 //! ファイル入出力を1モジュールに閉じ込めることで、将来 Web 版で保存先を差し替える余地を残す
-//! (plan §4 の「保存の trait 抽象を維持」)。
+//! (plan.md §3 の「保存の trait 抽象を維持」)。
 
 use crate::gpu::{MAX_LAYERS, WorkTextures};
 use paint_core::sim::CANVAS_SIZES;

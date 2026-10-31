@@ -46,9 +46,9 @@ workspace は `km`(Kubelka-Munk 純関数)・`pigment`(mixbox 混色)・`paint-c
 | [docs/requirements.md](docs/requirements.md) | 要件仕様 |
 | [docs/architecture.md](docs/architecture.md) | 実装構造(モジュール・テクスチャ・パス順序・シェーダー) |
 | [docs/parameters.md](docs/parameters.md) | 全パラメータと顔料個性 ρ/ω/γ/μ のリファレンス |
-| [docs/plan.md](docs/plan.md) | 実装計画(マイルストーン M0〜M8) |
+| [docs/plan.md](docs/plan.md) | 設計方針と先送り判断 |
 | [docs/note/00-overview.md](docs/note/00-overview.md) | 技術調査ノートの起点 |
 
 ## ライセンスについて
 
-混色に [mixbox](https://github.com/scrtwpns/mixbox)(CC BY-NC)を使用しているため、**非商用**。個人の道具として開発しており、配布・商用化は当面しない(商用化する場合は自作スペクトラル WGM へ差し替える計画 — docs/plan.md §4)。
+混色に [mixbox](https://github.com/scrtwpns/mixbox)(CC BY-NC)を使用しているため、**非商用**。個人の道具として開発しており、配布・商用化は当面しない(商用化する場合は自作スペクトラル WGM へ差し替える計画 — docs/plan.md §3)。

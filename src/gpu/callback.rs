@@ -3,7 +3,7 @@
 //! `CanvasCallback` は src/app/ui/canvas.rs で組み立てて egui の PaintCallback として渡され、
 //! prepare で compute パス(splat → シミュレーション本体)を積み、paint で表示する。
 //! compute を積む本体は [`GpuCanvas::encode_frame`] で、headless 駆動(e2e)も同じ経路を通る。
-//! パス実行順(encode_frame 内)はシミュレーションの心臓部で、ここがその正典(R3)。
+//! パス実行順(encode_frame 内)はシミュレーションの心臓部で、ここがその正典。
 
 use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, ViewUniform};
 use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
@@ -146,7 +146,7 @@ impl GpuCanvas {
                 run(&mut pass, pipelines.compute("splat.wgsl"));
             }
             // 1 ステップ = 速度更新 → 発散緩和 × N → FlowOutward → 移流
-            //   → 顔料拡散 × N → 吸着/脱着+蒸発(パス実行順はここがハードコードの正典。R3)
+            //   → 顔料拡散 × N → 吸着/脱着+蒸発(パス実行順はここがハードコードの正典)
             let relax_iters = frame.params.relax_iters.clamp(1, MAX_RELAX_ITERS);
             let diffuse_iters = frame.params.diffuse_iters.min(MAX_DIFFUSE_ITERS);
             for _ in 0..frame.sim_steps {

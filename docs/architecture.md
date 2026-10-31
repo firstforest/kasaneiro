@@ -15,11 +15,11 @@
 | ホットリロード | notify(ファイル監視) |
 | シリアライズ | serde + serde_json(プリセット・パレット・色・ストローク記録・作品メタ) |
 
-依存バージョンは **egui の対応バージョンを起点に wgpu / winit をロックステップで固定**する。Rust は mise 管理(`mise exec -- cargo run`)。**workspace 構成**(R1、下記 §2)。
+依存バージョンは **egui の対応バージョンを起点に wgpu / winit をロックステップで固定**する。Rust は mise 管理(`mise exec -- cargo run`)。**workspace 構成**(下記 §2)。
 
 ## 2. モジュール構成
 
-**workspace(R1)**: CPU 純粋部を 3 crate に切り出し、GPU / UI はルートの kasaneiro crate(lib + 起動だけの bin)に残す。`cargo tree` で mixbox 依存が `pigment` crate だけなことを機械的に確認でき、商用化時の差し替え範囲がこの crate に閉じる(plan.md §4)。km / paint-core は wgpu をリンクせず `cargo test -p <crate>` が数秒で回る。
+**workspace**: CPU 純粋部を 3 crate に切り出し、GPU / UI はルートの kasaneiro crate(lib + 起動だけの bin)に残す。`cargo tree` で mixbox 依存が `pigment` crate だけなことを機械的に確認でき、商用化時の差し替え範囲がこの crate に閉じる(plan.md §3)。km / paint-core は wgpu をリンクせず `cargo test -p <crate>` が数秒で回る。
 
 ```
 kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[profile.*] もここ)
@@ -34,17 +34,17 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │        ├─ brush.rs      ストローク → splat 列(位置補間、筆圧の線形補間)
 │        ├─ paper.rs      紙ハイトテクスチャの CPU 生成(値ノイズ4成分)
 │        ├─ replay.rs     ストローク記録・再生モデル(H5。Recorder / Player)
-│        └─ tool.rs       ツールの階層 enum(R2。Tool = Wet/Raster、gpu_id、ToolInfo)
+│        └─ tool.rs       ツールの階層 enum(Tool = Wet/Raster、gpu_id、ToolInfo)
 ├─ src/                   kasaneiro crate(egui / wgpu / naga はここだけ)
 │  ├─ main.rs             eframe 起動(lib の app::PaintApp を走らせるだけ)
 │  ├─ lib.rs              ライブラリ部のルート(e2e テストが同じモジュールをウィンドウなしで駆動する)
 │  ├─ headless.rs         ウィンドウなしの GPU 駆動(HeadlessCanvas: 記録再生 → encode_frame → snapshot。e2e 用)
 │  ├─ app/                egui UI
-│  │  ├─ mod.rs           PaintApp の状態・ライフサイクル・二層ディスパッチャ tool_panel・App::ui/save(R4)
+│  │  ├─ mod.rs           PaintApp の状態・ライフサイクル・二層ディスパッチャ tool_panel・App::ui/save
 │  │  │                   (App::ui のパネル順: Panel::top("menu_bar") → left("tools") → right("layers") → CentralPanel → file_modals)
 │  │  │                   (dev_mode:通常/開発モードの二層化。eframe storage に永続化。has_painted:初回ガイド)
 │  │  ├─ linehist.rs      線画の多段 Undo/Redo 履歴(M4.5d。RasterStroke / LineHistory / 再ラスタライズ)
-│  │  └─ ui/              UI 状態 + パネル描画を per-file 分割(R4。impl PaintApp を分散)
+│  │  └─ ui/              UI 状態 + パネル描画を per-file 分割(impl PaintApp を分散)
 │  │     ├─ mod.rs        UI 状態(PresetUi / WorkUi / PaletteUi / ReplayUi)+ 共通部品 NamedStore
 │  │     ├─ tools.rs      乾燥ボタン+開発モードトグルと、アクティブレイヤーごとのツールパネル(dry_controls /
 │  │     │                 active_tools_panel が brush/pencil/pen/highlight/dried を Frame::group で囲んで出し分け)
@@ -66,7 +66,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │  │  ├─ persist.rs       GpuCanvas::export_state / import_state(作品保存の GPU 読み戻し/書き戻し。M7)
 │  │  ├─ prelude.rs       Rust と WGSL で共有する定数(MAX_LAYERS / LATENT_TOTAL / TILE_SIZE 等)と
 │  │  │                   それを WGSL の const にする shader_prelude(tests/shader_compile.rs も #[path] で共用)
-│  │  ├─ shader_error.rs  WGSL コンパイルエラーの行番号補正の純関数+テスト(R3 QoL)
+│  │  ├─ shader_error.rs  WGSL コンパイルエラーの行番号補正の純関数+テスト
 │  │  └─ hot_reload.rs    WGSL ファイル監視と再ビルド(H1)
 │  ├─ input.rs            PointerSource trait(MouseSource / PenSource = egui Touch)
 │  ├─ preset.rs           SimParams ⇄ JSON(H3)
@@ -102,7 +102,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 
 ## 3. GPU リソース
 
-キャンバス = シミュレーション解像度。**M8 でサイズ可変化(R9 の値化)**: 選択肢は `CANVAS_SIZES = [512, 1024, 2048]`(正方形のみ)、既定は `DEFAULT_CANVAS_SIZE = 512`(試行錯誤は軽いサイズで回す)。実行時の値は `GpuCanvas.size` が正典で、全テクスチャ・dispatch・読み戻しの寸法がここから決まる。**サイズ変更 = GpuCanvas の作り直し**(`PaintApp::recreate_canvas`。テクスチャ・タイルバッファ・bind group が全てサイズ依存のため部分再構築より単純で安全。旧インスタンスは callback_resources の差し替えで drop)。UI はファイルメニューの「新規キャンバス…」(サイズ選択+確認)。64 の倍数に限定しているので読み戻し(snapshot/persist)の行バイト数は常に 256B 整列=パディング不要。用途は「広い紙」(テクセル密度据え置き)なので `diffuse_iters` 等のテクセル単位パラメータは再調整不要(plan §3 M8)。VRAM は 2048² で計 ~1.2GB(乾燥レイヤー8枚 512MB が支配的。窮屈なら `MAX_LAYERS` 削減)。テクスチャ・バッファは作成時に wgpu がゼロ初期化する(`GpuCanvas::new` では明示クリアしない)。「全部消す」(`clear`)と線画 Undo(`clear_line`)のゼロ化は、`Features::CLEAR_TEXTURE`(main.rs がアダプタ対応時だけ要求)があれば `encoder.clear_texture`、なければゼロ埋めの `write_texture`。
+キャンバス = シミュレーション解像度。**サイズ可変**: 選択肢は `CANVAS_SIZES = [512, 1024, 2048]`(正方形のみ)、既定は `DEFAULT_CANVAS_SIZE = 512`(試行錯誤は軽いサイズで回す)。実行時の値は `GpuCanvas.size` が正典で、全テクスチャ・dispatch・読み戻しの寸法がここから決まる。**サイズ変更 = GpuCanvas の作り直し**(`PaintApp::recreate_canvas`。テクスチャ・タイルバッファ・bind group が全てサイズ依存のため部分再構築より単純で安全。旧インスタンスは callback_resources の差し替えで drop)。UI はファイルメニューの「新規キャンバス…」(サイズ選択+確認)。64 の倍数に限定しているので読み戻し(snapshot/persist)の行バイト数は常に 256B 整列=パディング不要。用途は「広い紙」(テクセル密度据え置き)なので `diffuse_iters` 等のテクセル単位パラメータは再調整不要(plan §3 M8)。VRAM は 2048² で計 ~1.2GB(乾燥レイヤー8枚 512MB が支配的。窮屈なら `MAX_LAYERS` 削減)。テクスチャ・バッファは作成時に wgpu がゼロ初期化する(`GpuCanvas::new` では明示クリアしない)。「全部消す」(`clear`)と線画 Undo(`clear_line`)のゼロ化は、`Features::CLEAR_TEXTURE`(main.rs がアダプタ対応時だけ要求)があれば `encoder.clear_texture`、なければゼロ埋めの `write_texture`。
 
 | テクスチャ | 形式 | 内容 |
 |---|---|---|
@@ -120,7 +120,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 
 **ping-pong は3テクスチャまとめて単一の `current`** で管理する。各 compute パスは3枚の src を読み、3枚の dst を必ず全テクセル書いて(変更しない分は素通し)反転する。パスごとに index を分けるより単純で、素通しコストはアクティブタイル(M6)が濡れ面積比例に絞る。線画テクスチャ(M4.5a/c)は ping-pong せず read_write で自己更新するため `current` に依存しない。
 
-compute の binding は種別ごとに5レイアウト(R3 の `ComputeLayout`):
+compute の binding は種別ごとに5レイアウト(`ComputeLayout`):
 - **共通**(splat 系ほか、[assets/shaders/common.wgsl](../assets/shaders/common.wgsl)): `0/1` 水 src/dst、`2/3` 浮遊 src/dst、`4/5` 沈着 src/dst、`6` SimParams uniform、`7` splat storage、`8` 紙ハイト、`9` 顔料個性 uniform、`10` 清書ペンの線画(M4.5b、透水率境界。読むのは velocity/diffuse だけで他パスは宣言せず素通し)、`11` アクティブタイル有効フラグ(M6、storage read。splat/velocity/relax/flowout/advect/diffuse/transfer が読み、非アクティブなタイルを素通しする。fastdry/rewet は宣言せず全面計算)
 - **bake**: 共通の `0..6, 8` + `9` = 乾燥レイヤーの書き込みスライス(splats なし)
 - **raster**(M4.5a/c、linesplat.wgsl): `0` 対象の線画テクスチャ(read_write r32float)、`1` SimParams、`2` splat storage、`3` 紙ハイト。描画先(鉛筆/ペン/ハイライト)は bind group を差し替えて選ぶ(パイプラインは1本)。ライブ描画は流体パスがペン線を sampled で読むため `linesplat` を専用 compute パスに分ける(同一パス内で read_write と sampled を兼ねると使用範囲が衝突するため)
@@ -158,7 +158,7 @@ paint:
 
 ボタン駆動の単発パス: **bake**(乾かす=焼き込み)/ **fastdry**(水だけ除去)/ **rewet**(全面再湿潤)。PNG スナップショット(H6)は display と同じシェーダーでオフスクリーンに焼いて読み戻す(ビュー変換なし=キャンバス全体)。**UI スクショ(H6、AI レビュー用)**は GPU でなく egui 経路: `ViewportCommand::Screenshot` で画面全体(パネル込み)の撮影を要求し、eframe が次フレーム以降に返す `Event::Screenshot`(`Arc<ColorImage>`)を `poll_ui_screenshot`([app/mod.rs](../src/app/mod.rs))が受け取って固定パス `screenshots/ui-latest.png` へ上書き保存する。AI が同じパスから最新 UI を読めるようにするのが目的で、キャンバス PNG(タイムスタンプ命名)と別物。撮影のトリガーは2経路 — UI ボタンと、**外部ファイル監視**(`ScreenshotWatcher`([gpu/hot_reload.rs](../src/gpu/hot_reload.rs))が `screenshots/request-shot` の作成/変更を notify で拾う。AI が Bash からこのファイルを書けば実行中アプリに撮影させられる。自身が書く `ui-latest.png` はファイル名で除外し撮影ループを防ぐ)。
 
-**作品保存(M7)のファイル形式**: プリセット等の軽い JSON と違い、作品は数十 MB の生 f32 テクスチャを含むため独自バイナリ1ファイル `works/*.kasane`(git 管理外)にする。先頭に `MAGIC "KSN1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成 `[slot, visible]`・レイヤーごとパレット・canvas_size・layer_count)を置き、続けて生 f32 ブロブを固定順(湿レイヤー3 → 乾燥レイヤー → 線画3 → 顔料 latent)で並べる([src/work.rs](../src/work.rs) の `encode`/`decode`)。**読込時は canvas_size(メタで `CANVAS_SIZES` を検証)が現在と違えば、そのサイズでキャンバスを作り直してから復元する**(M8。作品ファイルはサイズをまたいで持ち運べる)。線画の Undo 履歴(ストローク列)はテクスチャがあれば復元不要なので保存しない(読込直後の Undo/水彩1段 undo は効かない=履歴を破棄)。ファイル入出力を1モジュールに閉じ、将来 Web 版で保存先を差し替える余地を残す(plan §4)。
+**作品保存(M7)のファイル形式**: プリセット等の軽い JSON と違い、作品は数十 MB の生 f32 テクスチャを含むため独自バイナリ1ファイル `works/*.kasane`(git 管理外)にする。先頭に `MAGIC "KSN1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成 `[slot, visible]`・レイヤーごとパレット・canvas_size・layer_count)を置き、続けて生 f32 ブロブを固定順(湿レイヤー3 → 乾燥レイヤー → 線画3 → 顔料 latent)で並べる([src/work.rs](../src/work.rs) の `encode`/`decode`)。**読込時は canvas_size(メタで `CANVAS_SIZES` を検証)が現在と違えば、そのサイズでキャンバスを作り直してから復元する**(M8。作品ファイルはサイズをまたいで持ち運べる)。線画の Undo 履歴(ストローク列)はテクスチャがあれば復元不要なので保存しない(読込直後の Undo/水彩1段 undo は効かない=履歴を破棄)。ファイル入出力を1モジュールに閉じ、将来 Web 版で保存先を差し替える余地を残す(plan.md §3)。
 
 ### シェーダー一覧(assets/shaders/)
 
@@ -184,7 +184,7 @@ paint:
 
 **層「内」の混色 = mixbox、層「間」の合成 = Kubelka-Munk** と役割を分ける(RGB 3ch の K,S で層内を混ぜると黄+青が濁り、mixbox を使う意味が消えるため)。
 
-- **CPU 側**([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs)): グローバル光学(紙+白+黒)の latent と、`Palette` の顔料 latent を計算して uniform で渡す。パレットは起動時に eframe storage から復元(無い・壊れていれば既定パレット)、以降 UI 編集のたびに再計算(M5)。**mixbox 呼び出しの隔離点**(CC BY-NC 対策、plan.md §4)
+- **CPU 側**([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs)): グローバル光学(紙+白+黒)の latent と、`Palette` の顔料 latent を計算して uniform で渡す。パレットは起動時に eframe storage から復元(無い・壊れていれば既定パレット)、以降 UI 編集のたびに再計算(M5)。**mixbox 呼び出しの隔離点**(CC BY-NC 対策、plan.md §3)
 - **GPU 側**(display.wgsl): 画素ごとに4顔料の濃度比で latent を線形混合 → latent→RGB 多項式(mixbox eval_polynomial の WGSL 移植)で発色。紙とは被覆率 `1−exp(−pigment_density·総濃度)` で混合
 - **KM 合成**: 各層(紙 → 乾燥レイヤー下から → 湿レイヤー)を白地・黒地に置いた mixbox 発色 R_w, R_b から `R = R_b`、`T² = (R_w−R_b)(1−R_b)` の閉じた形で反射率・透過率を導き、リニア色空間で下から光学合成(sinh/cosh 不要 = オーバーフロー対策不要)。この簡約が Curtis 一般式と一致することは [crates/km/src/lib.rs](../crates/km/src/lib.rs) のテストで担保。「顔料ごとの K,S プリセット」は不採用(混色モデルを二重化しないため)
 
@@ -196,7 +196,7 @@ paint:
 
 ## 6.5 線画(M4.5)
 
-下書き鉛筆・清書ペン・白ハイライトのラスタツール。流体を通らず専用テクスチャに直描きする(型階層は R2 の `Tool::Raster`)。
+下書き鉛筆・清書ペン・白ハイライトのラスタツール。流体を通らず専用テクスチャに直描きする(型階層は `Tool::Raster`)。
 
 - **描画経路**: 選択中ツールが `Tool::Raster` のとき `PaintApp::line_target()` が `Some(LineTarget)`(鉛筆/ペン/ハイライト)を返し、`CanvasCallback` がブラシ入力を `splat.wgsl` でなく `linesplat.wgsl` へ回す。対象テクスチャは Rust 側の bind group で選び、シェーダーは共通1本。`line_mode` が視覚分岐(鉛筆=柔エッジ・紙目粒状・筆圧→濃さ / ペン=硬エッジ・筆圧→太さ / ハイライト=硬めエッジの不透明白・筆圧→不透明度)、`line_eraser` で減算。ライブ描画は流体パスと別 compute パス(read_write と sampled の使用範囲衝突回避)
 - **蓄積モデル**: 目標濃度への `max`(1フレーム内で密にサンプルしても一定線濃度へ収束)。r32float の read_write storage で自己更新(ping-pong 不要)
@@ -233,8 +233,8 @@ paint:
 
 - WGSL は `assets/shaders/` から実行時ロード。notify で監視し、保存で `rebuild_pipelines()`。コンパイルエラー時は `pipelines = None` にして描画をスキップ(クラッシュしない)+エラーオーバーレイ表示、直前の正常なパイプラインで続行
 - **リリース配布ビルドのみ例外**: feature `embed-assets`(`cargo build --release --features embed-assets`)で exe 単体配布にする。(1) `assets/shaders/` 全体を `include_dir!` でバイナリへ埋め込み(取得元の分岐は `GpuCanvas::shader_source` の1箇所。ファイル監視は無効 = ShaderWatcher が早期 return)、(2) 既定 JSON アセット(pigments/palettes/presets/strokes)も埋め込み、初回起動時に `assets::seed_default_assets()` が exe 隣へ書き出す(ディレクトリ単位で「無ければ書く」— ユーザーの編集・削除を復活させない)、(3) パス基準が exe ディレクトリになる(`assets::base_dir`)。通常ビルドには include_dir はコンパイルされない(optional 依存)
-- compute パイプラインは `COMPUTE_SHADERS` の表(WGSL ファイル名 → レイアウト種別)を回して作る(R3。**シェーダー追加 = 表に1行**)。名前引き `Pipelines::compute("splat.wgsl")` で参照し、パス実行順は `encode_frame()` のハードコードが正典。コンパイルエラーの行番号は common.wgsl 連結分ずれるので `remap_shader_error_lines` で補正して表示(R3。純関数、cargo test 対象)
-- SimParams / Splat の WGSL 構造体定義は common.wgsl に1箇所化し、Rust 側で各シェーダーの先頭に連結 — 「パラメータ追加 = WGSL 1行」をシェーダーが増えても維持。**連結は3段**(M8): `shader_prelude`(Rust と共有する const を Rust が生成。gpu/prelude.rs)+ common.wgsl + シェーダー本体。行番号補正(R3)はプレリュード込みのプレフィックス行数で行う
+- compute パイプラインは `COMPUTE_SHADERS` の表(WGSL ファイル名 → レイアウト種別)を回して作る(**シェーダー追加 = 表に1行**)。名前引き `Pipelines::compute("splat.wgsl")` で参照し、パス実行順は `encode_frame()` のハードコードが正典。コンパイルエラーの行番号は common.wgsl 連結分ずれるので `remap_shader_error_lines` で補正して表示(純関数、cargo test 対象)
+- SimParams / Splat の WGSL 構造体定義は common.wgsl に1箇所化し、Rust 側で各シェーダーの先頭に連結 — 「パラメータ追加 = WGSL 1行」をシェーダーが増えても維持。**連結は3段**(M8): `shader_prelude`(Rust と共有する const を Rust が生成。gpu/prelude.rs)+ common.wgsl + シェーダー本体。行番号補正はプレリュード込みのプレフィックス行数で行う
 - SimParams は毎フレーム uniform へ書くのでスライダーは即時反映。WGSL uniform 規則(16 バイト整列)に合わせる。現在は 56 フィールド = 224B でパディングなし。足すときの手順は [parameters.md](parameters.md) §11、Rust と WGSL の struct の一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検査する
 
 ## 9. テスト戦略

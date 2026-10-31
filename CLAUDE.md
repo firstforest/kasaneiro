@@ -15,8 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | [docs/requirements.md](docs/requirements.md) | 要件仕様(3要件の判定基準・ツール構成・UI/入力要件・非機能要件) |
 | [docs/architecture.md](docs/architecture.md) | 実装構造(スタック・モジュール構成・テクスチャ・パス順序・シェーダー一覧・混色の2段構え) |
 | [docs/parameters.md](docs/parameters.md) | 全パラメータ(`SimParams`)と顔料個性 ρ/ω/γ/μ のリファレンス(既定値・UI 範囲・意味・実効式) |
-| [docs/plan.md](docs/plan.md) | 実装計画(マイルストーン M0〜M8・装備 H1〜H6・先送り判断 §4) |
-| [docs/refactoring.md](docs/refactoring.md) | リファクタリング計画の完了記録(残る任意の負債 R6〜R8 と「やらないこと」表) |
+| [docs/plan.md](docs/plan.md) | 設計方針(試行錯誤ループと装備 H1〜H6 の狙い・プロジェクト構成)と先送り判断 §3 |
 | [docs/note/00-overview.md](docs/note/00-overview.md) | 技術調査ノートの起点。設計判断に迷ったら参照 |
 
 **更新規則(コード変更と同じコミットで):**
@@ -25,11 +24,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 経緯として残したいこと(何を・なぜ変えたか、その時点の要目視確認)は **changelog.md** の先頭にエントリを足す
 - `SimParams` のパラメータや顔料を追加・変更したら **parameters.md** を更新する
 - パス順序・テクスチャ構成・モジュール構成・シェーダーが変わったら **architecture.md** を更新する
-- 任意の負債 R6〜R8 に手を付けたら **refactoring.md** の状態列を更新する
 
 ## コマンド
 
-Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise exec -- cargo run` / `cargo test --workspace` / `cargo clippy --workspace`。**workspace 構成**(R1: km / pigment / paint-core の 3 crate + ルートの kasaneiro crate(lib + 起動だけの bin)。ルートが同時に package なので、下位 crate のテストまで回すには `--workspace` を付ける)。
+Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise exec -- cargo run` / `cargo test --workspace` / `cargo clippy --workspace`。**workspace 構成**(km / pigment / paint-core の 3 crate + ルートの kasaneiro crate(lib + 起動だけの bin)。ルートが同時に package なので、下位 crate のテストまで回すには `--workspace` を付ける)。
 
 - コンパイル時間対策として `[profile.dev.package."*"] opt-level = 2` + 自前コード opt-level 1 を設定する方針(plan.md §2。profile はワークスペースルート Cargo.toml でのみ有効)
 - `crates/km`(Kubelka-Munk 純関数)と `crates/pigment`(mixbox 混色)は CPU 参照実装 + `cargo test` の対象。WGSL は naga のコンパイル可能性テスト([tests/shader_compile.rs](tests/shader_compile.rs))で守る
@@ -46,4 +44,4 @@ Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise
 
 ## 先送り済みの判断(再検討トリガーが来るまで蒸し返さない)
 
-plan.md §4 の表が正典。要点: 混色は mixbox クレート(CC BY-NC、商用化時に自作スペクトラル WGM へ — **mixbox 依存は `crates/pigment` に隔離**(R1 で依存グラフとして強制))/ 流体は Curtis 簡略版(不安定なら Stam、表情不足なら LBM)/ 同時顔料数は 4ch のまま(多色化はレイヤーごとパレット記録 M5c で)/ ペン入力は Windows Ink のみ(WinTab 非対応)/ Web 版はやらないが input・保存の trait 抽象だけ維持。
+plan.md §3 の表が正典。要点: 混色は mixbox クレート(CC BY-NC、商用化時に自作スペクトラル WGM へ — **mixbox 依存は `crates/pigment` に隔離**(依存グラフとして強制))/ 流体は Curtis 簡略版(不安定なら Stam、表情不足なら LBM)/ 同時顔料数は 4ch のまま(多色化はレイヤーごとパレット記録 M5c で)/ ペン入力は Windows Ink のみ(WinTab 非対応)/ Web 版はやらないが input・保存の trait 抽象だけ維持。

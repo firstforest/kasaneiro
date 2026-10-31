@@ -1,7 +1,7 @@
 //! ストローク記録・再生の永続化(H5)。
 //!
 //! モデル本体(TimedPoint / RecordedStroke / Recording / Recorder / Player)は
-//! CPU 純粋部として [`paint_core::replay`] にある(refactoring.md R1)。ここはそれを
+//! CPU 純粋部として [`paint_core::replay`] にある。ここはそれを
 //! 再エクスポートしつつ、アセットディレクトリ解決(assets.rs)に
 //! 依存するファイル保存/読込だけを持つ。呼び出し側は従来どおり `crate::replay::*` で使える。
 //!

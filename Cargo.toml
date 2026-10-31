@@ -14,7 +14,7 @@ edition = "2024"
 embed-assets = ["dep:include_dir"]
 
 [dependencies]
-# CPU 純粋部の切り出し(refactoring.md R1)。mixbox は pigment crate だけが依存する
+# CPU 純粋部を wgpu 抜きでテストできるよう crate に分ける。mixbox は pigment crate だけが依存する
 paint-core = { path = "crates/paint-core" }
 pigment = { path = "crates/pigment" }
 

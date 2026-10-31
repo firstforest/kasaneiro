@@ -16,7 +16,7 @@ impl PaintApp {
         }
     }
 
-    /// ストローク記録・再生(H5): 記録操作・保存・一覧再生。名前保存+一覧は NamedStore(R4)
+    /// ストローク記録・再生(H5): 記録操作・保存・一覧再生。名前保存+一覧は NamedStore
     pub(in crate::app) fn replay_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.heading("ストローク記録・再生 (H5)");

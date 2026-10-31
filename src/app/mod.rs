@@ -1,8 +1,7 @@
 //! egui の画面構成の中核: [`PaintApp`] の状態・ライフサイクル(生成 / シェーダー再ビルド /
 //! キャンバス操作 / ポインタ入力の反映 / スナップショット保存)と、eframe::App の描画エントリ。
 //!
-//! 各パネルの描画は [`ui`] 配下のサブモジュールに `impl PaintApp` として分割してある
-//! (窮屈になったら per-file 分割する方針の実施。R4):
+//! 各パネルの描画は [`ui`] 配下のサブモジュールに `impl PaintApp` として分割してある:
 //! - [`ui::tools`] 相当 — 乾燥ボタン・水ブラシ(`dry_controls` / `brush_panel`)
 //! - レイヤー(`layer_panel` / `layers_panel`)・調整(`tuning_panel`)
 //! - プリセット/記録再生/シェーダー状態(`preset_panel` / `replay_panel` / `shader_status`)
@@ -121,7 +120,7 @@ pub(in crate::app) enum FileModal {
 pub struct PaintApp {
     render_state: egui_wgpu::RenderState,
     params: SimParams,
-    /// 選択中ツール(R2)。トップレベルの分岐が描画経路の分岐。wet ツールは
+    /// 選択中ツール。トップレベルの分岐が描画経路の分岐。wet ツールは
     /// `WetTool::gpu_id()` を `params.tool` へ同期して GPU の splat 分岐に渡す。
     /// ラスタツール(M4.5)は流体経路に流れない
     tool: Tool,
@@ -157,11 +156,11 @@ pub struct PaintApp {
     step_once: bool,
     /// H6: 速度倍率(1フレームあたりのシミュレーションステップ数)
     steps_per_frame: u32,
-    /// H3: プリセットの UI 状態(名前入力+一覧。R4 で集約)
+    /// H3: プリセットの UI 状態(名前入力+一覧)
     preset_ui: PresetUi,
     /// M7: 作品保存の UI 状態(名前入力+一覧)
     work_ui: WorkUi,
-    /// H5: ストローク記録・再生の UI 状態(名前+一覧+recorder/pending/player。R4 で集約)
+    /// H5: ストローク記録・再生の UI 状態(名前+一覧+recorder/pending/player)
     replay_ui: ReplayUi,
     /// H3/H5/H6 の操作結果の表示(保存先パスやエラー)
     status_msg: Option<String>,
@@ -1137,7 +1136,7 @@ impl PaintApp {
             .is_some_and(|c| !c.layers.is_empty())
     }
 
-    /// 左パネルのスクロール内容。セクションごとのメソッドへ振り分けるだけ(R4)。
+    /// 左パネルのスクロール内容。セクションごとのメソッドへ振り分けるだけ。
     /// 各セクションの実装は ui サブモジュール。先頭はアクティブレイヤーのツール群
     /// (active_tools_panel が選択中レイヤーで出し分ける)。レイヤー関連は右パネル
     /// (layer_stack_panel)へ分離した

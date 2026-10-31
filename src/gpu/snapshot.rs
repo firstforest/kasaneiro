@@ -1,8 +1,7 @@
 //! PNG スナップショット(H6)の読み戻し。
 //!
 //! display と同じシェーダーをスナップショット用フォーマットでオフスクリーンに焼き、
-//! テクスチャ → バッファ → map で RGBA8 の Vec に読み戻す。M5e(スポイト)・M7(全テクスチャ
-//! の保存/復元)で汎用 readback が要るようになったら R8 でここを一般化する。
+//! テクスチャ → バッファ → map で RGBA8 の Vec に読み戻す。作品保存の読み戻しは persist.rs に別にある。
 
 use super::{GpuCanvas, ViewUniform};
 use eframe::egui_wgpu::wgpu;
