@@ -22,6 +22,8 @@
 //! - [`callback`] — `CanvasCallback`(フレーム描画。パス実行順の正典)
 //! - [`snapshot`] — `GpuCanvas::snapshot`(PNG 読み戻し。H6)
 //! - [`persist`] — `GpuCanvas::export_state` / `import_state`(作品保存の GPU 読み戻し/書き戻し。M7)
+//! - [`prelude`] — Rust と WGSL で共有する定数(MAX_LAYERS・latent 枠・タイル)と、それを
+//!   WGSL の const として各シェーダー先頭に連結するプレリュードの生成
 //! - [`shader_error`] — WGSL エラーの行番号補正(R3 QoL)
 
 pub mod hot_reload;
@@ -29,11 +31,14 @@ pub mod hot_reload;
 mod callback;
 mod init;
 mod persist;
+mod prelude;
 mod shader_error;
 mod snapshot;
 
 pub use callback::CanvasCallback;
 pub use persist::WorkTextures;
+pub use prelude::{LATENT_TOTAL, MAX_LAYERS};
+use prelude::{LIVE_PALETTE, PALETTE_SLOTS, TILE_SIZE, shader_prelude};
 
 use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
 use shader_error::remap_shader_error_lines;
@@ -48,24 +53,8 @@ const SIM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 /// 紙ハイト(M1d)は静的なので含まない(paper_texture として別持ち)
 const TEX_KINDS: usize = 3;
 
-/// 乾燥レイヤー(M2)の上限枚数。texture array のスライス数として固定確保する
-/// (512² rgba32float × 8 = 32MB。display.wgsl の visible_mask が u32 なので 32 が理論上限)
-pub const MAX_LAYERS: usize = 8;
-
 /// 紙ハイト生成のシード。「紙を作り直す」UI を足すならここをフィールド化する
 const PAPER_SEED: u32 = 0x5EED;
-
-/// latents uniform が持つパレット枠数(M5c)。乾燥レイヤー MAX_LAYERS 個 + 現行(live)1 個。
-/// dried スロット s(0..MAX_LAYERS)は乾かした瞬間に現行パレットを焼き込んで固定し、
-/// 現行(live)パレット枠 = 末尾(`LIVE_PALETTE`)は編集のたびに書き替える
-pub const PALETTE_SLOTS: usize = MAX_LAYERS + 1;
-
-/// 現行(live)パレットの枠番号(dried スロットの後ろ)。湿レイヤーの発色はここを使う
-const LIVE_PALETTE: usize = MAX_LAYERS;
-
-/// latents uniform の総 vec4 数 = グローバル光学 + パレット数 × 顔料ブロック。
-/// display.wgsl の `array<vec4f, LATENT_TOTAL>` と一致させること(78 = 6 + 9×8)
-pub const LATENT_TOTAL: usize = pigment::GLOBAL_LATENTS + PALETTE_SLOTS * pigment::PIGMENT_LATENTS;
 
 /// 発散緩和の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_RELAX_ITERS: u32 = 64;
@@ -73,19 +62,6 @@ const MAX_RELAX_ITERS: u32 = 64;
 /// 顔料拡散の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_DIFFUSE_ITERS: u32 = 32;
 
-/// アクティブタイル(M6): 1タイルの1辺テクセル数。WGSL 側の同名定数は
-/// `shader_prelude`(M8)が生成して連結するので、ここが唯一の定義
-const TILE_SIZE: u32 = 16;
-
-/// キャンバスサイズ依存の WGSL 定数(M8)。common.wgsl より前に連結する。
-/// タイル数はキャンバス1辺から決まるため、ファイル(ホットリロード対象)でなく
-/// Rust が生成する。shader_compile テストは既定サイズ(512)相当の同じ2行で検証する
-fn shader_prelude(size: u32) -> String {
-    format!(
-        "const TILE_SIZE: u32 = {TILE_SIZE}u;\nconst TILES_PER_SIDE: u32 = {}u;\n",
-        size / TILE_SIZE
-    )
-}
 
 /// compute シェーダーのバインドグループレイアウト種別(R3)。
 /// ほとんどは共通レイアウト、bake だけ専用(乾燥レイヤースライス binding 9)。

@@ -61,19 +61,24 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
 │  │  ├─ callback.rs      CanvasCallback(フレーム描画。パス実行順の正典)
 │  │  ├─ snapshot.rs      GpuCanvas::snapshot(PNG 読み戻し。H6。R8 で readback を一般化予定)
 │  │  ├─ persist.rs       GpuCanvas::export_state / import_state(作品保存の GPU 読み戻し/書き戻し。M7)
+│  │  ├─ prelude.rs       Rust と WGSL で共有する定数(MAX_LAYERS / LATENT_TOTAL / TILE_SIZE 等)と
+│  │  │                   それを WGSL の const にする shader_prelude(tests/shader_compile.rs も #[path] で共用)
 │  │  ├─ shader_error.rs  WGSL コンパイルエラーの行番号補正の純関数+テスト(R3 QoL)
 │  │  └─ hot_reload.rs    WGSL ファイル監視と再ビルド(H1)
 │  ├─ input.rs            PointerSource trait(MouseSource / PenSource = egui Touch)
 │  ├─ preset.rs           SimParams ⇄ JSON(H3)
 │  ├─ replay.rs           ストローク記録の永続化(assets 依存の保存/読込。モデルは paint-core を再エクスポート。M5d でパレット同梱の StoredRecording に拡張)
-│  ├─ palette_store.rs    パレット(pigment::Palette)⇄ JSON(M5d。preset/replay と同じ流儀)
+│  ├─ palette_store.rs    パレット(pigment::Palette)⇄ JSON(M5d。preset/replay と同じく assets.rs の JSON ストア)
 │  ├─ pigment_store.rs    色単体(pigment::Pigment 1個)⇄ JSON(M5f。保存名=顔料名の1本化)
 │  ├─ work.rs             作品保存(M7)。全状態を独自バイナリ1ファイル works/*.kasane に保存/読込
 │  │                      (M5h: メタに layer_palettes を追加。decode が層数一致を検査=
 │  │                       GpuCanvas::layer_palettes の不変条件の入口。リリース前なので後方互換なし)
 │  └─ assets.rs           基準ディレクトリ解決(base_dir: 通常= CARGO_MANIFEST_DIR / embed-assets = exe 隣)
-│                         と配布ビルドの既定 JSON 書き出し(seed_default_assets)
-├─ tests/shader_compile.rs  WGSL コンパイル可能性テスト(naga)
+│                         と配布ビルドの既定 JSON 書き出し(seed_default_assets)。
+│                         全ストア共通の保存名正規化(sanitize_name)・アトミック書き込み(.tmp → rename)・
+│                         JSON ストアの json_save / json_load / json_delete / json_list
+├─ tests/shader_compile.rs  WGSL コンパイル可能性テスト(naga。assets/shaders を走査し全キャンバスサイズで検証)
+├─ tests/sim_params_layout.rs  SimParams の Rust 定義と common.wgsl の struct の一致検査
 └─ assets/
    ├─ shaders/*.wgsl      実行時ロード(通常ビルドは埋め込まない。配布用 embed-assets のみ埋め込み)
    ├─ presets/*.json      SimParams プリセット(git 管理)
@@ -118,7 +123,7 @@ display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 late
 
 **ビューポート変換(binding 11、M6)**: `ViewUniform { center: vec2f, span: f32, cos_t: f32, sin_t: f32, _pad×3 }`(32B。WGSL の末尾パディングは vec3f だと align 16 で 48B に膨らむため f32×3 で詰めて Rust 側と一致させる)。fs_main が画面 uv → キャンバス uv を `canvas_uv = center + R(θ)·(画面uv − 0.5)·span`(`span = 1/zoom`、`R(θ)` は表示中心まわりの回転)で写してからサンプルするため、拡大/パン/**回転**が全サンプル(水/浮遊/沈着/紙/乾燥/線画)に一括で効く。SimParams とは分けた display 専用 uniform で(プリセット H3・記録 H5 を汚さない)、`CanvasCallback` がフレームごとに `write_buffer`。app 側で `zoom ∈ [1, 32]`。**回転で窓の隅がキャンバス外に出るぶん(`canvas_uv` が [0,1] の外)は `BG_COLOR`(紙の周りの机)で塗る**。クランプは回転なしなら窓をキャンバス内に(`center` を各軸 `[half, 1−half]`)、回転時は `center` のみ `[0,1]` に留める。ポインタ→テクセル変換(描画・スポイト)も同じ写像 `PaintApp::screen_to_texel`(逆回転込み)を通す。**スポイト(M5e)の snapshot 読み戻しは画面 uv で索引する**(`GpuCanvas::snapshot` はビュー変換を引数に取り、スポイトは画面と同じビューで焼くため。テクセル索引では拡大・回転時にズレる)。PNG 書き出し(H6)は `ViewUniform::default()`(全体・無回転)で焼くので、ズーム・回転中でもキャンバス全体が出る。snapshot が書いた view_buffer は次フレームの `CanvasCallback` が表示用に書き直す。回転操作は Shift+ホイールで15°刻み・「ビュー」パネルのスライダーで自由角。パン は中ボタンまたはスペース+左ドラッグ。
 
-**顔料 latent(binding 4)のレイアウト(M5c、`array<vec4f, LATENT_TOTAL=78>`)**: 先頭 `GLOBAL_LATENTS=6` vec4 = パレット非依存のグローバル光学(`[0,1]`紙 / `[2,3]`白 R_w / `[4,5]`黒 R_b)。以降は**パレット枠**を `PALETTE_SLOTS = MAX_LAYERS+1 = 9` 個並べ、各枠 `PIGMENT_LATENTS=8` vec4(顔料4種 × c0..c3/RGB残差)。枠 `0..MAX_LAYERS-1` は乾燥レイヤーのスロット別、枠 `LIVE_PALETTE=MAX_LAYERS` は現行(湿レイヤー)のパレット。**乾かすと現行パレットの色を対応スロット枠へ焼き込む**(`GpuCanvas::record_layer_palette`)ため、顔料を後から編集しても乾燥済みレイヤーの色は変わらない。編集時は `set_palette` が physics(ρ/ω/γ/μ、全レイヤー共通)と live 枠だけを `write_buffer`(パイプライン再構築不要)。定数は [crates/pigment](../crates/pigment/src/lib.rs) と [src/gpu/mod.rs](../src/gpu/mod.rs)、WGSL の `pal_base()` が対応。**M5h**: latent 枠は色しか持たないため、`bake_dry(…, palette)` が同時に `GpuCanvas::layer_palettes`(index=slot)へ Palette を丸ごと clone する。こちらが名前・ρ/ω/γ 込みの**正典**(GPU 枠は表示用キャッシュ)で、乾燥層パネルの「パレット抽出」UI が読む。
+**顔料 latent(binding 4)のレイアウト(M5c、`array<vec4f, LATENT_TOTAL=78>`)**: 先頭 `GLOBAL_LATENTS=6` vec4 = パレット非依存のグローバル光学(`[0,1]`紙 / `[2,3]`白 R_w / `[4,5]`黒 R_b)。以降は**パレット枠**を `PALETTE_SLOTS = MAX_LAYERS+1 = 9` 個並べ、各枠 `PIGMENT_LATENTS=8` vec4(顔料4種 × c0..c3/RGB残差)。枠 `0..MAX_LAYERS-1` は乾燥レイヤーのスロット別、枠 `LIVE_PALETTE=MAX_LAYERS` は現行(湿レイヤー)のパレット。**乾かすと現行パレットの色を対応スロット枠へ焼き込む**(`GpuCanvas::record_layer_palette`)ため、顔料を後から編集しても乾燥済みレイヤーの色は変わらない。編集時は `set_palette` が physics(ρ/ω/γ/μ、全レイヤー共通)と live 枠だけを `write_buffer`(パイプライン再構築不要)。定数は [crates/pigment](../crates/pigment/src/lib.rs) と [src/gpu/prelude.rs](../src/gpu/prelude.rs) が正典で、WGSL へは `shader_prelude` が const として渡す(display.wgsl はベタ書きしない)。WGSL の `pal_base()` が対応。**M5h**: latent 枠は色しか持たないため、`bake_dry(…, palette)` が同時に `GpuCanvas::layer_palettes`(index=slot)へ Palette を丸ごと clone する。こちらが名前・ρ/ω/γ 込みの**正典**(GPU 枠は表示用キャッシュ)で、乾燥層パネルの「パレット抽出」UI が読む。
 
 ## 4. フレームの流れ
 
@@ -151,7 +156,7 @@ paint:
 
 | ファイル | 役割 |
 |---|---|
-| common.wgsl | 共通定義(SimParams / Splat 構造体、濡れ判定、バイリニア補間)。Rust 側が各シェーダーの先頭に連結してコンパイル。さらに前にキャンバスサイズ依存の const 2行(TILE_SIZE / TILES_PER_SIDE)を `shader_prelude`(gpu/mod.rs)が生成して連結する(M8) |
+| common.wgsl | 共通定義(SimParams / Splat 構造体、濡れ判定、バイリニア補間)。Rust 側が各シェーダーの先頭に連結してコンパイル。さらに前に Rust と共有する const(TILE_SIZE / TILES_PER_SIDE / MAX_LAYERS / LAYER_ORDER_VEC4S / GLOBAL_LATENTS / PIGMENT_LATENTS / LIVE_PALETTE / LATENT_TOTAL)を `shader_prelude`(gpu/prelude.rs)が生成して連結する |
 | splat.wgsl | ブラシ入力。tool(描画/リフト/消去/ぼかし筆/吸い取り)で分岐。描画は分離色(brush_mix)で brush_channel / brush_channel2 の2チャンネルへ顔料を按分注入 |
 | velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率 `perm` を速度場・にじみ拡張に掛ける(M4.5b) |
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
@@ -200,7 +205,7 @@ paint:
 - **ゲート**: 各シミュパス(splat/velocity/relax/flowout/advect/diffuse/transfer)は共通レイアウトの binding 11 で `active` を読み、**非アクティブなタイルは水/浮遊/沈着の3テクスチャを src→dst に素通しして return**(ping-pong の両バッファを常に一致させるため、計算を省いても必ず書く)。`tile_index_of`(common.wgsl)でテクセル→タイル添字に写す
 - **実行順とハザード**: sim_pass の先頭で tilescan → tiledilate → splat → sim ループを同一 compute パスに積む。tiledilate が書いた `active` を後続パスが読む storage RAW は、テクスチャ ping-pong と同様に wgpu が自動バリアで解決する
 - **退避と可視化**: `active_tiles=0` で tilescan が全タイルを有効化=従来どおり全面計算(A/B・不具合時の退避)。display のモード7が `active` を可視化(計算中=緑 / 素通し=暗く + タイル格子)して「コストが濡れ面積比例か」を目視できる
-- **SimParams とは別に view(パン/ズーム)を持つのと同じく、これは表示でなく計算範囲のノブ**。TILE_SIZE / TILES_PER_SIDE の WGSL 定数はキャンバスサイズ依存(M8)のため、gpu/mod.rs の `shader_prelude` が生成して連結する(Rust 側定義が唯一の正典。手動一致は不要になった)
+- **SimParams とは別に view(パン/ズーム)を持つのと同じく、これは表示でなく計算範囲のノブ**。TILE_SIZE / TILES_PER_SIDE の WGSL 定数はキャンバスサイズ依存(M8)のため、gpu/prelude.rs の `shader_prelude` が生成して連結する(Rust 側定義が唯一の正典)
 
 ## 7. 入力の経路
 
@@ -221,7 +226,7 @@ paint:
 - WGSL は `assets/shaders/` から実行時ロード。notify で監視し、保存で `rebuild_pipelines()`。コンパイルエラー時は `pipelines = None` にして描画をスキップ(クラッシュしない)+エラーオーバーレイ表示、直前の正常なパイプラインで続行
 - **リリース配布ビルドのみ例外**: feature `embed-assets`(`cargo build --release --features embed-assets`)で exe 単体配布にする。(1) `assets/shaders/` 全体を `include_dir!` でバイナリへ埋め込み(取得元の分岐は `GpuCanvas::shader_source` の1箇所。ファイル監視は無効 = ShaderWatcher が早期 return)、(2) 既定 JSON アセット(pigments/palettes/presets/strokes)も埋め込み、初回起動時に `assets::seed_default_assets()` が exe 隣へ書き出す(ディレクトリ単位で「無ければ書く」— ユーザーの編集・削除を復活させない)、(3) パス基準が exe ディレクトリになる(`assets::base_dir`)。通常ビルドには include_dir はコンパイルされない(optional 依存)
 - compute パイプラインは `COMPUTE_SHADERS` の表(WGSL ファイル名 → レイアウト種別)を回して作る(R3。**シェーダー追加 = 表に1行**)。名前引き `Pipelines::compute("splat.wgsl")` で参照し、パス実行順は `prepare()` のハードコードが正典。コンパイルエラーの行番号は common.wgsl 連結分ずれるので `remap_shader_error_lines` で補正して表示(R3。純関数、cargo test 対象)
-- SimParams / Splat の WGSL 構造体定義は common.wgsl に1箇所化し、Rust 側で各シェーダーの先頭に連結 — 「パラメータ追加 = WGSL 1行」をシェーダーが増えても維持。**連結は3段**(M8): `shader_prelude`(キャンバスサイズ依存の const 2行を Rust が生成)+ common.wgsl + シェーダー本体。行番号補正(R3)はプレリュード込みのプレフィックス行数で行う
+- SimParams / Splat の WGSL 構造体定義は common.wgsl に1箇所化し、Rust 側で各シェーダーの先頭に連結 — 「パラメータ追加 = WGSL 1行」をシェーダーが増えても維持。**連結は3段**(M8): `shader_prelude`(Rust と共有する const を Rust が生成。gpu/prelude.rs)+ common.wgsl + シェーダー本体。行番号補正(R3)はプレリュード込みのプレフィックス行数で行う
 - SimParams は毎フレーム uniform へ書くのでスライダーは即時反映。WGSL uniform 規則(16 バイト整列)に合わせ、末尾の `_pad` を置き換えてからフィールドを増やす
 
 ## 9. テスト戦略

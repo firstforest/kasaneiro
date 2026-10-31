@@ -18,7 +18,7 @@
 // 乾燥レイヤー(M2): rgba32float の texture array(1 スライス = 1 乾燥レイヤー、rgba = 4顔料濃度)。
 // bake.wgsl だけが binding 9 に書き込みスライスを持つ(splats は持たない)。表示側の合成は display.wgsl 参照
 
-// src/sim/mod.rs の SimParams と同レイアウトにすること(H2)
+// crates/paint-core/src/sim.rs の SimParams と同レイアウトにすること(H2。tests/sim_params_layout.rs が検査)
 struct SimParams {
     brush_radius: f32,
     brush_water: f32,
@@ -79,11 +79,12 @@ struct SimParams {
 };
 
 // アクティブタイル(M6): シミュレーションを「濡れているタイル+ブラシ近傍」だけに絞る土台。
-// tilescan がタイルごとに濡れ/顔料/ブラシ有無を判定し、tiledilate が1タイル分ふくらませて
+// tilescan がタイルごとに濡れ/ブラシ有無を判定し、tiledilate が1タイル分ふくらませて
 // active フラグ(binding 11 = array<u32>)を作る。各シミュパスは非アクティブなタイルを素通しする。
-// TILE_SIZE(1タイルの1辺テクセル数)と TILES_PER_SIDE(キャンバス1辺のタイル数)は
-// キャンバスサイズ依存(M8)のため、このファイルではなく Rust 側(gpu/mod.rs の
-// shader_prelude)が const 2行を生成して本ファイルのさらに前に連結する。
+// TILE_SIZE(1タイルの1辺テクセル数)・TILES_PER_SIDE(キャンバス1辺のタイル数。M8 で
+// キャンバスサイズ依存)をはじめ Rust と共有する定数(MAX_LAYERS / LATENT_TOTAL など)は、
+// このファイルではなく Rust 側(src/gpu/prelude.rs の shader_prelude)が const として生成し、
+// 本ファイルのさらに前に連結する。
 
 // テクセル座標 → タイルの線形 index(active 配列の添字)
 fn tile_index_of(p: vec2u) -> u32 {
@@ -96,7 +97,7 @@ fn pressure_curve(pressure: f32) -> f32 {
     return pow(clamp(pressure, 0.0, 1.0), max(params.pressure_gamma, 0.01));
 }
 
-// src/sim/mod.rs の Splat と同レイアウト(32 バイト)
+// crates/paint-core/src/sim.rs の Splat と同レイアウト(32 バイト)
 struct Splat {
     pos: vec2f,      // テクセル座標
     vel: vec2f,      // ストローク方向の単位ベクトル(初速の向き)
