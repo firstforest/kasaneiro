@@ -1,5 +1,5 @@
 // diffuse.wgsl — 浮遊顔料+水の拡散パス(M1b、毛細管化で水も対象に)。フィックの法則の陽解法。
-// 1 dispatch = 1 反復。CPU 側(gpu/mod.rs)が diffuse_iters 回 ping-pong で呼ぶ
+// 1 dispatch = 1 反復。CPU 側(gpu/callback.rs の prepare)が diffuse_iters 回 ping-pong で呼ぶ
 // (relax.wgsl と同じ方式)。陽解法の安定条件で 1 反復の係数は 0.2 までなので、
 // 速いにじみは反復回数で稼ぐ: 実効的な拡散速度 = pigment_diffuse × diffuse_iters。
 // 水筆で描いた水路に顔料溜まりを接続したとき、色が水路へ広がっていく動きはここが作る。
@@ -124,7 +124,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // (質量保存は崩れない)。
     // 陽解法の安定条件: 係数は 4 近傍合計で 1 を超えないよう、チャンネルごとに 0.2 に制限
     let mob = vec4f(pigment[0].w, pigment[1].w, pigment[2].w, pigment[3].w);
-    let k = min(vec4f(params.pigment_diffuse * params.dt) * mob, vec4f(0.2));
+    // μ は CPU 側(physics_uniform)で 0 以上に収めてあるが、係数は負にならないよう下も切る
+    let k = clamp(vec4f(params.pigment_diffuse * params.dt) * mob, vec4f(0.0), vec4f(0.2));
     textureStore(dst_susp, ip, max(susp + k * flux, vec4f(0.0)));
     // 水の毛細管拡散: 対称な流束なので水の総量は保存される(速度・マスクは変えない)
     let kw = min(WATER_DIFFUSE * params.dt, 0.2);

@@ -117,7 +117,10 @@ impl HeadlessCanvas {
 
     /// 現在の見た目を読み戻す
     pub fn snapshot(&self) -> Result<Image, String> {
-        let rgba = self.canvas.snapshot(&self.device, &self.queue)?;
+        // ビュー変換なし(キャンバス全体・無回転)で焼く
+        let rgba = self
+            .canvas
+            .snapshot(&self.device, &self.queue, &ViewUniform::default())?;
         Ok(Image {
             size: self.canvas.size(),
             rgba,

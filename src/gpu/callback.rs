@@ -1,6 +1,6 @@
-//! フレーム描画コールバック(egui-wgpu)。gpu/mod.rs から分離。
+//! フレーム描画コールバック(egui-wgpu)。
 //!
-//! `CanvasCallback` は app.rs で組み立てて egui の PaintCallback として渡され、
+//! `CanvasCallback` は src/app/ui/canvas.rs で組み立てて egui の PaintCallback として渡され、
 //! prepare で compute パス(splat → シミュレーション本体)を積み、paint で表示する。
 //! compute を積む本体は [`GpuCanvas::encode_frame`] で、headless 駆動(e2e)も同じ経路を通る。
 //! パス実行順(encode_frame 内)はシミュレーションの心臓部で、ここがその正典(R3)。
@@ -9,7 +9,7 @@ use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, ViewUnifo
 use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
 
-/// 1フレーム分の描画データ。app.rs で組み立てて PaintCallback として渡す。
+/// 1フレーム分の描画データ。src/app/ui/canvas.rs で組み立てて PaintCallback として渡す。
 pub struct CanvasCallback {
     pub params: SimParams,
     pub splats: Vec<Splat>,
@@ -72,20 +72,27 @@ impl GpuCanvas {
         // M6: パン/ズームの変換を display 用 uniform へ(compute には影響しない)
         queue.write_buffer(&canvas.view_buffer, 0, bytemuck::bytes_of(&frame.view));
 
-        let splat_count = frame.splats.len().min(MAX_SPLATS);
-        if splat_count > 0 {
-            let header = SplatHeader {
-                count: splat_count as u32,
-                _pad: [0; 3],
-            };
-            let mut bytes = Vec::with_capacity(
-                std::mem::size_of::<SplatHeader>()
-                    + splat_count * std::mem::size_of::<Splat>(),
+        if frame.splats.len() > MAX_SPLATS {
+            log::warn!(
+                "1フレームの splat が上限を超えたため {} 個を切り捨てます({} > {MAX_SPLATS})",
+                frame.splats.len() - MAX_SPLATS,
+                frame.splats.len()
             );
-            bytes.extend_from_slice(bytemuck::bytes_of(&header));
-            bytes.extend_from_slice(bytemuck::cast_slice(&frame.splats[..splat_count]));
-            queue.write_buffer(&canvas.splat_buffer, 0, &bytes);
         }
+        let splat_count = frame.splats.len().min(MAX_SPLATS);
+        // ヘッダは splat 0 個のフレームでも毎回書く(tilescan が前フレームの count・位置で
+        // タイルを立て続けないように)。線画ツールのフレームは流体側に splat を見せない
+        let header = SplatHeader {
+            count: splat_count as u32,
+            fluid_count: if frame.line_target.is_none() { splat_count as u32 } else { 0 },
+            _pad: [0; 2],
+        };
+        let mut bytes = Vec::with_capacity(
+            std::mem::size_of::<SplatHeader>() + splat_count * std::mem::size_of::<Splat>(),
+        );
+        bytes.extend_from_slice(bytemuck::bytes_of(&header));
+        bytes.extend_from_slice(bytemuck::cast_slice(&frame.splats[..splat_count]));
+        queue.write_buffer(&canvas.splat_buffer, 0, &bytes);
 
         let mut current = canvas.current;
         if let Some(pipelines) = &canvas.pipelines {

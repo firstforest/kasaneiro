@@ -5,14 +5,14 @@
 //!
 //! 混色の仕組み(LUT の WGSL 移植を回避する分担):
 //! - CPU(ここ): 各顔料の基本色 sRGB → mixbox latent(7 floats)。LUT 参照はこの1回だけ。
-//!   結果は uniform buffer で GPU へ渡す(gpu/mod.rs)
+//!   結果は uniform buffer で GPU へ渡す(src/gpu/mod.rs の set_palette)
 //! - GPU(display.wgsl): 画素ごとに 4 顔料の濃度で latent を線形混合し、
 //!   latent → RGB 多項式(mixbox eval_polynomial の WGSL 移植)で発色する
 //!
-//! 顔料スロットはテクスチャの rgba 4 チャンネルと 1:1 対応(sim/mod.rs のコメント参照)。
+//! 顔料スロットはテクスチャの rgba 4 チャンネルと 1:1 対応(crates/paint-core/src/sim.rs のコメント参照)。
 //!
-//! M5(ランタイムパレット): 固定 const だった `PIGMENTS` を [`Palette`] の状態へ昇格。
-//! UI で色・ρ/ω/γ を編集すると `pigment_latents()` / `physics_uniform()` を再計算して
+//! M5(ランタイムパレット): 顔料4スロットは [`Palette`] の状態として持つ。
+//! UI で色・ρ/ω/γ/μ を編集すると `pigment_latents()` / `physics_uniform()` を再計算して
 //! `write_buffer`(パイプライン再構築不要)。**レイヤーごとパレット記録(M5c)**: latent は
 //! 「グローバル光学(紙/白/黒)+ パレットごとの顔料ブロック」に分け、乾かした瞬間に現行
 //! パレットの顔料ブロックをそのレイヤー専用スロットへ焼き込む。これで顔料を後から編集しても
@@ -28,7 +28,7 @@ pub const PIGMENT_LATENTS: usize = PIGMENT_COUNT * 2;
 /// パレットに依存しないグローバル光学 latent の vec4 数: 紙色 × 2 + 白 × 2 + 黒 × 2。
 /// 白は multiply/KM 合成で層を「白地に置いた発色」R_w を得る基準色、
 /// 黒は KM 合成(M3)で層を「黒地に置いた発色」R_b を得る基準色。
-/// KM は各層の反射率 R=R_b・透過率² T²=(R_w−R_b)(1−R_b) をこの2発色から導く(km.rs 参照)。
+/// KM は各層の反射率 R=R_b・透過率² T²=(R_w−R_b)(1−R_b) をこの2発色から導く(crates/km/src/lib.rs 参照)。
 pub const GLOBAL_LATENTS: usize = 6;
 
 /// 紙の色(sRGB 0..1)。display.wgsl の紙レンダリングと mixbox 混合の両方がこの値を使う
@@ -113,11 +113,22 @@ impl Palette {
     /// 顔料個性(ρ/ω/γ/μ)を compute uniform 用に固める(M3、μ は分離色で追加)。
     /// レイアウト(common.wgsl の binding 9 = `array<vec4f, 4>` と対応):
     ///   [i] = 顔料 i の (密度 ρ, ステイニング ω, 粒状感 γ, 粒の細かさ μ)
-    /// M5 でランタイム化。編集時に再計算して write_buffer する(全レイヤー共通=湿シミュ専用)
+    /// M5 でランタイム化。編集時に再計算して write_buffer する(全レイヤー共通=湿シミュ専用)。
+    /// JSON は手で書き換えられるので、シェーダーへ渡す前に物理的に意味のある範囲へ収める:
+    /// ρ・μ は 0 以上(負だと吸着・拡散が逆向きになる)、ω・γ は 0〜1(割合)。
+    /// UI のスライダー範囲(ρ・μ 0.1〜2.0 / ω・γ 0〜1)はこの内側なので UI の値は変わらない。
+    /// NaN は 0 に落とす
     pub fn physics_uniform(&self) -> [[f32; 4]; PIGMENT_COUNT] {
+        let non_neg = |v: f32| if v.is_nan() { 0.0 } else { v.max(0.0) };
+        let unit = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
         let mut out = [[0.0; 4]; PIGMENT_COUNT];
         for (i, p) in self.pigments.iter().enumerate() {
-            out[i] = [p.density, p.staining, p.granulation, p.mobility];
+            out[i] = [
+                non_neg(p.density),
+                unit(p.staining),
+                unit(p.granulation),
+                non_neg(p.mobility),
+            ];
         }
         out
     }
@@ -228,6 +239,24 @@ mod tests {
                 (rgb[c] as i32 - expect).abs() <= 1,
                 "紙色 latent の復元がずれています: {rgb:?}"
             );
+        }
+    }
+
+    /// 物性 uniform は範囲外の値(手書き JSON など)を ρ・μ ≥ 0、ω・γ ∈ [0,1] に収め、
+    /// UI 範囲内の値はそのまま渡すこと
+    #[test]
+    fn physics_uniform_clamps_out_of_range() {
+        let mut pal = Palette::default_palette();
+        let ok = pal.physics_uniform();
+        pal.pigments[0].density = -1.0;
+        pal.pigments[0].staining = 1.5;
+        pal.pigments[0].granulation = -0.2;
+        pal.pigments[0].mobility = f32::NAN;
+        let u = pal.physics_uniform();
+        assert_eq!(u[0], [0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(u[1..], ok[1..]);
+        for (p, row) in Palette::default_palette().pigments.iter().zip(ok) {
+            assert_eq!(row, [p.density, p.staining, p.granulation, p.mobility]);
         }
     }
 }

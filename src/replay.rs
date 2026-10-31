@@ -7,7 +7,7 @@
 //!
 //! assets/strokes/*.json は git にコミットする(代表的なテストストロークの同梱)。
 
-use crate::assets::{asset_dir, list_json_names};
+use crate::assets::{asset_dir, json_list, json_load, json_save};
 use pigment::Palette;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -34,27 +34,20 @@ pub fn strokes_dir() -> PathBuf {
 
 /// 保存済みストローク名の一覧(ソート済み)
 pub fn list() -> Vec<String> {
-    list_json_names(&strokes_dir())
+    json_list(&strokes_dir())
 }
 
+/// 記録はサイズが大きいので整形しない JSON で保存する
 pub fn save(name: &str, recording: &Recording, palette: &Palette) -> Result<PathBuf, String> {
-    let dir = strokes_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{} を作れません: {e}", dir.display()))?;
-    let path = dir.join(format!("{name}.json"));
     let stored = StoredRecording {
         recording: recording.clone(),
         palette: palette.clone(),
     };
-    let json = serde_json::to_string(&stored).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| format!("{} に書けません: {e}", path.display()))?;
-    Ok(path)
+    json_save(&strokes_dir(), name, &stored, false)
 }
 
 pub fn load(name: &str) -> Result<StoredRecording, String> {
-    let path = strokes_dir().join(format!("{name}.json"));
-    let json = std::fs::read_to_string(&path)
-        .map_err(|e| format!("{} を読めません: {e}", path.display()))?;
-    serde_json::from_str(&json).map_err(|e| format!("{name}.json の形式が不正です: {e}"))
+    json_load(&strokes_dir(), name)
 }
 
 #[cfg(test)]

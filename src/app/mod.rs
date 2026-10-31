@@ -104,6 +104,10 @@ enum ActiveLayer {
 pub(in crate::app) enum FileModal {
     /// 作品の保存+開く(統合モーダル)
     Work,
+    /// 同名作品への上書き保存の確認(対象名は WorkUi::pending)
+    WorkOverwrite,
+    /// 作品の読込で現在のキャンバスを破棄する確認(対象名は WorkUi::pending)
+    WorkLoad,
     /// 設定プリセット(SimParams)の保存+開く(統合モーダル)
     Preset,
     /// 新規キャンバス(サイズ選択+確認)
@@ -202,7 +206,8 @@ pub struct PaintApp {
     /// eframe storage に永続化(前回の状態で起動。初回のみ off)
     dev_mode: bool,
     /// 初回体験ガイド(F15): まだ一度も描いていない間だけ空キャンバスにヒントを出す。
-    /// 最初の一筆(apply_pointer_events の Down)で true になり、以降ガイドは消える
+    /// 最初の一筆(apply_pointer_events の Down)・作品の読込(load_work)・再生開始
+    /// (start_replay)で true になり、以降ガイドは消える
     has_painted: bool,
 }
 
@@ -281,6 +286,7 @@ impl PaintApp {
             },
             work_ui: WorkUi {
                 store: NamedStore::new(work::list()),
+                pending: None,
             },
             replay_ui: ReplayUi {
                 store: NamedStore::new(replay::list()),
@@ -434,6 +440,11 @@ impl PaintApp {
     /// 消しゴム状態は線画レイヤー間で引き継ぐ)。乾燥レイヤーはツールなし(描画はブロック)
     fn select_layer(&mut self, layer: ActiveLayer) {
         self.active_layer = layer;
+        // E キー保持中の一時消しゴムは元ツールへ戻してから切り替える(保持中の元ツールは
+        // 前のレイヤーのものなので、そのまま残すとキーを離したとき別レイヤーのツールが復元される)
+        if let Some(prev) = self.erase_hold.take() {
+            self.tool = prev;
+        }
         let eraser = matches!(self.tool, Tool::Raster { eraser: true, .. });
         match layer {
             ActiveLayer::Wet => self.tool = Tool::Wet(self.last_wet_tool),
@@ -478,7 +489,7 @@ impl PaintApp {
         {
             let mut renderer = self.render_state.renderer.write();
             if let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() {
-                canvas.clear(&self.render_state.queue);
+                canvas.clear(&self.render_state.device, &self.render_state.queue);
             }
         }
         // 線画テクスチャは canvas.clear() がゼロにする。履歴も破棄する(M4.5d)
@@ -488,8 +499,12 @@ impl PaintApp {
     }
 
     /// 統一 Undo(M6): 末尾の操作種別で振り分ける(Ctrl+Z)。線を描いた直後は線が、
-    /// 水彩ストロークの直後は湿レイヤーが戻る。ボタン・キーの両方からここを通す
+    /// 水彩ストロークの直後は湿レイヤーが戻る。ボタン・キーの両方からここを通す。
+    /// ストローク中は履歴とテクスチャが食い違うので何もしない
     fn undo(&mut self) {
+        if self.painting {
+            return;
+        }
         match self.undo_stack.last().copied() {
             Some(UndoKind::Wet) => self.wet_undo(),
             Some(UndoKind::Line) => {
@@ -502,6 +517,9 @@ impl PaintApp {
     /// 統一 Redo(M6): Ctrl+Shift+Z。湿レイヤーは 1 段 undo で Redo を持たないため、
     /// Redo 対象は線画のみ(新しいストロークで線画 Redo は破棄済み=順序は破綻しない)
     fn redo(&mut self) {
+        if self.painting {
+            return;
+        }
         self.line_redo();
     }
 
@@ -549,7 +567,7 @@ impl PaintApp {
             .map(|s| (s.params, stroke_splats(s)))
             .collect();
         self.run_canvas_action(move |c, d, q| {
-            c.clear_line(q, target);
+            c.clear_line(d, q, target);
             for (params, splats) in &strokes {
                 c.rasterize_line(d, q, target, params, splats)?;
             }
@@ -660,7 +678,7 @@ impl PaintApp {
     }
 
     /// M2 の手動アクション(乾かす / Fast Dry / 再湿潤)を GpuCanvas 上で実行する共通経路。
-    /// 失敗(シェーダー未ビルド・レイヤー上限)はステータス表示に流す
+    /// 失敗(シェーダー未ビルド・レイヤー上限)はステータス表示に流す。成功したら true
     fn run_canvas_action(
         &mut self,
         action: impl FnOnce(
@@ -668,7 +686,7 @@ impl PaintApp {
             &egui_wgpu::wgpu::Device,
             &egui_wgpu::wgpu::Queue,
         ) -> Result<(), String>,
-    ) {
+    ) -> bool {
         let result = {
             let mut renderer = self.render_state.renderer.write();
             match renderer.callback_resources.get_mut::<GpuCanvas>() {
@@ -680,8 +698,12 @@ impl PaintApp {
                 None => Err("キャンバスが初期化されていません".to_owned()),
             }
         };
-        if let Err(e) = result {
-            self.status_msg = Some(e);
+        match result {
+            Ok(()) => true,
+            Err(e) => {
+                self.status_msg = Some(e);
+                false
+            }
         }
     }
 
@@ -693,12 +715,19 @@ impl PaintApp {
         self.clear_canvas();
         self.stroke.end();
         self.painting = false;
+        // 記録は水彩ストロークなので水彩レイヤーで再生する(線画レイヤー選択中だと
+        // line_target が立ち、splat が線画へ流れる)
+        if self.active_layer != ActiveLayer::Wet {
+            self.select_layer(ActiveLayer::Wet);
+        }
         self.palette = palette;
         self.apply_palette();
         // 再生前の顔料スロットを退避(再生終了時に stop_replay が戻す)。
         // 再生中の再開でも最初の値を保つよう、既に退避済みなら上書きしない
         self.replay_ui.saved_channel.get_or_insert(self.params.brush_channel);
         self.replay_ui.player = Some(Player::new(recording));
+        // 再生で絵が載るので初回ガイドは出さない
+        self.has_painted = true;
     }
 
     /// 再生を止め、再生前に選択していた顔料スロットへ戻す。
@@ -863,7 +892,7 @@ impl PaintApp {
     /// snapshot() の読み戻し(display と同じ発色)から該当テクセルの RGB を取り出す。
     /// 表示色版なので「混ざってできた見た目の色」がそのまま顔料の基本色になる(§4 の先送り表)
     fn pick_color(&mut self, pos: egui::Pos2, rect: egui::Rect) {
-        // M6: snapshot は display と同じビュー変換(パン/ズーム/回転)込みで焼くので、
+        // M6: snapshot を画面と同じビュー変換(パン/ズーム/回転)で焼くので、
         // 画面 uv でそのまま索引する(= カーソル下に見えている画素)。screen_to_texel は
         // キャンバステクセルなので拡大・回転時にはズレる(zoom=1・無回転でのみ一致)
         let size = self.canvas_size;
@@ -873,9 +902,11 @@ impl PaintApp {
         let data = {
             let renderer = self.render_state.renderer.read();
             match renderer.callback_resources.get::<GpuCanvas>() {
-                Some(canvas) => {
-                    canvas.snapshot(&self.render_state.device, &self.render_state.queue)
-                }
+                Some(canvas) => canvas.snapshot(
+                    &self.render_state.device,
+                    &self.render_state.queue,
+                    &self.view_uniform(),
+                ),
                 None => Err("キャンバスが初期化されていません".to_owned()),
             }
         };
@@ -901,7 +932,7 @@ impl PaintApp {
         ));
     }
 
-    /// H6: 現在のキャンバス表示を snapshots/ に PNG 保存する。
+    /// H6: キャンバス全体(表示モードはそのまま、ビュー変換なし)を snapshots/ に PNG 保存する。
     /// ファイル名はタイムスタンプ+プリセット名(入力欄の値。「どの設定の絵か」を残す)
     fn save_snapshot(&mut self) {
         let result = (|| -> Result<PathBuf, String> {
@@ -911,7 +942,12 @@ impl PaintApp {
                     .callback_resources
                     .get::<GpuCanvas>()
                     .ok_or("キャンバスが初期化されていません")?;
-                canvas.snapshot(&self.render_state.device, &self.render_state.queue)?
+                // 書き出しはビュー(パン/ズーム/回転)に依らずキャンバス全体を無回転で焼く
+                canvas.snapshot(
+                    &self.render_state.device,
+                    &self.render_state.queue,
+                    &crate::gpu::ViewUniform::default(),
+                )?
             };
             let dir = crate::assets::base_dir().join("snapshots");
             std::fs::create_dir_all(&dir)
@@ -1081,7 +1117,24 @@ impl PaintApp {
         self.undo_stack.clear();
         self.stroke.end();
         self.painting = false;
+        // 作品名欄は読み込んだ作品にする(続きを描いてそのまま上書き保存できる)
+        self.work_ui.store.name = name.to_owned();
+        // 絵が載ったので初回ガイドは出さない
+        self.has_painted = true;
         self.status_msg = Some(format!("読込: {name}"));
+    }
+
+    /// 破棄すると失われる絵がキャンバスにあるか(作品読込の確認に使う)。
+    /// 一度でも描いた / 作品を読み込んだ / 再生した(has_painted)か、乾燥レイヤーがあれば true
+    fn canvas_has_content(&self) -> bool {
+        if self.has_painted {
+            return true;
+        }
+        let renderer = self.render_state.renderer.read();
+        renderer
+            .callback_resources
+            .get::<GpuCanvas>()
+            .is_some_and(|c| !c.layers.is_empty())
     }
 
     /// 左パネルのスクロール内容。セクションごとのメソッドへ振り分けるだけ(R4)。
@@ -1089,8 +1142,8 @@ impl PaintApp {
     /// (active_tools_panel が選択中レイヤーで出し分ける)。レイヤー関連は右パネル
     /// (layer_stack_panel)へ分離した
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
-        // 通常ユーザー向け。塗るツールだけを残し、作品保存・設定プリセット・PNG・新規/全消去は
-        // 上部「ファイル」メニュー(file_menu)へ移した。表示(ズーム・回転)は右パネル最上段
+        // 通常ユーザー向けは塗るツールだけ。作品保存・設定プリセット・PNG・新規/全消去は
+        // 上部「ファイル」メニュー(file_menu)、表示(ズーム・回転)は右パネル最上段にある
         self.active_tools_panel(ui);
         // F8: 制作者向けは開発モードのときだけ露出(削除でなく退避)。
         // 味付け・診断・シミュ制御・UIスクショ / 記録再生 / シェーダー状態

@@ -1,7 +1,7 @@
 //! ストローク → splat 列への変換。
 //! ポインタイベントは飛び飛びに来るので、前回位置から等間隔に補間して隙間のない線にする。
 
-use crate::sim::{MAX_SPLATS, Splat};
+use crate::sim::Splat;
 
 #[derive(Default)]
 pub struct StrokeState {
@@ -40,9 +40,6 @@ impl StrokeState {
                 let dir = [dx / dist, dy / dist];
                 let steps = (dist / spacing).ceil() as usize;
                 for i in 1..=steps {
-                    if out.len() >= MAX_SPLATS {
-                        break;
-                    }
                     let t = i as f32 / steps as f32;
                     out.push(Splat::new(
                         [prev[0] + dx * t, prev[1] + dy * t],

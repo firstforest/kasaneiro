@@ -1,4 +1,4 @@
-//! 乾燥ボタン(常時表示)と、アクティブレイヤーごとのツールパネル。app/mod.rs から分割(R4)。
+//! 乾燥ボタン(常時表示)と、アクティブレイヤーごとのツールパネル。
 //!
 //! レイヤーごとに使うツールが決まっているため、左パネルのツール群は右のレイヤーパネルで
 //! 選択中のレイヤーに関係するものだけを出す([`PaintApp::active_tools_panel`] が出し分ける):
@@ -39,32 +39,33 @@ impl PaintApp {
             {
                 // M5h: 焼き込み時点の現行パレットを渡して CPU 側にも記録する(抽出の正典)
                 let pal = self.palette.clone();
-                self.run_canvas_action(move |c, d, q| c.bake_dry(d, q, &pal));
-                // M6: 湿レイヤーを別経路で書き替えたので水彩の 1 段 undo を無効化
-                self.invalidate_wet_undo();
+                // M6: 湿レイヤーを別経路で書き替えたら水彩の 1 段 undo を無効化
+                if self.run_canvas_action(move |c, d, q| c.bake_dry(d, q, &pal)) {
+                    self.invalidate_wet_undo();
+                }
             }
             if ui
                 .button("にじみを止める")
                 .on_hover_text("Fast Dry: 色はそのまま、水の動きだけ止める(固定はしない)。浮遊顔料をその場で沈着させ、流れをゼロに")
                 .clicked()
+                && self.run_canvas_action(|c, d, q| c.fast_dry(d, q))
             {
-                self.run_canvas_action(|c, d, q| c.fast_dry(d, q));
                 self.invalidate_wet_undo();
             }
             if ui
                 .button("全体を濡らす")
                 .on_hover_text("Wet the Layer: キャンバス全面を濡らす(水量は開発モードの「再湿潤の水量」)")
                 .clicked()
+                && self.run_canvas_action(|c, d, q| c.rewet(d, q))
             {
-                self.run_canvas_action(|c, d, q| c.rewet(d, q));
                 self.invalidate_wet_undo();
             }
         });
         // M6: 統一 Undo/Redo(水彩=1段 / 線画=多段)。乾燥ボタンと同じく常時見える位置に置く。
         // Ctrl+Z / Ctrl+Shift+Z と同じ経路(末尾の操作種別で振り分け)
         ui.horizontal(|ui| {
-            let can_undo = !self.undo_stack.is_empty();
-            let can_redo = !self.line_history.redo.is_empty();
+            let can_undo = !self.painting && !self.undo_stack.is_empty();
+            let can_redo = !self.painting && !self.line_history.redo.is_empty();
             if ui
                 .add_enabled(can_undo, egui::Button::new("元に戻す"))
                 .on_hover_text("直前の操作を戻す (Ctrl+Z)。水彩は1段、線画は多段")
@@ -160,14 +161,7 @@ impl PaintApp {
                         .on_hover_text("名前・色・性質を色ライブラリへ保存します(同名は上書き)")
                         .clicked()
                     {
-                        let p = self.palette.pigments[i].clone();
-                        self.status_msg = Some(match crate::pigment_store::save(&pname, &p) {
-                            Ok(path) => {
-                                self.palette_ui.pigment_cache = crate::pigment_store::load_all();
-                                format!("保存: {}", path.display())
-                            }
-                            Err(e) => e,
-                        });
+                        self.save_pigment_to_library(i);
                     }
                     if ui
                         .button("2色目にする(分離色)")
@@ -406,14 +400,14 @@ impl PaintApp {
         self.raster_tool_footer(ui);
     }
 
-    /// 線画レイヤー共通のフッタ: 筆圧の注記 + 多段 Undo/Redo(M4.5d)
+    /// 線画レイヤー共通のフッタ: 筆圧の注記 + 線画履歴の本数(M4.5d)
     fn raster_tool_footer(&mut self, ui: &mut egui::Ui) {
         ui.label(
             egui::RichText::new("※ペンの筆圧で濃さ・太さが変わります(効き具合は開発モードの「筆圧」で調整)")
                 .weak()
                 .small(),
         );
-        self.line_history_controls(ui);
+        self.line_history_status(ui);
     }
 
     /// 乾燥レイヤー選択中の案内。焼き込みは一方通行なのでツールはなく、描画もブロックされる
@@ -496,27 +490,9 @@ impl PaintApp {
         }
     }
 
-    /// 線画の多段 Undo/Redo(M4.5d): ボタン+履歴本数の表示。キーは Ctrl+Z / Ctrl+Shift+Z。
-    /// 湿レイヤー(水彩)は対象外(M6 の 1 段 undo で扱う)
-    pub(in crate::app) fn line_history_controls(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let can_undo = !self.line_history.done.is_empty();
-            let can_redo = !self.line_history.redo.is_empty();
-            if ui
-                .add_enabled(can_undo, egui::Button::new("元に戻す"))
-                .on_hover_text("線画を1本戻す (Ctrl+Z)。水彩は対象外")
-                .clicked()
-            {
-                self.line_undo();
-            }
-            if ui
-                .add_enabled(can_redo, egui::Button::new("やり直し"))
-                .on_hover_text("取り消した線画を1本復元 (Ctrl+Shift+Z)")
-                .clicked()
-            {
-                self.line_redo();
-            }
-        });
+    /// 線画の多段 Undo/Redo(M4.5d)の履歴本数の表示。操作は左パネル最上部の統一
+    /// 「元に戻す / やり直し」(dry_controls)と Ctrl+Z / Ctrl+Shift+Z が担う
+    fn line_history_status(&self, ui: &mut egui::Ui) {
         ui.label(format!(
             "線画履歴: {} 本(やり直し {} 本)",
             self.line_history.done.len(),

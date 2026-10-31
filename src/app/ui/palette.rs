@@ -1,4 +1,4 @@
-//! パレット編集パネル(M5a/b)。app/mod.rs から分割(R4)。
+//! パレット編集パネル(M5a/b)。
 //!
 //! 固定 const だった 4 顔料を、色・ρ/ω/γ をその場で編集できるランタイムパレット
 //! ([`pigment::Palette`])にする。編集したら [`PaintApp::apply_palette`] で GPU の
@@ -147,22 +147,15 @@ impl PaintApp {
         }
 
         // 1クリック保存(M5f。保存名=顔料名の1本化)。保存すると下のライブラリに即現れる
-        let current = self.palette.pigments[ch].clone();
-        let name = current.name.trim().to_owned();
+        let has_name = !self.palette.pigments[ch].name.trim().is_empty();
         if ui
-            .add_enabled(!name.is_empty(), egui::Button::new("この色をとっておく"))
+            .add_enabled(has_name, egui::Button::new("この色をとっておく"))
             .on_hover_text(
                 "この色(名前・色・性質)を下の色ライブラリへ1クリック保存します(同名は上書き)",
             )
             .clicked()
         {
-            self.status_msg = Some(match pigment_store::save(&name, &current) {
-                Ok(path) => {
-                    self.palette_ui.pigment_cache = pigment_store::load_all();
-                    format!("保存: {}", path.display())
-                }
-                Err(e) => e,
-            });
+            self.save_pigment_to_library(ch);
         }
         ui.label(
             egui::RichText::new(
@@ -171,6 +164,22 @@ impl PaintApp {
             .weak()
             .small(),
         );
+    }
+
+    /// スロット `slot` の色を色ライブラリへ保存する(保存名 = 顔料名)。保存名はファイル名として
+    /// 正規化されるので、変わった場合はパレット上の顔料名もその名前に揃える
+    pub(in crate::app) fn save_pigment_to_library(&mut self, slot: usize) {
+        let pigment = self.palette.pigments[slot].clone();
+        self.status_msg = Some(match pigment_store::save(&pigment.name, &pigment) {
+            Ok((path, saved_name)) => {
+                if saved_name != pigment.name {
+                    self.palette.pigments[slot].name = saved_name;
+                }
+                self.palette_ui.pigment_cache = pigment_store::load_all();
+                format!("保存: {}", path.display())
+            }
+            Err(e) => e,
+        });
     }
 
     /// 色ライブラリ(M5f): とっておいた1色のスウォッチグリッド。クリックで選択中スロットへ
@@ -336,7 +345,12 @@ impl PaintApp {
                 .on_hover_text("いまの4色一式をこの名前で保存します(同名は上書き)")
                 .clicked()
             {
-                self.status_msg = Some(match palette_store::save(&name, &self.palette) {
+                let result = self
+                    .palette_ui
+                    .store
+                    .sanitize_input()
+                    .and_then(|clean| palette_store::save(&clean, &self.palette));
+                self.status_msg = Some(match result {
                     Ok(path) => {
                         self.palette_ui.palette_cache = palette_store::load_all();
                         format!("保存: {}", path.display())

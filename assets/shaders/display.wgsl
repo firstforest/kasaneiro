@@ -11,14 +11,14 @@
 // 先頭に common.wgsl が連結される。
 //
 // 通常表示の混色(M1c): 4顔料の濃度(浮遊+沈着)と紙を mixbox の latent 空間で
-// 線形混合し、latent → RGB 多項式で発色する。latent は CPU 側(src/pigment.rs)が
+// 線形混合し、latent → RGB 多項式で発色する。latent は CPU 側(crates/pigment/src/lib.rs)が
 // mixbox LUT から顔料ごとに1回だけ計算して uniform で渡すため、GPU に LUT は不要。
 //
 // 乾燥レイヤー(M2): texture array の各スライス = 1 乾燥レイヤー(rgba = 4顔料濃度)。
 // 合成は params.compose_mode で切替(H5 の再生で A/B 比較):
 //   0 = multiply(M2): 最終色 = 湿レイヤーの紙上発色 × Π(可視な乾燥レイヤーを白地に置いた透過率)
 //   1 = KM(M3): 各層を白地/黒地に置いた発色 R_w,R_b から反射率 R=R_b・透過率² T²=(R_w−R_b)(1−R_b)
-//       を導き(km.rs の簡約)、紙を最下層に下から光学合成する。上に薄い層を重ねるほど下が透ける
+//       を導き(crates/km/src/lib.rs の簡約)、紙を最下層に下から光学合成する。上に薄い層を重ねるほど下が透ける
 //       「内側から光る」グレーズ挙動になる。計算はリニア色空間で行い最後に sRGB へ戻す(note 03 §3)。
 // どちらも層「内」の混色は mixbox の latent 混合(render_conc)を通す(黄+青が濁らない M1c の芯)。
 
@@ -45,11 +45,10 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 //   グローバル光学(先頭 GLOBAL_LATENTS=6): [0],[1]=紙色 / [2],[3]=白(R_w)/ [4],[5]=黒(R_b, KM)
 //   パレット枠(pal ごとに PIGMENT_LATENTS=8): 顔料 i は [PAL_BASE(pal)+2i]=(c0..c3), [+2i+1]=RGB 残差
 //   pal = 0..MAX_LAYERS-1 は乾燥レイヤーのスロット別(乾かした瞬間に記録=色が遡って変わらない)、
-//   pal = LIVE_PALETTE(=MAX_LAYERS) は現行(湿レイヤー)のパレット。総数 LATENT_TOTAL=6+9×8=78
-@group(0) @binding(4) var<uniform> latents: array<vec4f, 78>;
-const GLOBAL_LATENTS: u32 = 6u;
-const PIGMENT_LATENTS: u32 = 8u;
-const LIVE_PALETTE: u32 = 8u;
+//   pal = LIVE_PALETTE(=MAX_LAYERS) は現行(湿レイヤー)のパレット。総数 LATENT_TOTAL。
+//   定数(GLOBAL_LATENTS / PIGMENT_LATENTS / LIVE_PALETTE / LATENT_TOTAL / MAX_LAYERS)は
+//   Rust 側(src/gpu/prelude.rs)が生成して先頭に連結する
+@group(0) @binding(4) var<uniform> latents: array<vec4f, LATENT_TOTAL>;
 // パレット pal の顔料ブロック先頭(latents 内の vec4 インデックス)
 fn pal_base(pal: u32) -> u32 { return GLOBAL_LATENTS + pal * PIGMENT_LATENTS; }
 @group(0) @binding(5) var paper_tex: texture_2d<f32>;
@@ -63,7 +62,7 @@ struct LayerUniform {
     visible_mask: u32,
     _pad0: u32,
     _pad1: u32,
-    order: array<vec4u, 2>,
+    order: array<vec4u, LAYER_ORDER_VEC4S>,
 };
 @group(0) @binding(7) var<uniform> layers: LayerUniform;
 // 線画(M4.5a): r32float ×2。r = インク濃度 0..1(0=線なし)。色より上に合成する
@@ -206,7 +205,7 @@ fn load_bilinear_layer(t: texture_2d_array<f32>, p: vec2f, layer: u32) -> vec4f 
 // 顔料なしのテクセルは白(=1)なので積に影響しない
 fn dried_factor(p: vec2f) -> vec3f {
     var factor = vec3f(1.0);
-    for (var k = 0u; k < min(layers.count, 8u); k++) {
+    for (var k = 0u; k < min(layers.count, MAX_LAYERS); k++) {
         if ((layers.visible_mask & (1u << k)) == 0u) {
             continue;
         }
@@ -233,7 +232,7 @@ fn linear_to_srgb(c: vec3f) -> vec3f {
 }
 
 // 濃度 conc の1層を、リニア反射率 r_below の下地の上に KM で重ねた反射率(リニア)。
-// 層の反射率 R=R_b(黒地発色)・透過率² T²=(R_w−R_b)(1−R_b)(km.rs の簡約)を
+// 層の反射率 R=R_b(黒地発色)・透過率² T²=(R_w−R_b)(1−R_b)(crates/km/src/lib.rs の簡約)を
 // 白地/黒地の mixbox 発色から求め、合成式 R = R_top + T²·R_below/(1−R_top·R_below) を畳む。
 fn km_over_conc(conc: vec4f, r_below: vec3f, pal: u32) -> vec3f {
     let rw = srgb_to_linear(render_conc(conc, latents[2], latents[3], pal));
@@ -248,7 +247,7 @@ fn km_over_conc(conc: vec4f, r_below: vec3f, pal: u32) -> vec3f {
 fn km_composite(water: f32, susp: vec4f, dep: vec4f, p: vec2f) -> vec3f {
     // 下地 = 紙の反射率(リニア)。render_conc(0,紙) は紙色そのもの(pal は濃度0なので不問)
     var r = srgb_to_linear(render_conc(vec4f(0.0), latents[0], latents[1], LIVE_PALETTE));
-    for (var k = 0u; k < min(layers.count, 8u); k++) {
+    for (var k = 0u; k < min(layers.count, MAX_LAYERS); k++) {
         if ((layers.visible_mask & (1u << k)) == 0u) {
             continue;
         }

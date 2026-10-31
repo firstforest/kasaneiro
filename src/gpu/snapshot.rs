@@ -1,22 +1,30 @@
-//! PNG スナップショット(H6)の読み戻し。gpu/mod.rs から分離。
+//! PNG スナップショット(H6)の読み戻し。
 //!
 //! display と同じシェーダーをスナップショット用フォーマットでオフスクリーンに焼き、
 //! テクスチャ → バッファ → map で RGBA8 の Vec に読み戻す。M5e(スポイト)・M7(全テクスチャ
 //! の保存/復元)で汎用 readback が要るようになったら R8 でここを一般化する。
 
-use super::GpuCanvas;
+use super::{GpuCanvas, ViewUniform};
 use eframe::egui_wgpu::wgpu;
 
 impl GpuCanvas {
     /// 現在のキャンバス表示を RGBA8(行連続、size²)で読み戻す(H6 PNG スナップショット)。
-    /// display と同じシェーダー・同じ表示モードで焼くため、画面に見えているものがそのまま残る。
+    /// display と同じシェーダー・同じ表示モードで、ビュー変換 `view` を当てて焼く
+    /// (PNG 書き出しは `ViewUniform::default()` = 全体・無回転、スポイトは画面と同じビュー)。
+    /// view_buffer は表示と共有で、次フレームの encode_frame が表示用に書き直す。
     /// GPU 完了を同期で待つ(手動ボタン操作なので 1 フレームの停止は許容)。
-    pub fn snapshot(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Vec<u8>, String> {
+    pub fn snapshot(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &ViewUniform,
+    ) -> Result<Vec<u8>, String> {
         let pipelines = self
             .pipelines
             .as_ref()
             .ok_or("シェーダーが未ビルドです")?;
 
+        queue.write_buffer(&self.view_buffer, 0, bytemuck::bytes_of(view));
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("snapshot_encoder"),

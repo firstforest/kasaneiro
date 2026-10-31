@@ -16,13 +16,15 @@
 //! GpuCanvas は egui-wgpu の callback_resources に置かれ、次の2経路から触られる:
 //! - フレームごとの描画は [`CanvasCallback`](callback)(prepare で compute、paint で表示)。
 //!   compute 本体の `encode_frame` は headless 駆動([`crate::headless`]、e2e)からも呼ばれる
-//! - ホットリロード時の再ビルドは app.rs から rebuild_pipelines()
+//! - ホットリロード時の再ビルドは src/app/mod.rs から rebuild_pipelines()
 //!
 //! ファイル構成(このモジュールはリソース定義と型・実行時メソッドを持つ。長い処理は分離):
 //! - [`init`] — `GpuCanvas::new`(テクスチャ・バッファ・bind group の生成)
 //! - [`callback`] — `CanvasCallback`(フレーム描画。パス実行順の正典)
 //! - [`snapshot`] — `GpuCanvas::snapshot`(PNG 読み戻し。H6)
 //! - [`persist`] — `GpuCanvas::export_state` / `import_state`(作品保存の GPU 読み戻し/書き戻し。M7)
+//! - [`prelude`] — Rust と WGSL で共有する定数(MAX_LAYERS・latent 枠・タイル)と、それを
+//!   WGSL の const として各シェーダー先頭に連結するプレリュードの生成
 //! - [`shader_error`] — WGSL エラーの行番号補正(R3 QoL)
 
 pub mod hot_reload;
@@ -30,11 +32,14 @@ pub mod hot_reload;
 mod callback;
 mod init;
 mod persist;
+mod prelude;
 mod shader_error;
 mod snapshot;
 
 pub use callback::CanvasCallback;
 pub use persist::WorkTextures;
+pub use prelude::{LATENT_TOTAL, MAX_LAYERS};
+use prelude::{LIVE_PALETTE, PALETTE_SLOTS, TILE_SIZE, shader_prelude};
 
 use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
 use shader_error::remap_shader_error_lines;
@@ -49,24 +54,8 @@ const SIM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 /// 紙ハイト(M1d)は静的なので含まない(paper_texture として別持ち)
 const TEX_KINDS: usize = 3;
 
-/// 乾燥レイヤー(M2)の上限枚数。texture array のスライス数として固定確保する
-/// (512² rgba32float × 8 = 32MB。display.wgsl の visible_mask が u32 なので 32 が理論上限)
-pub const MAX_LAYERS: usize = 8;
-
 /// 紙ハイト生成のシード。「紙を作り直す」UI を足すならここをフィールド化する
 const PAPER_SEED: u32 = 0x5EED;
-
-/// latents uniform が持つパレット枠数(M5c)。乾燥レイヤー MAX_LAYERS 個 + 現行(live)1 個。
-/// dried スロット s(0..MAX_LAYERS)は乾かした瞬間に現行パレットを焼き込んで固定し、
-/// 現行(live)パレット枠 = 末尾(`LIVE_PALETTE`)は編集のたびに書き替える
-pub const PALETTE_SLOTS: usize = MAX_LAYERS + 1;
-
-/// 現行(live)パレットの枠番号(dried スロットの後ろ)。湿レイヤーの発色はここを使う
-const LIVE_PALETTE: usize = MAX_LAYERS;
-
-/// latents uniform の総 vec4 数 = グローバル光学 + パレット数 × 顔料ブロック。
-/// display.wgsl の `array<vec4f, LATENT_TOTAL>` と一致させること(78 = 6 + 9×8)
-pub const LATENT_TOTAL: usize = pigment::GLOBAL_LATENTS + PALETTE_SLOTS * pigment::PIGMENT_LATENTS;
 
 /// 発散緩和の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_RELAX_ITERS: u32 = 64;
@@ -74,19 +63,6 @@ const MAX_RELAX_ITERS: u32 = 64;
 /// 顔料拡散の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_DIFFUSE_ITERS: u32 = 32;
 
-/// アクティブタイル(M6): 1タイルの1辺テクセル数。WGSL 側の同名定数は
-/// `shader_prelude`(M8)が生成して連結するので、ここが唯一の定義
-const TILE_SIZE: u32 = 16;
-
-/// キャンバスサイズ依存の WGSL 定数(M8)。common.wgsl より前に連結する。
-/// タイル数はキャンバス1辺から決まるため、ファイル(ホットリロード対象)でなく
-/// Rust が生成する。shader_compile テストは既定サイズ(512)相当の同じ2行で検証する
-fn shader_prelude(size: u32) -> String {
-    format!(
-        "const TILE_SIZE: u32 = {TILE_SIZE}u;\nconst TILES_PER_SIDE: u32 = {}u;\n",
-        size / TILE_SIZE
-    )
-}
 
 /// compute シェーダーのバインドグループレイアウト種別(R3)。
 /// ほとんどは共通レイアウト、bake だけ専用(乾燥レイヤースライス binding 9)。
@@ -96,7 +72,7 @@ enum ComputeLayout {
     Bake,
     /// ラスタ線画(M4.5a): 対象の線画テクスチャ(read_write)+ params + splats + 紙ハイト
     Raster,
-    /// アクティブタイル走査(M6、tilescan): 水/浮遊/沈着(read)+ params + splats + raw_active(write)
+    /// アクティブタイル走査(M6、tilescan): 水(read)+ params + splats + raw_active(write)
     TileScan,
     /// アクティブタイル膨張(M6、tiledilate): raw_active(read)→ active(write)
     TileDilate,
@@ -275,7 +251,7 @@ pub struct GpuCanvas {
     tiledilate_bind_group: wgpu::BindGroup,
     tilescan_layout: wgpu::PipelineLayout,
     tiledilate_layout: wgpu::PipelineLayout,
-    /// 乾燥レイヤーの重ね順とメタ情報(先頭が最下層)。UI(app.rs)から直接編集し、
+    /// 乾燥レイヤーの重ね順とメタ情報(先頭が最下層)。UI(src/app/ui/layers.rs)から直接編集し、
     /// 変更後に sync_layers() で uniform へ反映する
     pub layers: Vec<DriedLayer>,
     /// 乾燥レイヤーの記録時パレット(M5h)。index = slot。GPU の latents 枠(M5c)が
@@ -295,6 +271,8 @@ pub struct GpuCanvas {
     snapshot_texture: wgpu::Texture,
     snapshot_view: wgpu::TextureView,
     snapshot_buffer: wgpu::Buffer,
+    /// デバイスで `Features::CLEAR_TEXTURE` が有効か(clear / clear_line の実装を選ぶ)
+    clear_texture: bool,
 }
 
 impl GpuCanvas {
@@ -305,57 +283,64 @@ impl GpuCanvas {
 
     /// キャンバスをリセット(水・速度・濡れマスク・顔料をゼロに = 乾いた白い紙)。
     /// 乾燥レイヤー(M2)も全て破棄する(スロットは焼き込み時に上書きされるため
-    /// テクスチャ自体はクリア不要。count=0 で表示から消える)
-    pub fn clear(&mut self, queue: &wgpu::Queue) {
-        let size = self.size;
-        // rgba32float 1 テクセル = 16 バイト。全ゼロ = 水なし・顔料なし・全面乾燥
-        let zeros = vec![0u8; (size * size * 16) as usize];
-        for texture in self.textures.iter().flatten() {
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &zeros,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(size * 16),
-                    rows_per_image: None,
-                },
-                wgpu::Extent3d {
-                    width: size,
-                    height: size,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
-        // 線画(M4.5a): r32float = 4 バイト/テクセル。全ゼロ = 線なし
-        for texture in &self.line_textures {
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &zeros[..(size * size * 4) as usize],
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(size * 4),
-                    rows_per_image: None,
-                },
-                wgpu::Extent3d {
-                    width: size,
-                    height: size,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
+    /// テクスチャ自体はクリア不要。count=0 で表示から消える)。
+    /// 作成直後のテクスチャは wgpu がゼロ初期化するので、new() からは呼ばない
+    pub fn clear(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let textures: Vec<&wgpu::Texture> = self
+            .textures
+            .iter()
+            .flatten()
+            .chain(self.line_textures.iter())
+            .collect();
+        self.zero_textures(device, queue, &textures);
         self.layers.clear();
         self.layer_palettes.clear();
         self.sync_layers(queue);
+    }
+
+    /// 2D テクスチャ(1 スライス・1 mip)群をゼロにする。`CLEAR_TEXTURE` が使えるデバイス
+    /// (main.rs がアダプタ対応時に要求する)では GPU 上の clear_texture、使えなければ
+    /// ゼロ埋めのバイト列を write_texture する(sim は rgba32float=16B、線画は r32float=4B)
+    fn zero_textures(&self, device: &wgpu::Device, queue: &wgpu::Queue, textures: &[&wgpu::Texture]) {
+        if self.clear_texture {
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("clear_textures"),
+            });
+            for texture in textures {
+                encoder.clear_texture(texture, &wgpu::ImageSubresourceRange::default());
+            }
+            queue.submit([encoder.finish()]);
+            return;
+        }
+        let size = self.size;
+        let max_texel = textures
+            .iter()
+            .filter_map(|t| t.format().block_copy_size(None))
+            .max()
+            .unwrap_or(0);
+        let zeros = vec![0u8; (size * size * max_texel) as usize];
+        for texture in textures {
+            let texel = texture.format().block_copy_size(None).unwrap_or(0);
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &zeros[..(size * size * texel) as usize],
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size * texel),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
     }
 
     /// 乾燥レイヤー slot の記録時パレット(M5h)。UI のパレット抽出が読む。
@@ -411,29 +396,9 @@ impl GpuCanvas {
         &self.raster_bind_groups[target.index()]
     }
 
-    /// 線画テクスチャ1枚をゼロに戻す(M4.5d の Undo で対象を再ラスタライズする前に呼ぶ)。
-    /// r32float = 4 バイト/テクセル
-    pub fn clear_line(&self, queue: &wgpu::Queue, target: LineTarget) {
-        let zeros = vec![0u8; (self.size * self.size * 4) as usize];
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.line_textures[target.index()],
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &zeros,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(self.size * 4),
-                rows_per_image: None,
-            },
-            wgpu::Extent3d {
-                width: self.size,
-                height: self.size,
-                depth_or_array_layers: 1,
-            },
-        );
+    /// 線画テクスチャ1枚をゼロに戻す(M4.5d の Undo で対象を再ラスタライズする前に呼ぶ)
+    pub fn clear_line(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: LineTarget) {
+        self.zero_textures(device, queue, &[&self.line_textures[target.index()]]);
     }
 
     /// 1ストロークを対象の線画テクスチャへ引き直す(M4.5d の Undo/Redo 再ラスタライズ)。
@@ -452,9 +417,11 @@ impl GpuCanvas {
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(params));
         let workgroups = self.size.div_ceil(8);
         for chunk in splats.chunks(MAX_SPLATS) {
+            // 線画専用の即時実行なので tilescan 向けの fluid_count は 0
             let header = SplatHeader {
                 count: chunk.len() as u32,
-                _pad: [0; 3],
+                fluid_count: 0,
+                _pad: [0; 2],
             };
             let mut bytes = Vec::with_capacity(
                 std::mem::size_of::<SplatHeader>() + std::mem::size_of_val(chunk),
@@ -481,7 +448,7 @@ impl GpuCanvas {
     }
 
     /// レイヤーの並び・可視性(self.layers)を display 用 uniform へ反映する(M2)。
-    /// app.rs がレイヤーパネルで layers を編集したあとに呼ぶ
+    /// レイヤーパネル(src/app/ui/layers.rs)が layers を編集したあとに呼ぶ
     pub fn sync_layers(&self, queue: &wgpu::Queue) {
         let mut uniform = LayerUniform {
             count: self.layers.len().min(MAX_LAYERS) as u32,
@@ -672,6 +639,13 @@ impl GpuCanvas {
         // 補正のため連結プレフィックス(プレリュード + common + "\n")の行数を数えておく(R3)
         let prefix_lines = common.matches('\n').count() + 1;
         let load = |name: &str| -> Result<String, String> { Ok(format!("{common}\n{}", read(name)?)) };
+        // 読込失敗で早期 return してもエラースコープを pop し損ねないよう、
+        // スコープを push する前に全シェーダーを読み切る
+        let mut compute_sources = Vec::with_capacity(COMPUTE_SHADERS.len());
+        for &(name, layout) in COMPUTE_SHADERS {
+            compute_sources.push((name, layout, load(name)?));
+        }
+        let display_source = load("display.wgsl")?;
 
         // エラースコープで検証エラーを捕捉し、クラッシュさせない
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -685,8 +659,8 @@ impl GpuCanvas {
 
         // compute パイプラインは COMPUTE_SHADERS の表を回して作る(シェーダー追加 = 表に1行。R3)
         let mut compute = HashMap::new();
-        for &(name, layout) in COMPUTE_SHADERS {
-            let module = make_module(name, load(name)?);
+        for (name, layout, source) in compute_sources {
+            let module = make_module(name, source);
             let pipeline_layout = match layout {
                 ComputeLayout::Common => &self.compute_layout,
                 // bake(M2)だけ専用レイアウト(binding 9 = 乾燥レイヤースライス)
@@ -708,7 +682,7 @@ impl GpuCanvas {
             compute.insert(name, pipeline);
         }
 
-        let display_module = make_module("display.wgsl", load("display.wgsl")?);
+        let display_module = make_module("display.wgsl", display_source);
         // 同じ display シェーダーを、画面用とスナップショット用(H6)の2フォーマットで作る
         let make_display = |label: &str, format: wgpu::TextureFormat| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {

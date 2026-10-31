@@ -3,10 +3,10 @@
 //
 // シミュレーションテクスチャのレイアウト(いずれも rgba32float、ping-pong 2枚組):
 //   水:       r = 水量 / g = 速度x / b = 速度y / a = 濡れマスク(0=乾いた紙 / 1=濡れた領域)
-//   浮遊顔料: rgba の各チャンネル = 顔料1種(M1c から4顔料 = src/pigment.rs の PIGMENTS。水の流れに乗って移流する)
+//   浮遊顔料: rgba の各チャンネル = 顔料1種(パレットの4スロット = crates/pigment/src/lib.rs の Palette。水の流れに乗って移流する)
 //   沈着顔料: 同上(紙に定着した分。移流しない)
 // これに加えて紙ハイト(M1d): r32float 1枚、r = 高さ 0..1(0=谷 / 1=山)。
-// CPU(src/paper.rs)が起動時に生成する静的テクスチャで、ping-pong しない。
+// CPU(crates/paint-core/src/paper.rs)が起動時に生成する静的テクスチャで、ping-pong しない。
 // compute パスの binding は全シェーダー共通:
 //   0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats, 8 = 紙ハイト
 //   9 = 顔料個性(M3): array<vec4f, 4>、各 vec4 = (密度 ρ, ステイニング ω, 粒状感 γ, 粒の細かさ μ)。
@@ -18,7 +18,7 @@
 // 乾燥レイヤー(M2): rgba32float の texture array(1 スライス = 1 乾燥レイヤー、rgba = 4顔料濃度)。
 // bake.wgsl だけが binding 9 に書き込みスライスを持つ(splats は持たない)。表示側の合成は display.wgsl 参照
 
-// src/sim/mod.rs の SimParams と同レイアウトにすること(H2)
+// crates/paint-core/src/sim.rs の SimParams と同レイアウトにすること(H2。tests/sim_params_layout.rs が検査)
 struct SimParams {
     brush_radius: f32,
     brush_water: f32,
@@ -79,11 +79,12 @@ struct SimParams {
 };
 
 // アクティブタイル(M6): シミュレーションを「濡れているタイル+ブラシ近傍」だけに絞る土台。
-// tilescan がタイルごとに濡れ/顔料/ブラシ有無を判定し、tiledilate が1タイル分ふくらませて
+// tilescan がタイルごとに濡れ/ブラシ有無を判定し、tiledilate が1タイル分ふくらませて
 // active フラグ(binding 11 = array<u32>)を作る。各シミュパスは非アクティブなタイルを素通しする。
-// TILE_SIZE(1タイルの1辺テクセル数)と TILES_PER_SIDE(キャンバス1辺のタイル数)は
-// キャンバスサイズ依存(M8)のため、このファイルではなく Rust 側(gpu/mod.rs の
-// shader_prelude)が const 2行を生成して本ファイルのさらに前に連結する。
+// TILE_SIZE(1タイルの1辺テクセル数)・TILES_PER_SIDE(キャンバス1辺のタイル数。M8 で
+// キャンバスサイズ依存)をはじめ Rust と共有する定数(MAX_LAYERS / LATENT_TOTAL など)は、
+// このファイルではなく Rust 側(src/gpu/prelude.rs の shader_prelude)が const として生成し、
+// 本ファイルのさらに前に連結する。
 
 // テクセル座標 → タイルの線形 index(active 配列の添字)
 fn tile_index_of(p: vec2u) -> u32 {
@@ -96,7 +97,7 @@ fn pressure_curve(pressure: f32) -> f32 {
     return pow(clamp(pressure, 0.0, 1.0), max(params.pressure_gamma, 0.01));
 }
 
-// src/sim/mod.rs の Splat と同レイアウト(32 バイト)
+// crates/paint-core/src/sim.rs の Splat と同レイアウト(32 バイト)
 struct Splat {
     pos: vec2f,      // テクセル座標
     vel: vec2f,      // ストローク方向の単位ベクトル(初速の向き)
@@ -107,8 +108,8 @@ struct Splat {
 };
 
 struct SplatBuffer {
-    count: u32,
-    _pad0: u32,
+    count: u32,        // splat 数(splat / linesplat が読む)
+    fluid_count: u32,  // 流体へ流す splat 数(tilescan が読む。線画ツールのフレームは 0)
     _pad1: u32,
     _pad2: u32,
     splats: array<Splat>,

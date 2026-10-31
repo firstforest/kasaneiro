@@ -46,26 +46,30 @@
 
 ## 2. プロジェクト構成
 
+モジュール単位の構成は [architecture.md](architecture.md) §2 が正典。骨格は次のとおり:
+
 ```
 kasaneiro/
-├─ Cargo.toml
+├─ Cargo.toml          [workspace](3 crate)+ バイナリ package(GPU / UI / 入力)
+├─ crates/
+│  ├─ km/              Kubelka-Munk 純関数(CPU 参照、cargo test 対象)
+│  ├─ pigment/         Palette・mixbox latent / 物性 uniform(mixbox 依存はここだけ)
+│  └─ paint-core/      SimParams・Splat・brush・paper・replay モデル・tool(wgpu を持たない CPU 純粋部)
 ├─ src/
-│  ├─ main.rs            # eframe 起動
-│  ├─ app.rs             # egui パネル群(パラメータ・デバッグ表示・ツール選択)
-│  ├─ gpu/               # wgpu 初期化、パイプライン管理、ping-pong、ホットリロード
-│  ├─ sim/               # シミュレーション制御(パス順序、SimParams、テクスチャ群)
-│  ├─ brush.rs           # ストローク → splat(位置補間、筆圧マッピング)
-│  ├─ input.rs           # 入力抽象(trait)。マウス / ペン(egui Touch)→ (将来 wasm Pointer)
-│  ├─ replay.rs          # ストローク記録・再生(H5)
-│  └─ km.rs              # Kubelka-Munk 純関数(CPU参照、cargo test 対象)
+│  ├─ main.rs          eframe 起動
+│  ├─ app/             egui UI(PaintApp・パネル群 ui/*.rs・線画履歴)
+│  ├─ gpu/             wgpu リソース・パイプライン・フレーム描画(パス実行順)・読み戻し・ホットリロード
+│  ├─ input.rs         入力抽象(trait)。マウス / ペン(egui Touch)→ (将来 wasm Pointer)
+│  └─ …                プリセット・パレット・色・ストローク・作品の永続化、アセットパス解決
 ├─ assets/
-│  ├─ shaders/*.wgsl     # 実行時ロード(H1)。ビルドに埋め込まない
-│  ├─ presets/*.json     # SimParams・顔料プリセット(H3、git管理)
-│  └─ strokes/*.json     # テストストローク(H5、git管理)
+│  ├─ shaders/*.wgsl   実行時ロード(H1)。通常ビルドは埋め込まない
+│  ├─ presets/ palettes/ pigments/ strokes/   JSON(git 管理)
+│  └─ fonts/ licenses/
+├─ tests/              WGSL コンパイル可能性・SimParams レイアウト検査
 └─ docs/
 ```
 
-- ~~単一クレートで開始(ワークスペース分割は必要になってから)~~ → **2026-07-05 更新**: workspace 3 crate(km / pigment / paint-core)+バイナリへ分割する([refactoring.md](refactoring.md) R1)。mixbox 隔離を依存グラフで強制し、CPU 純粋部のテスト反復を速くするため
+- workspace は km / pigment / paint-core の 3 crate + バイナリ([refactoring.md](refactoring.md) R1)。mixbox 隔離を依存グラフで強制し、CPU 純粋部のテスト反復を速くするため
 - **依存クレートは egui の対応バージョンを起点にロックステップで固定**(egui → egui-wgpu → wgpu → winit の順に合わせる。[05](note/05-rust-feasibility.md) §1 の注意)
 - コンパイル時間対策: `[profile.dev.package."*"] opt-level = 2`(依存だけ最適化)+ 自前コードは opt-level 1。シミュレーションは GPU 側なので dev ビルドでも 60fps が出るはず
 
@@ -116,7 +120,7 @@ Curtis 簡略版を **4つの小ステップ**に割り、各ステップで画�
 マウスで wet-on-wet が成立してから、`input.rs` の trait 実装にペンを追加。筆圧 → 水量・顔料量・半径へのマッピングを H2 のスライダーで調整可能にする。
 
 **完了条件**: ペンの筆入れ・筆抜きで水と顔料の量が変わり、ストロークに強弱が出る。
-**結果(2026-07-05 完了)**: 計画していた octotablet は、Manager を作るとメッセージループがデッドロックしアプリが応答なしになる既知バグ([issue #18](https://github.com/Fuzzyzilla/octotablet/issues/18)。0.1.0 / git master とも再現)により**不採用**。実際には egui 標準の Touch イベント(winit が WM_POINTER から `GetPointerPenInfo` の筆圧付きで届ける)だけで筆圧が取れたため、追加依存なしで実装した。詳細は status.md の M1.5 行。
+**結果(2026-07-05 完了)**: 計画していた octotablet は、Manager を作るとメッセージループがデッドロックしアプリが応答なしになる既知バグ([issue #18](https://github.com/Fuzzyzilla/octotablet/issues/18)。0.1.0 / git master とも再現)により**不採用**。実際には egui 標準の Touch イベント(winit が WM_POINTER から `GetPointerPenInfo` の筆圧付きで届ける)だけで筆圧が取れたため、追加依存なしで実装した。詳細は changelog.md の「マイルストーン完了時点のメモ」の M1.5 行。
 
 ### M2 — 乾燥とレイヤー(要件2: グレージング)
 
@@ -137,7 +141,7 @@ Curtis 簡略版を **4つの小ステップ**に割り、各ステップで画�
 - **リフティングツール**([03](note/03-layering-glazing-lifting.md) §5 のレシピ): 沈着層→浮遊層への転送、ステイン床クランプ(`ω·gd_initial`)、紙ハイトでのマスク変調、剥がした顔料の縁への再沈着
 - **完全消去ツール**を別ツールとして併設(Painter 方式の2ツール構成)
 - 顔料パラメータ **ρ / ω / γ + K,S** をプリセット化(Curtis 論文の12顔料の実値表から開始)
-- レイヤー合成を multiply → **KM の R/T 合成**へ置換(`km.rs` の CPU 実装をテストで検証してから WGSL 化。リニア色空間・sinh/cosh のオーバーフロー対策)
+- レイヤー合成を multiply → **KM の R/T 合成**へ置換(`crates/km` の CPU 実装をテストで検証してから WGSL 化。リニア色空間・sinh/cosh のオーバーフロー対策)
 
 **完了条件**: 削って白(に近い部分)を作れる。ステイニング顔料は床が残り、粒状化顔料は紙目に溜まる、と顔料ごとの個性が見える。
 **試行錯誤対象**: 顔料12種の効き、リフト率、KM 合成前後の見た目比較(H5 のストローク再生で multiply と A/B)。
@@ -174,7 +178,7 @@ Curtis 簡略版を **4つの小ステップ**に割り、各ステップで画�
 
 ### M5 — パレット(顔料の作成・編集・スポイト)
 
-計画追加: 2026-07-05。固定4顔料([src/pigment.rs](../src/pigment.rs) の const)を「**自由に編集できる4スロット+無限にストックできるライブラリ**」に広げる。同時顔料数(テクスチャ4ch)は変えない — 選べる色の少なさはライブラリで、1枚の絵の多色化はレイヤーごとのパレット記録(下記③)で解決するため、チャンネル拡張は不要(§4 の先送り表参照)。
+計画追加: 2026-07-05。固定4顔料(`pigment` crate の const)を「**自由に編集できる4スロット+無限にストックできるライブラリ**」に広げる。同時顔料数(テクスチャ4ch)は変えない — 選べる色の少なさはライブラリで、1枚の絵の多色化はレイヤーごとのパレット記録(下記③)で解決するため、チャンネル拡張は不要(§4 の先送り表参照)。
 
 | ステップ | 内容 | 見て確認すること |
 |---|---|---|

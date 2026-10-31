@@ -1,14 +1,12 @@
 // tilescan.wgsl — アクティブタイル(M6)の第1段: タイルごとの「生」有効フラグを作る。
-// 1 invocation = 1タイル。タイル内テクセルを走査して濡れ/水/顔料があるか、または
-// このフレームのブラシ(splat)が近傍に触れるかを判定し、raw_active[タイル] に 0/1 を書く。
+// 1 invocation = 1タイル。タイル内に濡れたセルがあるか、またはこのフレームのブラシ(流体へ
+// 流す splat)が近傍に触れるかを判定し、raw_active[タイル] に 0/1 を書く。
 // このあと tiledilate.wgsl が1タイル分ふくらませて active を作る(にじみ前線の余裕)。
 // シミュ本体より前(gpu/callback.rs)に current テクスチャを src として読む。
-// active_tiles==0(最適化オフ)のときは全タイルを有効化して従来どおり全面計算に戻す。
+// active_tiles==0(最適化オフ)のときは全タイルを有効化して全面計算にする。
 // 先頭に common.wgsl が連結される(SimParams / SplatBuffer / TILE_SIZE / TILES_PER_SIDE)。
 
 @group(0) @binding(0) var src_water: texture_2d<f32>;
-@group(0) @binding(1) var src_susp: texture_2d<f32>;
-@group(0) @binding(2) var src_dep: texture_2d<f32>;
 @group(0) @binding(3) var<uniform> params: SimParams;
 @group(0) @binding(4) var<storage, read> splat_buf: SplatBuffer;
 @group(0) @binding(5) var<storage, read_write> raw_active: array<u32>;
@@ -29,31 +27,30 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let x0 = gid.x * TILE_SIZE;
     let y0 = gid.y * TILE_SIZE;
 
-    // タイル内テクセルの走査: 濡れマスク / 水量 / 浮遊・沈着顔料のどれかがあれば有効。
-    // 濡れマスク(a>0.5)が立っている領域 = 湿レイヤーの生きているセルなので、
-    // 乾かす/Fast Dry でマスクが 0 に戻るまでは毎フレーム計算対象になる(意図どおり)。
+    // タイル内に濡れたセル(is_wet = 濡れマスク a > 0.5)があれば有効。
+    // 乾いたセルは velocity / advect / diffuse / transfer がすべて素通しにするので、
+    // 顔料が載っていても(Fast Dry 後の沈着顔料など)計算する必要はない。
+    // にじみ拡張で育ちかけのマスク(0 < a ≤ 0.5)は濡れたセルの隣にしか生じず、
+    // そのセルは濡れタイル+tiledilate の1タイル膨張に含まれる。
     var flag = 0u;
     for (var dy = 0u; dy < TILE_SIZE; dy++) {
         for (var dx = 0u; dx < TILE_SIZE; dx++) {
             let ip = vec2i(i32(x0 + dx), i32(y0 + dy));
-            let w = textureLoad(src_water, ip, 0);
-            let s = textureLoad(src_susp, ip, 0);
-            let d = textureLoad(src_dep, ip, 0);
-            if (w.a > 0.5 || w.r > 1e-4
-                || dot(s, vec4f(1.0)) > 1e-4 || dot(d, vec4f(1.0)) > 1e-4) {
+            if (is_wet(textureLoad(src_water, ip, 0))) {
                 flag = 1u;
             }
         }
     }
 
-    // ブラシが触れるタイルも有効化(乾いた紙へ描き始めるときの初回スプラット用)。
+    // ブラシが触れるタイルも有効化(乾いた紙へ描き始めるとき・乾いた顔料を削るとき)。
     // 判定はタイル中心とスプラット位置のチェビシェフ距離 < ブラシ半径 + 半タイル(安全側)。
     // 筆圧で実効半径は brush_radius 以下なので、これで取りこぼさない。
+    // 線画ツールのフレームは fluid_count = 0(splat は線画テクスチャにだけ描かれる)
     if (flag == 0u) {
         let cx = f32(x0) + f32(TILE_SIZE) * 0.5;
         let cy = f32(y0) + f32(TILE_SIZE) * 0.5;
         let reach = params.brush_radius + f32(TILE_SIZE);
-        for (var i = 0u; i < splat_buf.count; i++) {
+        for (var i = 0u; i < splat_buf.fluid_count; i++) {
             let sp = splat_buf.splats[i].pos;
             if (abs(sp.x - cx) < reach && abs(sp.y - cy) < reach) {
                 flag = 1u;

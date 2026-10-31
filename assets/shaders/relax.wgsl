@@ -1,5 +1,5 @@
 // relax.wgsl — 発散の反復緩和パス(M1a)。Curtis 1997 の RelaxDivergence: δ = −ξ·div。
-// 1 dispatch = 1 反復。CPU 側(gpu/mod.rs)が relax_iters 回 ping-pong で呼ぶ。
+// 1 dispatch = 1 反復。CPU 側(gpu/callback.rs の prepare)が relax_iters 回 ping-pong で呼ぶ。
 // 元論文はスタガード格子でセルの δ を周囲の速度に散布(scatter)するが、
 // GPU では gather 形式に書き換える: 各セルが左右上下の δ を集めて自分の速度を直す。
 // 顔料テクスチャはこのパスでは変更しない(素通しで dst へコピー)。

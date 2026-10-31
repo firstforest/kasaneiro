@@ -1,6 +1,6 @@
 //! 上部「ファイル」メニューバーと、そこから開くモーダル群(作品・設定プリセット・新規キャンバス・全部消す)。
 //! 旧 save_panel / preset_panel(左パネル内インライン)を、画面上部メニュー + モーダル(egui::Modal)へ再構成した。
-//! 破壊操作(新規キャンバス・全部消す)はモーダル内の明示ボタンで確認する(旧2度押し confirm_button を廃止)。
+//! 破壊操作(新規キャンバス・全部消す・同名作品への上書き保存・描いた絵を破棄する作品読込)はモーダル内の明示ボタンで確認する。
 
 use crate::app::{FileModal, PaintApp};
 use crate::preset;
@@ -57,6 +57,8 @@ impl PaintApp {
     pub(in crate::app) fn file_modals(&mut self, ctx: &egui::Context) {
         match self.file_modal {
             Some(FileModal::Work) => self.work_modal(ctx),
+            Some(FileModal::WorkOverwrite) => self.work_overwrite_modal(ctx),
+            Some(FileModal::WorkLoad) => self.work_load_modal(ctx),
             Some(FileModal::Preset) => self.preset_modal(ctx),
             Some(FileModal::NewCanvas) => self.new_canvas_modal(ctx),
             Some(FileModal::Clear) => self.clear_modal(ctx),
@@ -72,33 +74,35 @@ impl PaintApp {
             ui.heading("作品");
 
             // 上段=保存: 名前欄+[保存](名前空なら無効)+↻(一覧再読込)
-            let mut do_save = None;
+            let mut do_save = false;
             ui.horizontal(|ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.work_ui.store.name)
                         .hint_text("作品名")
                         .desired_width(200.0),
                 );
-                let name = self.work_ui.store.name.trim().to_owned();
+                let has_name = !self.work_ui.store.name.trim().is_empty();
                 if ui
-                    .add_enabled(!name.is_empty(), egui::Button::new("保存"))
+                    .add_enabled(has_name, egui::Button::new("保存"))
                     .on_hover_text("描きかけの全状態(湿レイヤー・乾燥レイヤー・線画・パレット)を1ファイルに保存")
                     .clicked()
                 {
-                    do_save = Some(name);
+                    do_save = true;
                 }
                 if ui.button("↻").on_hover_text("一覧を再読込").clicked() {
                     self.work_ui.store.list = work::list();
                 }
             });
-            if let Some(name) = do_save {
-                self.status_msg = Some(match self.save_work(&name) {
-                    Ok(path) => {
-                        self.work_ui.store.list = work::list();
-                        format!("保存: {}", path.display())
+            if do_save {
+                // 名前はファイル名として正規化して欄へ反映。同名の作品があれば確認を挟む
+                match self.work_ui.store.sanitize_input() {
+                    Ok(name) if work::exists(&name) => {
+                        self.work_ui.pending = Some(name);
+                        self.file_modal = Some(FileModal::WorkOverwrite);
                     }
-                    Err(e) => e,
-                });
+                    Ok(name) => self.save_work_with_status(&name),
+                    Err(e) => self.status_msg = Some(e),
+                }
             }
 
             ui.separator();
@@ -114,8 +118,14 @@ impl PaintApp {
                 }
             });
             if let Some(name) = do_load {
-                self.load_work(&name);
-                self.file_modal = None;
+                // 描いた内容があれば、破棄してよいか確認を挟む
+                if self.canvas_has_content() {
+                    self.work_ui.pending = Some(name);
+                    self.file_modal = Some(FileModal::WorkLoad);
+                } else {
+                    self.load_work(&name);
+                    self.file_modal = None;
+                }
             }
 
             ui.separator();
@@ -126,6 +136,82 @@ impl PaintApp {
         });
         if response.should_close() {
             self.file_modal = None;
+        }
+    }
+
+    /// 作品を保存して結果を status_msg へ出す(成功時は一覧を更新)
+    fn save_work_with_status(&mut self, name: &str) {
+        self.status_msg = Some(match self.save_work(name) {
+            Ok(path) => {
+                self.work_ui.store.list = work::list();
+                format!("保存: {}", path.display())
+            }
+            Err(e) => e,
+        });
+    }
+
+    /// 同名作品への上書き保存の確認。[キャンセル]・背景クリック・Esc は保存せず作品モーダルへ戻る
+    fn work_overwrite_modal(&mut self, ctx: &egui::Context) {
+        let name = self.work_ui.pending.clone().unwrap_or_default();
+        let mut decided = None;
+        let response = egui::Modal::new(egui::Id::new("file_modal_work_overwrite")).show(ctx, |ui| {
+            ui.heading("上書き保存");
+            ui.label(format!("作品「{name}」は既にあります。いまのキャンバスで上書きしますか?"));
+            ui.horizontal(|ui| {
+                if ui.add(danger_button("上書きする")).clicked() {
+                    decided = Some(true);
+                }
+                if ui.button("キャンセル").clicked() {
+                    decided = Some(false);
+                }
+            });
+        });
+        if response.should_close() && decided.is_none() {
+            decided = Some(false);
+        }
+        if let Some(ok) = decided {
+            self.work_ui.pending = None;
+            if ok {
+                self.save_work_with_status(&name);
+            }
+            self.file_modal = Some(FileModal::Work);
+        }
+    }
+
+    /// 作品の読込で現在のキャンバスを破棄する確認。[キャンセル]・背景クリック・Esc は
+    /// 読み込まず作品モーダルへ戻る
+    fn work_load_modal(&mut self, ctx: &egui::Context) {
+        let name = self.work_ui.pending.clone().unwrap_or_default();
+        let mut decided = None;
+        let response = egui::Modal::new(egui::Id::new("file_modal_work_load")).show(ctx, |ui| {
+            ui.heading("作品を開く");
+            ui.label(format!(
+                "「{name}」を開くと、いまのキャンバスは破棄されます。元に戻すで復帰できません\
+                 (残すなら先に作品保存を)"
+            ));
+            ui.horizontal(|ui| {
+                if ui.add(danger_button("破棄して開く")).clicked() {
+                    decided = Some(true);
+                }
+                if ui.button("キャンセル").clicked() {
+                    decided = Some(false);
+                }
+            });
+        });
+        if response.should_close() && decided.is_none() {
+            decided = Some(false);
+        }
+        match decided {
+            Some(true) => {
+                self.work_ui.pending = None;
+                self.load_work(&name);
+                self.file_modal = None;
+            }
+            Some(false) => {
+                self.work_ui.pending = None;
+                self.file_modal = Some(FileModal::Work);
+            }
+            None => {}
         }
     }
 
@@ -314,11 +400,7 @@ impl PaintApp {
                 .small(),
             );
             ui.horizontal(|ui| {
-                let clear_button = egui::Button::new(
-                    egui::RichText::new("はい、全部消す").color(egui::Color32::WHITE),
-                )
-                .fill(egui::Color32::from_rgb(200, 60, 60));
-                if ui.add(clear_button).clicked() {
+                if ui.add(danger_button("はい、全部消す")).clicked() {
                     self.clear_canvas();
                     self.status_msg = Some("全部消しました".to_owned());
                     self.file_modal = None;
@@ -332,4 +414,10 @@ impl PaintApp {
             self.file_modal = None;
         }
     }
+}
+
+/// 破壊操作の確定ボタン(赤地に白文字)。確認モーダル共通
+fn danger_button(label: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(label).color(egui::Color32::WHITE))
+        .fill(egui::Color32::from_rgb(200, 60, 60))
 }
