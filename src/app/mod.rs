@@ -884,7 +884,7 @@ impl PaintApp {
     /// snapshot() の読み戻し(display と同じ発色)から該当テクセルの RGB を取り出す。
     /// 表示色版なので「混ざってできた見た目の色」がそのまま顔料の基本色になる(§4 の先送り表)
     fn pick_color(&mut self, pos: egui::Pos2, rect: egui::Rect) {
-        // M6: snapshot は display と同じビュー変換(パン/ズーム/回転)込みで焼くので、
+        // M6: snapshot を画面と同じビュー変換(パン/ズーム/回転)で焼くので、
         // 画面 uv でそのまま索引する(= カーソル下に見えている画素)。screen_to_texel は
         // キャンバステクセルなので拡大・回転時にはズレる(zoom=1・無回転でのみ一致)
         let size = self.canvas_size;
@@ -894,9 +894,11 @@ impl PaintApp {
         let data = {
             let renderer = self.render_state.renderer.read();
             match renderer.callback_resources.get::<GpuCanvas>() {
-                Some(canvas) => {
-                    canvas.snapshot(&self.render_state.device, &self.render_state.queue)
-                }
+                Some(canvas) => canvas.snapshot(
+                    &self.render_state.device,
+                    &self.render_state.queue,
+                    &self.view_uniform(),
+                ),
                 None => Err("キャンバスが初期化されていません".to_owned()),
             }
         };
@@ -922,7 +924,7 @@ impl PaintApp {
         ));
     }
 
-    /// H6: 現在のキャンバス表示を snapshots/ に PNG 保存する。
+    /// H6: キャンバス全体(表示モードはそのまま、ビュー変換なし)を snapshots/ に PNG 保存する。
     /// ファイル名はタイムスタンプ+プリセット名(入力欄の値。「どの設定の絵か」を残す)
     fn save_snapshot(&mut self) {
         let result = (|| -> Result<PathBuf, String> {
@@ -932,7 +934,12 @@ impl PaintApp {
                     .callback_resources
                     .get::<GpuCanvas>()
                     .ok_or("キャンバスが初期化されていません")?;
-                canvas.snapshot(&self.render_state.device, &self.render_state.queue)?
+                // 書き出しはビュー(パン/ズーム/回転)に依らずキャンバス全体を無回転で焼く
+                canvas.snapshot(
+                    &self.render_state.device,
+                    &self.render_state.queue,
+                    &crate::gpu::ViewUniform::default(),
+                )?
             };
             let dir = crate::assets::base_dir().join("snapshots");
             std::fs::create_dir_all(&dir)
