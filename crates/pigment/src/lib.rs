@@ -113,11 +113,22 @@ impl Palette {
     /// 顔料個性(ρ/ω/γ/μ)を compute uniform 用に固める(M3、μ は分離色で追加)。
     /// レイアウト(common.wgsl の binding 9 = `array<vec4f, 4>` と対応):
     ///   [i] = 顔料 i の (密度 ρ, ステイニング ω, 粒状感 γ, 粒の細かさ μ)
-    /// M5 でランタイム化。編集時に再計算して write_buffer する(全レイヤー共通=湿シミュ専用)
+    /// M5 でランタイム化。編集時に再計算して write_buffer する(全レイヤー共通=湿シミュ専用)。
+    /// JSON は手で書き換えられるので、シェーダーへ渡す前に物理的に意味のある範囲へ収める:
+    /// ρ・μ は 0 以上(負だと吸着・拡散が逆向きになる)、ω・γ は 0〜1(割合)。
+    /// UI のスライダー範囲(ρ・μ 0.1〜2.0 / ω・γ 0〜1)はこの内側なので UI の値は変わらない。
+    /// NaN は 0 に落とす
     pub fn physics_uniform(&self) -> [[f32; 4]; PIGMENT_COUNT] {
+        let non_neg = |v: f32| if v.is_nan() { 0.0 } else { v.max(0.0) };
+        let unit = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
         let mut out = [[0.0; 4]; PIGMENT_COUNT];
         for (i, p) in self.pigments.iter().enumerate() {
-            out[i] = [p.density, p.staining, p.granulation, p.mobility];
+            out[i] = [
+                non_neg(p.density),
+                unit(p.staining),
+                unit(p.granulation),
+                non_neg(p.mobility),
+            ];
         }
         out
     }
@@ -228,6 +239,24 @@ mod tests {
                 (rgb[c] as i32 - expect).abs() <= 1,
                 "紙色 latent の復元がずれています: {rgb:?}"
             );
+        }
+    }
+
+    /// 物性 uniform は範囲外の値(手書き JSON など)を ρ・μ ≥ 0、ω・γ ∈ [0,1] に収め、
+    /// UI 範囲内の値はそのまま渡すこと
+    #[test]
+    fn physics_uniform_clamps_out_of_range() {
+        let mut pal = Palette::default_palette();
+        let ok = pal.physics_uniform();
+        pal.pigments[0].density = -1.0;
+        pal.pigments[0].staining = 1.5;
+        pal.pigments[0].granulation = -0.2;
+        pal.pigments[0].mobility = f32::NAN;
+        let u = pal.physics_uniform();
+        assert_eq!(u[0], [0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(u[1..], ok[1..]);
+        for (p, row) in Palette::default_palette().pigments.iter().zip(ok) {
+            assert_eq!(row, [p.density, p.staining, p.granulation, p.mobility]);
         }
     }
 }
