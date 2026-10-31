@@ -99,8 +99,6 @@ impl TryFrom<u32> for WetTool {
 }
 
 /// 線画テクスチャへ直接描くツール(M4.5。流体を通らないので gpu_id を持たない)。
-// M4.5a で実装・UI 追加する。型の階層だけ先に用意しておく(R2)。
-#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RasterTool {
     /// 下書き鉛筆(グレー粒状線、紙目で濃度変調)
@@ -109,11 +107,6 @@ pub enum RasterTool {
     Pen,
     /// 白ハイライト(不透明、最上段、流体なし)
     Highlight,
-}
-
-#[allow(dead_code)]
-impl RasterTool {
-    pub const ALL: [RasterTool; 3] = [RasterTool::Pencil, RasterTool::Pen, RasterTool::Highlight];
 }
 
 /// UI 表示用メタ情報。WetTool / RasterTool 両方に実装し、ツールバー描画は
@@ -155,7 +148,6 @@ impl ToolInfo for WetTool {
     }
 }
 
-#[allow(dead_code)]
 impl ToolInfo for RasterTool {
     fn label(&self) -> &'static str {
         match self {
