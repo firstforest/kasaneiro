@@ -36,7 +36,8 @@ pub const MAX_SPLATS: usize = 8192;
 /// (名前・順序・型の一致は tests/sim_params_layout.rs が検査する)。
 /// メモリレイアウトは WGSL の uniform 規則(16 バイト整列)に合わせること。
 /// 全体サイズは 16 の倍数を保つ(56 フィールド = 224B でパディングなし。次に足すときは
-/// 末尾に _pad を置いて 16B 境界を保ち、以降はその _pad を置き換えて増やす)。
+/// 末尾に #[serde(skip)] の _pad を置いて 16B 境界を保ち、以降はその _pad を置き換えて増やす。
+/// _pad は WGSL 側には書かない。手順は docs/parameters.md §11)。
 /// serde(default): プリセット(H3)にないフィールドは Default 値で埋める
 /// (パラメータを増やしても古い JSON が読めるように)。
 #[repr(C)]
