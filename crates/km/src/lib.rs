@@ -15,7 +15,6 @@
 //!
 //! 一般式(composite / composite_over / ks_from_rw_rb / rt_from_ks)は簡約の検証と
 //! 将来の参照のための CPU 実装で、製品コードからは呼ばれない(実合成は display.wgsl)。
-#![allow(dead_code)]
 
 /// coth⁻¹(y) = ½·ln((y+1)/(y−1))(§3 の数値上の注意)。|y| > 1 で定義。
 pub fn acoth(y: f32) -> f32 {
@@ -39,6 +38,14 @@ pub fn rt_from_ks(k: f32, s: f32, x: f32) -> (f32, f32) {
     let s = s.max(1e-4); // 純吸収体(S→0)は a=1+K/S が発散するので下限でクランプ
     let a = 1.0 + k / s;
     let b = (a * a - 1.0).max(0.0).sqrt();
+    // b·S·x → 0(K→0 の純散乱体や x→0)では sinh/c が 0/0 になる。sinh(u) ≈ u・cosh(u) ≈ 1 の
+    // 1次近似で b を約分した形を使う: R = Sx/(1 + a·Sx), T = 1/(1 + a·Sx)
+    // (K=0 では a=1 で R = Sx/(1+Sx), T = 1/(1+Sx) の極限そのもの)
+    if b * s * x < 1e-3 {
+        let sx = s * x;
+        let denom = 1.0 + a * sx;
+        return (sx / denom, 1.0 / denom);
+    }
     let arg = (b * s * x).min(20.0); // e^20 まで。これ以上は R が飽和するだけ
     let sh = arg.sinh();
     let ch = arg.cosh();
@@ -93,6 +100,26 @@ mod tests {
                     t * t
                 );
             }
+        }
+    }
+
+    /// K=0(純散乱体)で NaN にならず、極限 R = Sx/(1+Sx), T = 1/(1+Sx) を返すこと。
+    /// 小さい K へ連続につながること(分岐の境目で跳ばない)
+    #[test]
+    fn rt_from_ks_zero_absorption() {
+        for &s in &[0.05f32, 0.5, 2.0] {
+            for &x in &[0.0f32, 0.5, 1.0, 3.0] {
+                let (r, t) = rt_from_ks(0.0, s, x);
+                let sx = s * x;
+                assert!(r.is_finite() && t.is_finite(), "NaN/inf: S={s} x={x}");
+                assert!((r - sx / (1.0 + sx)).abs() < 1e-6, "R: {r} (S={s} x={x})");
+                assert!((t - 1.0 / (1.0 + sx)).abs() < 1e-6, "T: {t} (S={s} x={x})");
+                // 吸収がないのでエネルギー保存 R + T = 1
+                assert!((r + t - 1.0).abs() < 1e-5);
+            }
+            let (r0, t0) = rt_from_ks(0.0, s, 1.0);
+            let (r1, t1) = rt_from_ks(1e-4, s, 1.0);
+            assert!((r1 - r0).abs() < 1e-3 && (t1 - t0).abs() < 1e-3, "K→0 で不連続 (S={s})");
         }
     }
 
