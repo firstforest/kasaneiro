@@ -50,7 +50,7 @@
 **実施メモ(2026-07-05 完了)**:
 
 - `const COMPUTE_SHADERS: &[(&str, ComputeLayout)]`(キー = WGSL ファイル名)を回して compute パイプラインを `HashMap` に作り、`Pipelines::compute("splat.wgsl")` で名前引き。**シェーダー追加 = 表に1行**。display/snapshot は別レイアウト・2フォーマットなので表の外。
-- パス実行順は `prepare()` のハードコードのまま(「ここがパス実行順の正典」とコメント明記)。
+- パス実行順は `GpuCanvas::encode_frame()` のハードコードのまま(「ここがパス実行順の正典」とコメント明記)。
 - 行番号補正 `remap_shader_error_lines`(gpu/shader_error.rs、純関数): プレフィックス行数を引く。codespan の2形式を対象、想定外フォーマットは素通し(fail-safe)。cargo test で3件検証。
 
 ## 5. R4 — app.rs の UI 分割と状態のグループ化
@@ -107,7 +107,7 @@
 
 | 論点 | 当面の選択 | 再検討のトリガー |
 |---|---|---|
-| パス実行の trait 抽象化 | やらない(`prepare()` の `run` クロージャが既に良い継ぎ目) | M6 アクティブタイルで dispatch を差し替えるとき、その場で必要な分だけ |
+| パス実行の trait 抽象化 | やらない(`encode_frame()` の `run` クロージャが既に良い継ぎ目) | M6 アクティブタイルで dispatch を差し替えるとき、その場で必要な分だけ |
 | WGSL の include 機構一般化 | やらない(common.wgsl 連結で足りている) | シェーダー間の共有関数が実際に増えたら |
 | GpuCanvas の全面再設計 | やらない(リソース定義が長いだけで責務は一貫) | R3+R8+テクスチャ生成ヘルパーの抽出で不足を感じたら |
 | crate のさらなる細分化 | やらない(R1 の3つまで) | 依存の隔離・純粋性の保証という明確な理由が新たに生まれたら |

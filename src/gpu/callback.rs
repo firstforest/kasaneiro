@@ -2,7 +2,8 @@
 //!
 //! `CanvasCallback` は app.rs で組み立てて egui の PaintCallback として渡され、
 //! prepare で compute パス(splat → シミュレーション本体)を積み、paint で表示する。
-//! パス実行順(prepare 内)はシミュレーションの心臓部で、ここがその正典(R3)。
+//! compute を積む本体は [`GpuCanvas::encode_frame`] で、headless 駆動(e2e)も同じ経路を通る。
+//! パス実行順(encode_frame 内)はシミュレーションの心臓部で、ここがその正典(R3)。
 
 use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, ViewUniform};
 use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
@@ -30,14 +31,48 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
         egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let Some(canvas) = callback_resources.get_mut::<GpuCanvas>() else {
-            return Vec::new();
-        };
-        queue.write_buffer(&canvas.params_buffer, 0, bytemuck::bytes_of(&self.params));
-        // M6: パン/ズームの変換を display 用 uniform へ(compute には影響しない)
-        queue.write_buffer(&canvas.view_buffer, 0, bytemuck::bytes_of(&self.view));
+        if let Some(canvas) = callback_resources.get_mut::<GpuCanvas>() {
+            canvas.encode_frame(queue, egui_encoder, self);
+        }
+        Vec::new()
+    }
 
-        let splat_count = self.splats.len().min(MAX_SPLATS);
+    fn paint(
+        &self,
+        _info: eframe::egui::PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        callback_resources: &egui_wgpu::CallbackResources,
+    ) {
+        let Some(canvas) = callback_resources.get::<GpuCanvas>() else {
+            return;
+        };
+        let Some(pipelines) = &canvas.pipelines else {
+            return;
+        };
+        // egui-wgpu がビューポートをコールバック矩形に設定済みなので、
+        // フルスクリーン三角形がそのままキャンバス領域に収まる
+        render_pass.set_pipeline(&pipelines.display);
+        render_pass.set_bind_group(0, &canvas.display_bind_groups[canvas.current], &[]);
+        render_pass.draw(0..3, 0..1);
+    }
+}
+
+impl GpuCanvas {
+    /// 1フレーム分(splat 注入 → シミュレーション `frame.sim_steps` ステップ)の compute パスを
+    /// `encoder` に積む。egui の prepare と headless 駆動([`crate::headless`])の共通経路で、
+    /// submit は呼び出し側が行う
+    pub fn encode_frame(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &CanvasCallback,
+    ) {
+        let canvas = self;
+        queue.write_buffer(&canvas.params_buffer, 0, bytemuck::bytes_of(&frame.params));
+        // M6: パン/ズームの変換を display 用 uniform へ(compute には影響しない)
+        queue.write_buffer(&canvas.view_buffer, 0, bytemuck::bytes_of(&frame.view));
+
+        let splat_count = frame.splats.len().min(MAX_SPLATS);
         if splat_count > 0 {
             let header = SplatHeader {
                 count: splat_count as u32,
@@ -48,7 +83,7 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
                     + splat_count * std::mem::size_of::<Splat>(),
             );
             bytes.extend_from_slice(bytemuck::bytes_of(&header));
-            bytes.extend_from_slice(bytemuck::cast_slice(&self.splats[..splat_count]));
+            bytes.extend_from_slice(bytemuck::cast_slice(&frame.splats[..splat_count]));
             queue.write_buffer(&canvas.splat_buffer, 0, &bytes);
         }
 
@@ -61,9 +96,9 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
             // 混ぜると同じテクスチャが read_write と sampled を兼ねて使用範囲が衝突する。別パスに分ける。
             // ブラシ入力は一時停止中でも反映する(ping-pong しないので current は反転しない)。
             if splat_count > 0
-                && let Some(target) = self.line_target
+                && let Some(target) = frame.line_target
             {
-                let mut line_pass = egui_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                let mut line_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("line_pass"),
                     timestamp_writes: None,
                 });
@@ -73,7 +108,7 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
             }
 
             let bind_groups = &canvas.compute_bind_groups;
-            let mut pass = egui_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("sim_pass"),
                 timestamp_writes: None,
             });
@@ -100,20 +135,20 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
             };
 
             // 流体ツールのときだけ splat を流す(ラスタツールは上の line_pass で処理済み)
-            if splat_count > 0 && self.line_target.is_none() {
+            if splat_count > 0 && frame.line_target.is_none() {
                 run(&mut pass, pipelines.compute("splat.wgsl"));
             }
             // 1 ステップ = 速度更新 → 発散緩和 × N → FlowOutward → 移流
             //   → 顔料拡散 × N → 吸着/脱着+蒸発(パス実行順はここがハードコードの正典。R3)
-            let relax_iters = self.params.relax_iters.clamp(1, MAX_RELAX_ITERS);
-            let diffuse_iters = self.params.diffuse_iters.min(MAX_DIFFUSE_ITERS);
-            for _ in 0..self.sim_steps {
+            let relax_iters = frame.params.relax_iters.clamp(1, MAX_RELAX_ITERS);
+            let diffuse_iters = frame.params.diffuse_iters.min(MAX_DIFFUSE_ITERS);
+            for _ in 0..frame.sim_steps {
                 run(&mut pass, pipelines.compute("velocity.wgsl"));
                 for _ in 0..relax_iters {
                     run(&mut pass, pipelines.compute("relax.wgsl"));
                 }
                 // エッジダークニング(M1d)。η=0 ならぼかしの読み出しごと省略
-                if self.params.edge_eta > 0.0 {
+                if frame.params.edge_eta > 0.0 {
                     run(&mut pass, pipelines.compute("flowout.wgsl"));
                 }
                 run(&mut pass, pipelines.compute("advect.wgsl"));
@@ -124,25 +159,5 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
             }
         }
         canvas.current = current;
-        Vec::new()
-    }
-
-    fn paint(
-        &self,
-        _info: eframe::egui::PaintCallbackInfo,
-        render_pass: &mut wgpu::RenderPass<'static>,
-        callback_resources: &egui_wgpu::CallbackResources,
-    ) {
-        let Some(canvas) = callback_resources.get::<GpuCanvas>() else {
-            return;
-        };
-        let Some(pipelines) = &canvas.pipelines else {
-            return;
-        };
-        // egui-wgpu がビューポートをコールバック矩形に設定済みなので、
-        // フルスクリーン三角形がそのままキャンバス領域に収まる
-        render_pass.set_pipeline(&pipelines.display);
-        render_pass.set_bind_group(0, &canvas.display_bind_groups[canvas.current], &[]);
-        render_pass.draw(0..3, 0..1);
     }
 }

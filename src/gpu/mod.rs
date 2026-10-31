@@ -14,7 +14,8 @@
 //! パスごとに別の index を持つより素通しコストを払う方が単純で、512² では十分軽い。
 //!
 //! GpuCanvas は egui-wgpu の callback_resources に置かれ、次の2経路から触られる:
-//! - フレームごとの描画は [`CanvasCallback`](callback)(prepare で compute、paint で表示)
+//! - フレームごとの描画は [`CanvasCallback`](callback)(prepare で compute、paint で表示)。
+//!   compute 本体の `encode_frame` は headless 駆動([`crate::headless`]、e2e)からも呼ばれる
 //! - ホットリロード時の再ビルドは app.rs から rebuild_pipelines()
 //!
 //! ファイル構成(このモジュールはリソース定義と型・実行時メソッドを持つ。長い処理は分離):
