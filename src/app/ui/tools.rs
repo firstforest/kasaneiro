@@ -396,14 +396,14 @@ impl PaintApp {
         self.raster_tool_footer(ui);
     }
 
-    /// 線画レイヤー共通のフッタ: 筆圧の注記 + 多段 Undo/Redo(M4.5d)
+    /// 線画レイヤー共通のフッタ: 筆圧の注記 + 線画履歴の本数(M4.5d)
     fn raster_tool_footer(&mut self, ui: &mut egui::Ui) {
         ui.label(
             egui::RichText::new("※ペンの筆圧で濃さ・太さが変わります(効き具合は開発モードの「筆圧」で調整)")
                 .weak()
                 .small(),
         );
-        self.line_history_controls(ui);
+        self.line_history_status(ui);
     }
 
     /// 乾燥レイヤー選択中の案内。焼き込みは一方通行なのでツールはなく、描画もブロックされる
@@ -486,27 +486,9 @@ impl PaintApp {
         }
     }
 
-    /// 線画の多段 Undo/Redo(M4.5d): ボタン+履歴本数の表示。キーは Ctrl+Z / Ctrl+Shift+Z。
-    /// 湿レイヤー(水彩)は対象外(M6 の 1 段 undo で扱う)
-    pub(in crate::app) fn line_history_controls(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let can_undo = !self.line_history.done.is_empty();
-            let can_redo = !self.line_history.redo.is_empty();
-            if ui
-                .add_enabled(can_undo, egui::Button::new("元に戻す"))
-                .on_hover_text("線画を1本戻す (Ctrl+Z)。水彩は対象外")
-                .clicked()
-            {
-                self.line_undo();
-            }
-            if ui
-                .add_enabled(can_redo, egui::Button::new("やり直し"))
-                .on_hover_text("取り消した線画を1本復元 (Ctrl+Shift+Z)")
-                .clicked()
-            {
-                self.line_redo();
-            }
-        });
+    /// 線画の多段 Undo/Redo(M4.5d)の履歴本数の表示。操作は左パネル最上部の統一
+    /// 「元に戻す / やり直し」(dry_controls)と Ctrl+Z / Ctrl+Shift+Z が担う
+    fn line_history_status(&self, ui: &mut egui::Ui) {
         ui.label(format!(
             "線画履歴: {} 本(やり直し {} 本)",
             self.line_history.done.len(),
