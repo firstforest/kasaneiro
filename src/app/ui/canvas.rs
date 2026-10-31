@@ -3,7 +3,7 @@
 
 use crate::app::PaintApp;
 use crate::gpu::CanvasCallback;
-use crate::input::PointerSource;
+use crate::input::{PointerEvent, PointerPhase, PointerSource};
 use paint_core::sim::Splat;
 use eframe::egui;
 use eframe::egui_wgpu;
@@ -94,6 +94,19 @@ impl PaintApp {
         };
 
         let mut splats: Vec<Splat> = Vec::new();
+        // スポイト待機・乾燥レイヤー・パン・半径調整の間はポインタ入力をストロークへ流さない。
+        // ストローク中にこれらへ入ったらその場で Up 扱いにして確定する(Up を取りこぼすと
+        // painting が立ちっぱなしになり、含みの色水が出続け、線画は履歴に載らない)
+        let drawing =
+            !self.palette_ui.eyedropper && !self.drawing_locked() && !panning && !resizing;
+        if !drawing && self.painting {
+            let up = PointerEvent {
+                phase: PointerPhase::Up,
+                pos: hover.unwrap_or(rect.center()),
+                pressure: 1.0,
+            };
+            self.apply_pointer_events(&[up], rect, &mut splats);
+        }
         // M5e: スポイト待機中はクリックで色を拾うだけで、描画・記録はしない
         if self.palette_ui.eyedropper {
             let pressed = ui.input(|i| i.pointer.primary_pressed());

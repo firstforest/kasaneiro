@@ -39,32 +39,33 @@ impl PaintApp {
             {
                 // M5h: 焼き込み時点の現行パレットを渡して CPU 側にも記録する(抽出の正典)
                 let pal = self.palette.clone();
-                self.run_canvas_action(move |c, d, q| c.bake_dry(d, q, &pal));
-                // M6: 湿レイヤーを別経路で書き替えたので水彩の 1 段 undo を無効化
-                self.invalidate_wet_undo();
+                // M6: 湿レイヤーを別経路で書き替えたら水彩の 1 段 undo を無効化
+                if self.run_canvas_action(move |c, d, q| c.bake_dry(d, q, &pal)) {
+                    self.invalidate_wet_undo();
+                }
             }
             if ui
                 .button("にじみを止める")
                 .on_hover_text("Fast Dry: 色はそのまま、水の動きだけ止める(固定はしない)。浮遊顔料をその場で沈着させ、流れをゼロに")
                 .clicked()
+                && self.run_canvas_action(|c, d, q| c.fast_dry(d, q))
             {
-                self.run_canvas_action(|c, d, q| c.fast_dry(d, q));
                 self.invalidate_wet_undo();
             }
             if ui
                 .button("全体を濡らす")
                 .on_hover_text("Wet the Layer: キャンバス全面を濡らす(水量は開発モードの「再湿潤の水量」)")
                 .clicked()
+                && self.run_canvas_action(|c, d, q| c.rewet(d, q))
             {
-                self.run_canvas_action(|c, d, q| c.rewet(d, q));
                 self.invalidate_wet_undo();
             }
         });
         // M6: 統一 Undo/Redo(水彩=1段 / 線画=多段)。乾燥ボタンと同じく常時見える位置に置く。
         // Ctrl+Z / Ctrl+Shift+Z と同じ経路(末尾の操作種別で振り分け)
         ui.horizontal(|ui| {
-            let can_undo = !self.undo_stack.is_empty();
-            let can_redo = !self.line_history.redo.is_empty();
+            let can_undo = !self.painting && !self.undo_stack.is_empty();
+            let can_redo = !self.painting && !self.line_history.redo.is_empty();
             if ui
                 .add_enabled(can_undo, egui::Button::new("元に戻す"))
                 .on_hover_text("直前の操作を戻す (Ctrl+Z)。水彩は1段、線画は多段")

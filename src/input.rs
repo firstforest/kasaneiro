@@ -97,57 +97,67 @@ impl PenSource {
 impl PointerSource for PenSource {
     fn poll(&mut self, canvas: &egui::Response) -> Vec<PointerEvent> {
         let mut out = Vec::new();
-        canvas.ctx.input(|input| {
-            for event in &input.events {
-                let egui::Event::Touch {
-                    id,
-                    phase,
-                    pos,
-                    force,
-                    ..
-                } = *event
-                else {
-                    continue;
-                };
-                // 筆圧非対応(指タッチ等)は 1.0 = マウスと同じ扱い
-                let pressure = force.unwrap_or(1.0);
-                match phase {
-                    egui::TouchPhase::Start => {
-                        if self.active_id.is_none() {
-                            self.active_id = Some(id);
-                            self.last_pressure = Some(pressure);
-                            out.push(PointerEvent {
-                                phase: PointerPhase::Down,
-                                pos,
-                                pressure,
-                            });
-                        }
+        // input のロック中に layer_id_at(memory のロック)を呼ばないよう、先に取り出す
+        let touches: Vec<egui::Event> = canvas.ctx.input(|input| {
+            input
+                .events
+                .iter()
+                .filter(|e| matches!(e, egui::Event::Touch { .. }))
+                .cloned()
+                .collect()
+        });
+        for event in &touches {
+            let egui::Event::Touch {
+                id,
+                phase,
+                pos,
+                force,
+                ..
+            } = *event
+            else {
+                continue;
+            };
+            // 筆圧非対応(指タッチ等)は 1.0 = マウスと同じ扱い
+            let pressure = force.unwrap_or(1.0);
+            match phase {
+                egui::TouchPhase::Start => {
+                    // 生 Touch はウィジェットの重なりを見ないので、接地点の最前面が
+                    // キャンバスのレイヤーのときだけ受け付ける(モーダル・ポップアップの裏に描かない)
+                    let on_canvas = canvas.ctx.layer_id_at(pos) == Some(canvas.layer_id);
+                    if self.active_id.is_none() && on_canvas {
+                        self.active_id = Some(id);
+                        self.last_pressure = Some(pressure);
+                        out.push(PointerEvent {
+                            phase: PointerPhase::Down,
+                            pos,
+                            pressure,
+                        });
                     }
-                    // ペンのホバー(接地前)でも Move は届くが、追跡中でなければ無視
-                    egui::TouchPhase::Move => {
-                        if self.active_id == Some(id) {
-                            self.last_pressure = Some(pressure);
-                            out.push(PointerEvent {
-                                phase: PointerPhase::Move,
-                                pos,
-                                pressure,
-                            });
-                        }
+                }
+                // ペンのホバー(接地前)でも Move は届くが、追跡中でなければ無視
+                egui::TouchPhase::Move => {
+                    if self.active_id == Some(id) {
+                        self.last_pressure = Some(pressure);
+                        out.push(PointerEvent {
+                            phase: PointerPhase::Move,
+                            pos,
+                            pressure,
+                        });
                     }
-                    egui::TouchPhase::End | egui::TouchPhase::Cancel => {
-                        if self.active_id == Some(id) {
-                            self.active_id = None;
-                            self.last_pressure = None;
-                            out.push(PointerEvent {
-                                phase: PointerPhase::Up,
-                                pos,
-                                pressure,
-                            });
-                        }
+                }
+                egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                    if self.active_id == Some(id) {
+                        self.active_id = None;
+                        self.last_pressure = None;
+                        out.push(PointerEvent {
+                            phase: PointerPhase::Up,
+                            pos,
+                            pressure,
+                        });
                     }
                 }
             }
-        });
+        }
         out
     }
 

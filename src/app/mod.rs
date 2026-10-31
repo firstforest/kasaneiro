@@ -434,6 +434,11 @@ impl PaintApp {
     /// 消しゴム状態は線画レイヤー間で引き継ぐ)。乾燥レイヤーはツールなし(描画はブロック)
     fn select_layer(&mut self, layer: ActiveLayer) {
         self.active_layer = layer;
+        // E キー保持中の一時消しゴムは元ツールへ戻してから切り替える(保持中の元ツールは
+        // 前のレイヤーのものなので、そのまま残すとキーを離したとき別レイヤーのツールが復元される)
+        if let Some(prev) = self.erase_hold.take() {
+            self.tool = prev;
+        }
         let eraser = matches!(self.tool, Tool::Raster { eraser: true, .. });
         match layer {
             ActiveLayer::Wet => self.tool = Tool::Wet(self.last_wet_tool),
@@ -488,8 +493,12 @@ impl PaintApp {
     }
 
     /// 統一 Undo(M6): 末尾の操作種別で振り分ける(Ctrl+Z)。線を描いた直後は線が、
-    /// 水彩ストロークの直後は湿レイヤーが戻る。ボタン・キーの両方からここを通す
+    /// 水彩ストロークの直後は湿レイヤーが戻る。ボタン・キーの両方からここを通す。
+    /// ストローク中は履歴とテクスチャが食い違うので何もしない
     fn undo(&mut self) {
+        if self.painting {
+            return;
+        }
         match self.undo_stack.last().copied() {
             Some(UndoKind::Wet) => self.wet_undo(),
             Some(UndoKind::Line) => {
@@ -502,6 +511,9 @@ impl PaintApp {
     /// 統一 Redo(M6): Ctrl+Shift+Z。湿レイヤーは 1 段 undo で Redo を持たないため、
     /// Redo 対象は線画のみ(新しいストロークで線画 Redo は破棄済み=順序は破綻しない)
     fn redo(&mut self) {
+        if self.painting {
+            return;
+        }
         self.line_redo();
     }
 
@@ -660,7 +672,7 @@ impl PaintApp {
     }
 
     /// M2 の手動アクション(乾かす / Fast Dry / 再湿潤)を GpuCanvas 上で実行する共通経路。
-    /// 失敗(シェーダー未ビルド・レイヤー上限)はステータス表示に流す
+    /// 失敗(シェーダー未ビルド・レイヤー上限)はステータス表示に流す。成功したら true
     fn run_canvas_action(
         &mut self,
         action: impl FnOnce(
@@ -668,7 +680,7 @@ impl PaintApp {
             &egui_wgpu::wgpu::Device,
             &egui_wgpu::wgpu::Queue,
         ) -> Result<(), String>,
-    ) {
+    ) -> bool {
         let result = {
             let mut renderer = self.render_state.renderer.write();
             match renderer.callback_resources.get_mut::<GpuCanvas>() {
@@ -680,8 +692,12 @@ impl PaintApp {
                 None => Err("キャンバスが初期化されていません".to_owned()),
             }
         };
-        if let Err(e) = result {
-            self.status_msg = Some(e);
+        match result {
+            Ok(()) => true,
+            Err(e) => {
+                self.status_msg = Some(e);
+                false
+            }
         }
     }
 
