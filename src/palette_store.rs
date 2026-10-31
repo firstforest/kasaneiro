@@ -84,6 +84,14 @@ mod tests {
         assert!(delete(name).is_err(), "二重削除はエラーを返すはず");
     }
 
+    /// 同梱の default.json はコード既定値 `Palette::default_palette()` と同じ値であること
+    /// (μ など serde default を持つフィールドの書き漏れも検出する)
+    #[test]
+    fn bundled_default_matches_code() {
+        let _guard = DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(load("default").unwrap(), Palette::default_palette());
+    }
+
     /// リポジトリ同梱のパレットが全部読めること(壊れた JSON のコミットを防ぐ)
     #[test]
     fn bundled_palettes_load() {
