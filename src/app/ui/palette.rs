@@ -1,4 +1,4 @@
-//! パレット編集パネル(M5a/b)。app/mod.rs から分割(R4)。
+//! パレット編集パネル(M5a/b)。
 //!
 //! 固定 const だった 4 顔料を、色・ρ/ω/γ をその場で編集できるランタイムパレット
 //! ([`pigment::Palette`])にする。編集したら [`PaintApp::apply_palette`] で GPU の

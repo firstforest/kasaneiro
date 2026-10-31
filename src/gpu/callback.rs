@@ -1,6 +1,6 @@
-//! フレーム描画コールバック(egui-wgpu)。gpu/mod.rs から分離。
+//! フレーム描画コールバック(egui-wgpu)。
 //!
-//! `CanvasCallback` は app.rs で組み立てて egui の PaintCallback として渡され、
+//! `CanvasCallback` は src/app/ui/canvas.rs で組み立てて egui の PaintCallback として渡され、
 //! prepare で compute パス(splat → シミュレーション本体)を積み、paint で表示する。
 //! パス実行順(prepare 内)はシミュレーションの心臓部で、ここがその正典(R3)。
 
@@ -8,7 +8,7 @@ use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, ViewUnifo
 use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
 
-/// 1フレーム分の描画データ。app.rs で組み立てて PaintCallback として渡す。
+/// 1フレーム分の描画データ。src/app/ui/canvas.rs で組み立てて PaintCallback として渡す。
 pub struct CanvasCallback {
     pub params: SimParams,
     pub splats: Vec<Splat>,

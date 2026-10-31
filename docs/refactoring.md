@@ -97,7 +97,7 @@
 
 **狙い**: gpu/mod.rs・app.rs・paper.rs に波及する const `CANVAS_SIZE` を `GpuCanvas` のフィールド化し、M8 の設定化に備える。
 
-**実施メモ(2026-07-07、M8 と同一コミットで適用)**: paint-core の const は `CANVAS_SIZES = [512, 1024, 2048]` + `DEFAULT_CANVAS_SIZE = 512` に置き換え、実行時の値は `GpuCanvas.size`(+`tiles_per_side`)が正典。app は写し `PaintApp.canvas_size` を持つ(座標変換・保存が renderer ロックなしで毎フレーム読むため。変更は `recreate_canvas` 経由のみ)。**パディング計算は入れず**、サイズを 64 の倍数に限定して `GpuCanvas::new` の assert で強制することで readback の行バイト数を常に 256B 整列にした。WGSL 側のタイル定数はサイズ依存になったため `shader_prelude`(gpu/mod.rs)が const 2行を生成して連結する(architecture.md §8 参照)。
+**実施メモ(2026-07-07、M8 と同一コミットで適用)**: paint-core の const は `CANVAS_SIZES = [512, 1024, 2048]` + `DEFAULT_CANVAS_SIZE = 512` に置き換え、実行時の値は `GpuCanvas.size`(+`tiles_per_side`)が正典。app は写し `PaintApp.canvas_size` を持つ(座標変換・保存が renderer ロックなしで毎フレーム読むため。変更は `recreate_canvas` 経由のみ)。**パディング計算は入れず**、サイズを 64 の倍数に限定して `GpuCanvas::new` の assert で強制することで readback の行バイト数を常に 256B 整列にした。WGSL 側のタイル定数はサイズ依存になったため `shader_prelude`([gpu/prelude.rs](../src/gpu/prelude.rs))が const を生成して連結する(architecture.md §8 参照)。
 
 ## 11. 判断が要るもの(保留)
 

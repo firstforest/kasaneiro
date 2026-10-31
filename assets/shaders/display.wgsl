@@ -11,14 +11,14 @@
 // 先頭に common.wgsl が連結される。
 //
 // 通常表示の混色(M1c): 4顔料の濃度(浮遊+沈着)と紙を mixbox の latent 空間で
-// 線形混合し、latent → RGB 多項式で発色する。latent は CPU 側(src/pigment.rs)が
+// 線形混合し、latent → RGB 多項式で発色する。latent は CPU 側(crates/pigment/src/lib.rs)が
 // mixbox LUT から顔料ごとに1回だけ計算して uniform で渡すため、GPU に LUT は不要。
 //
 // 乾燥レイヤー(M2): texture array の各スライス = 1 乾燥レイヤー(rgba = 4顔料濃度)。
 // 合成は params.compose_mode で切替(H5 の再生で A/B 比較):
 //   0 = multiply(M2): 最終色 = 湿レイヤーの紙上発色 × Π(可視な乾燥レイヤーを白地に置いた透過率)
 //   1 = KM(M3): 各層を白地/黒地に置いた発色 R_w,R_b から反射率 R=R_b・透過率² T²=(R_w−R_b)(1−R_b)
-//       を導き(km.rs の簡約)、紙を最下層に下から光学合成する。上に薄い層を重ねるほど下が透ける
+//       を導き(crates/km/src/lib.rs の簡約)、紙を最下層に下から光学合成する。上に薄い層を重ねるほど下が透ける
 //       「内側から光る」グレーズ挙動になる。計算はリニア色空間で行い最後に sRGB へ戻す(note 03 §3)。
 // どちらも層「内」の混色は mixbox の latent 混合(render_conc)を通す(黄+青が濁らない M1c の芯)。
 
@@ -232,7 +232,7 @@ fn linear_to_srgb(c: vec3f) -> vec3f {
 }
 
 // 濃度 conc の1層を、リニア反射率 r_below の下地の上に KM で重ねた反射率(リニア)。
-// 層の反射率 R=R_b(黒地発色)・透過率² T²=(R_w−R_b)(1−R_b)(km.rs の簡約)を
+// 層の反射率 R=R_b(黒地発色)・透過率² T²=(R_w−R_b)(1−R_b)(crates/km/src/lib.rs の簡約)を
 // 白地/黒地の mixbox 発色から求め、合成式 R = R_top + T²·R_below/(1−R_top·R_below) を畳む。
 fn km_over_conc(conc: vec4f, r_below: vec3f, pal: u32) -> vec3f {
     let rw = srgb_to_linear(render_conc(conc, latents[2], latents[3], pal));

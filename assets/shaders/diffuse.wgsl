@@ -1,5 +1,5 @@
 // diffuse.wgsl — 浮遊顔料+水の拡散パス(M1b、毛細管化で水も対象に)。フィックの法則の陽解法。
-// 1 dispatch = 1 反復。CPU 側(gpu/mod.rs)が diffuse_iters 回 ping-pong で呼ぶ
+// 1 dispatch = 1 反復。CPU 側(gpu/callback.rs の prepare)が diffuse_iters 回 ping-pong で呼ぶ
 // (relax.wgsl と同じ方式)。陽解法の安定条件で 1 反復の係数は 0.2 までなので、
 // 速いにじみは反復回数で稼ぐ: 実効的な拡散速度 = pigment_diffuse × diffuse_iters。
 // 水筆で描いた水路に顔料溜まりを接続したとき、色が水路へ広がっていく動きはここが作る。

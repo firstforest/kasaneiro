@@ -1,4 +1,4 @@
-//! GpuCanvas の初期化(リソース生成)。gpu/mod.rs から分離。
+//! GpuCanvas の初期化(リソース生成)。
 //!
 //! テクスチャ(シミュ ping-pong・乾燥レイヤー array・紙ハイト・スナップショット)、
 //! バッファ(params/splats/顔料 latent/顔料個性/レイヤー uniform)、bind group layout と

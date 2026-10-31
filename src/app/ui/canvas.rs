@@ -1,5 +1,5 @@
 //! 中央のキャンバス描画(ポインタ入力の取り込み・記録再生の合流・シミュステップ数の決定)と
-//! シェーダーエラーのオーバーレイ。app/mod.rs から分割(R4)。
+//! シェーダーエラーのオーバーレイ。
 
 use crate::app::PaintApp;
 use crate::gpu::CanvasCallback;

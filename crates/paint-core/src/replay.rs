@@ -151,7 +151,7 @@ impl Player {
                 // ツールも記録値で上書き(リフト/消去ストロークを正しく再現する。M3)
                 params.tool = stroke.tool;
             }
-            // サンプル間隔は筆圧を反映した実効半径から(ライブ描画 app.rs と同じ式)
+            // サンプル間隔は筆圧を反映した実効半径から(ライブ描画 src/app/mod.rs と同じ式)
             let spacing = (params.radius_at(point.pressure) * 0.25).max(1.0);
             self.stroke_state
                 .add_motion(point.pos, point.pressure, spacing, out);

@@ -15,7 +15,7 @@
 //!
 //! GpuCanvas は egui-wgpu の callback_resources に置かれ、次の2経路から触られる:
 //! - フレームごとの描画は [`CanvasCallback`](callback)(prepare で compute、paint で表示)
-//! - ホットリロード時の再ビルドは app.rs から rebuild_pipelines()
+//! - ホットリロード時の再ビルドは src/app/mod.rs から rebuild_pipelines()
 //!
 //! ファイル構成(このモジュールはリソース定義と型・実行時メソッドを持つ。長い処理は分離):
 //! - [`init`] — `GpuCanvas::new`(テクスチャ・バッファ・bind group の生成)
@@ -250,7 +250,7 @@ pub struct GpuCanvas {
     tiledilate_bind_group: wgpu::BindGroup,
     tilescan_layout: wgpu::PipelineLayout,
     tiledilate_layout: wgpu::PipelineLayout,
-    /// 乾燥レイヤーの重ね順とメタ情報(先頭が最下層)。UI(app.rs)から直接編集し、
+    /// 乾燥レイヤーの重ね順とメタ情報(先頭が最下層)。UI(src/app/ui/layers.rs)から直接編集し、
     /// 変更後に sync_layers() で uniform へ反映する
     pub layers: Vec<DriedLayer>,
     /// 乾燥レイヤーの記録時パレット(M5h)。index = slot。GPU の latents 枠(M5c)が
@@ -447,7 +447,7 @@ impl GpuCanvas {
     }
 
     /// レイヤーの並び・可視性(self.layers)を display 用 uniform へ反映する(M2)。
-    /// app.rs がレイヤーパネルで layers を編集したあとに呼ぶ
+    /// レイヤーパネル(src/app/ui/layers.rs)が layers を編集したあとに呼ぶ
     pub fn sync_layers(&self, queue: &wgpu::Queue) {
         let mut uniform = LayerUniform {
             count: self.layers.len().min(MAX_LAYERS) as u32,

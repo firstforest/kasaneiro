@@ -4,7 +4,7 @@
 // 縁で水が減る → 水面勾配が内側 → 縁向きになり、次の速度更新・移流が浮遊顔料を
 // 縁へ運んで溜める(コーヒーリング効果)。顔料はこのパスでは動かさない。
 // M' はボックスぼかし(半径 edge_radius、1..8 テクセル)。厳密なガウシアンである必要はない。
-// edge_eta = 0 のときは CPU 側(gpu/mod.rs)がこのパスの dispatch 自体を省略する。
+// edge_eta = 0 のときは CPU 側(gpu/callback.rs の prepare)がこのパスの dispatch 自体を省略する。
 // 先頭に common.wgsl が連結される。
 
 @group(0) @binding(0) var src_water: texture_2d<f32>;

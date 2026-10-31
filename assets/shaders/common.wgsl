@@ -3,10 +3,10 @@
 //
 // シミュレーションテクスチャのレイアウト(いずれも rgba32float、ping-pong 2枚組):
 //   水:       r = 水量 / g = 速度x / b = 速度y / a = 濡れマスク(0=乾いた紙 / 1=濡れた領域)
-//   浮遊顔料: rgba の各チャンネル = 顔料1種(M1c から4顔料 = src/pigment.rs の PIGMENTS。水の流れに乗って移流する)
+//   浮遊顔料: rgba の各チャンネル = 顔料1種(パレットの4スロット = crates/pigment/src/lib.rs の Palette。水の流れに乗って移流する)
 //   沈着顔料: 同上(紙に定着した分。移流しない)
 // これに加えて紙ハイト(M1d): r32float 1枚、r = 高さ 0..1(0=谷 / 1=山)。
-// CPU(src/paper.rs)が起動時に生成する静的テクスチャで、ping-pong しない。
+// CPU(crates/paint-core/src/paper.rs)が起動時に生成する静的テクスチャで、ping-pong しない。
 // compute パスの binding は全シェーダー共通:
 //   0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats, 8 = 紙ハイト
 //   9 = 顔料個性(M3): array<vec4f, 4>、各 vec4 = (密度 ρ, ステイニング ω, 粒状感 γ, 粒の細かさ μ)。

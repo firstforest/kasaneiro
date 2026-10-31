@@ -1,5 +1,4 @@
 //! 乾燥・筆圧・味付けスライダー・診断表示・シミュ制御(H6)をまとめた調整セクション。
-//! app/mod.rs から分割(R4)。
 
 use crate::app::PaintApp;
 use eframe::egui;
@@ -18,7 +17,7 @@ const DISPLAY_MODES: [(u32, &str); 8] = [
 
 impl PaintApp {
     /// 制作者向けの調整・診断・シミュ制御(F10)。開発モード時のみ tool_panel から呼ぶ。
-    /// 通常ユーザーが使う PNG 書き出し・キャンバスサイズ・リセットは上部ファイルメニュー(file_menu)へ移した。
+    /// 通常ユーザーが使う PNG 書き出し・キャンバスサイズ・全部消すは上部ファイルメニュー(file_menu)にある。
     /// 見出しは開発者が見るので M2/M1.5 等の対応はコメント側に残す
     pub(in crate::app) fn tuning_dev_panel(&mut self, ui: &mut egui::Ui) {
         // 乾燥 (M2)

@@ -1,6 +1,6 @@
 # パラメータリファレンス
 
-全シミュレーションパラメータ(`SimParams`、[src/sim/mod.rs](../src/sim/mod.rs))と顔料個性の意味・既定値・UI 範囲の一覧。**定義の正典はコード側のフィールドコメント**であり、本書は一覧性のためのリファレンス。プリセットは `assets/presets/*.json`(serde default で古い JSON も読める)。
+全シミュレーションパラメータ(`SimParams`、[crates/paint-core/src/sim.rs](../crates/paint-core/src/sim.rs))と顔料個性の意味・既定値・UI 範囲の一覧。**定義の正典はコード側のフィールドコメント**であり、本書は一覧性のためのリファレンス。プリセットは `assets/presets/*.json`(serde default で古い JSON も読める)。
 
 最終更新: 2026-07-11(**分離色**: 顔料個性に第4物性「粒の細かさ μ」(`mobility`、§9)を追加=顔料ごとの拡散倍率。あわせて塗る筆に **`brush_channel2` / `brush_mix`**(§1)を追加し、2顔料を1筆で按分注入できるように。同日先行: `evap_rate` 既定 0.005→**0.0003**(「1分程度は濡れたまま」の既定化)+ `pigment_diffuse` 既定 0.4→**0.2**(乾燥が遅くなったぶん顔料の広がりを半減))
 
@@ -79,7 +79,7 @@ transfer.wgsl の実効式(per-channel、M3):
 | `DEPOSIT_WET_FLOOR` | 0.1 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 水膜がある間(w ≥ DRY_POINT)の吸着倍率。0 にすると濡れている間は全く沈まない(旧 (2−w)×(1−0.7w) の2重カーブを deposit_weight 1本に統合。旧「水持ち」を含む) |
 | `DEPOSIT_DRY_POINT` | 0.35 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 吸着が立ち上がる水量しきい値(=水膜が切れる点)。上げるほど早く沈み始め、下げるほど流れている間は浮遊し続ける |
 
-## 5. 紙(paper.rs / 3箇所適用)
+## 5. 紙([crates/paint-core/src/paper.rs](../crates/paint-core/src/paper.rs) / 3箇所適用)
 
 紙ハイトは起動時に CPU 生成する静的テクスチャ(値ノイズ4成分: 低周波の沈殿ムラ+中周波の紙目+微細なざらつき+横方向の繊維ストリーク)。
 

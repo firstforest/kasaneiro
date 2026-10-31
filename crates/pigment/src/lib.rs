@@ -5,14 +5,14 @@
 //!
 //! 混色の仕組み(LUT の WGSL 移植を回避する分担):
 //! - CPU(ここ): 各顔料の基本色 sRGB → mixbox latent(7 floats)。LUT 参照はこの1回だけ。
-//!   結果は uniform buffer で GPU へ渡す(gpu/mod.rs)
+//!   結果は uniform buffer で GPU へ渡す(src/gpu/mod.rs の set_palette)
 //! - GPU(display.wgsl): 画素ごとに 4 顔料の濃度で latent を線形混合し、
 //!   latent → RGB 多項式(mixbox eval_polynomial の WGSL 移植)で発色する
 //!
-//! 顔料スロットはテクスチャの rgba 4 チャンネルと 1:1 対応(sim/mod.rs のコメント参照)。
+//! 顔料スロットはテクスチャの rgba 4 チャンネルと 1:1 対応(crates/paint-core/src/sim.rs のコメント参照)。
 //!
-//! M5(ランタイムパレット): 固定 const だった `PIGMENTS` を [`Palette`] の状態へ昇格。
-//! UI で色・ρ/ω/γ を編集すると `pigment_latents()` / `physics_uniform()` を再計算して
+//! M5(ランタイムパレット): 顔料4スロットは [`Palette`] の状態として持つ。
+//! UI で色・ρ/ω/γ/μ を編集すると `pigment_latents()` / `physics_uniform()` を再計算して
 //! `write_buffer`(パイプライン再構築不要)。**レイヤーごとパレット記録(M5c)**: latent は
 //! 「グローバル光学(紙/白/黒)+ パレットごとの顔料ブロック」に分け、乾かした瞬間に現行
 //! パレットの顔料ブロックをそのレイヤー専用スロットへ焼き込む。これで顔料を後から編集しても
@@ -28,7 +28,7 @@ pub const PIGMENT_LATENTS: usize = PIGMENT_COUNT * 2;
 /// パレットに依存しないグローバル光学 latent の vec4 数: 紙色 × 2 + 白 × 2 + 黒 × 2。
 /// 白は multiply/KM 合成で層を「白地に置いた発色」R_w を得る基準色、
 /// 黒は KM 合成(M3)で層を「黒地に置いた発色」R_b を得る基準色。
-/// KM は各層の反射率 R=R_b・透過率² T²=(R_w−R_b)(1−R_b) をこの2発色から導く(km.rs 参照)。
+/// KM は各層の反射率 R=R_b・透過率² T²=(R_w−R_b)(1−R_b) をこの2発色から導く(crates/km/src/lib.rs 参照)。
 pub const GLOBAL_LATENTS: usize = 6;
 
 /// 紙の色(sRGB 0..1)。display.wgsl の紙レンダリングと mixbox 混合の両方がこの値を使う
