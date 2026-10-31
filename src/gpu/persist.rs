@@ -8,7 +8,7 @@
 //! ping-pong の parity は保存しない。復元時は常に parity 0 側へ書き込み `current = 0` に正規化する
 //! (次フレームの sim が 0 を読んで 1 へ書くので ping-pong の一貫性は保たれる)。
 
-use super::{GpuCanvas, LATENT_TOTAL, TEX_KINDS};
+use super::{GpuCanvas, LATENT_TOTAL, MAX_LAYERS, TEX_KINDS};
 use eframe::egui_wgpu::wgpu;
 
 /// エクスポート時に読み戻した全テクスチャ / latent の生データ(f32)。GPU 非依存の中間表現。
@@ -74,6 +74,13 @@ impl GpuCanvas {
         queue: &wgpu::Queue,
         work: &WorkTextures,
     ) -> Result<(), String> {
+        // 乾燥テクスチャのスライス数を超える書き込みは検証エラーになるので、書き始める前に弾く
+        if work.dried.len() > MAX_LAYERS {
+            return Err(format!(
+                "作品データの乾燥レイヤーが多すぎます({} > {MAX_LAYERS})",
+                work.dried.len()
+            ));
+        }
         let texels = (self.size * self.size) as usize;
         // 湿レイヤー(rgba32float)を parity 0 へ
         for kind in 0..TEX_KINDS {

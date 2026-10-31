@@ -11,7 +11,7 @@
 //! ファイル入出力を1モジュールに閉じ込めることで、将来 Web 版で保存先を差し替える余地を残す
 //! (plan §4 の「保存の trait 抽象を維持」)。
 
-use crate::gpu::WorkTextures;
+use crate::gpu::{MAX_LAYERS, WorkTextures};
 use paint_core::sim::CANVAS_SIZES;
 use pigment::Palette;
 use paint_core::sim::SimParams;
@@ -156,6 +156,27 @@ fn decode(bytes: &[u8]) -> Result<WorkFile, String> {
             meta.canvas_size
         ));
     }
+    // 乾燥レイヤーは GPU 側のスライス数(MAX_LAYERS)まで。レイヤー構成は層数と 1:1 で、
+    // 各 slot はスライス番号として層数未満
+    if meta.layer_count as usize > MAX_LAYERS {
+        return Err(format!(
+            "乾燥レイヤーが多すぎます({} > {MAX_LAYERS})",
+            meta.layer_count
+        ));
+    }
+    if meta.layers.len() != meta.layer_count as usize {
+        return Err(format!(
+            "レイヤー構成の個数が層数と一致しません({} != {})",
+            meta.layers.len(),
+            meta.layer_count
+        ));
+    }
+    if let Some(bad) = meta.layers.iter().find(|l| l.slot >= meta.layer_count) {
+        return Err(format!(
+            "レイヤーのスロット番号が層数を超えています(slot={} / 層数={})",
+            bad.slot, meta.layer_count
+        ));
+    }
     // M5h: 記録時パレットは層数と 1:1(GpuCanvas::layer_palettes の不変条件の入口検査)
     if meta.layer_palettes.len() != meta.layer_count as usize {
         return Err(format!(
@@ -184,6 +205,12 @@ fn decode(bytes: &[u8]) -> Result<WorkFile, String> {
         take_f32(bytes, &mut cur, texels)?,
     ];
     let latents = take_f32(bytes, &mut cur, latent_len)?;
+    if cur != bytes.len() {
+        return Err(format!(
+            "テクスチャデータの後ろに余分なデータがあります({} バイト)",
+            bytes.len() - cur
+        ));
+    }
 
     Ok(WorkFile {
         canvas_size: meta.canvas_size,
@@ -274,7 +301,10 @@ mod tests {
             layer_count: 2,
             params: SimParams::default(),
             palette: Palette::default_palette(),
-            layers: Vec::new(),
+            layers: vec![
+                StoredLayer { slot: 0, visible: true },
+                StoredLayer { slot: 1, visible: true },
+            ],
             layer_palettes: vec![Palette::default_palette()], // 2層なのに1個
         })
         .unwrap();
@@ -286,6 +316,69 @@ mod tests {
             Err(e) => assert!(e.contains("パレットの個数"), "個数検査で拒否されるはず: {e}"),
             Ok(_) => panic!("個数不一致が受理されました"),
         }
+    }
+
+    /// メタ JSON だけのバイト列(ブロブなし)。メタ段階の検査で拒否されることを見るテスト用
+    fn meta_only(meta: &WorkMeta) -> Vec<u8> {
+        let json = serde_json::to_vec(meta).unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&json);
+        bytes
+    }
+
+    fn expect_err(bytes: &[u8], needle: &str) {
+        match decode(bytes) {
+            Err(e) => assert!(e.contains(needle), "「{needle}」の検査で拒否されるはず: {e}"),
+            Ok(_) => panic!("「{needle}」の不正が受理されました"),
+        }
+    }
+
+    /// レイヤー構成の不正(層数が MAX_LAYERS 超・構成と層数の不一致・層数以上の slot)は拒否されること
+    #[test]
+    fn rejects_bad_layer_layout() {
+        let layered = |layer_count: u32, slots: &[u32]| WorkMeta {
+            canvas_size: 512,
+            layer_count,
+            params: SimParams::default(),
+            palette: Palette::default_palette(),
+            layers: slots
+                .iter()
+                .map(|&slot| StoredLayer { slot, visible: true })
+                .collect(),
+            layer_palettes: vec![Palette::default_palette(); layer_count as usize],
+        };
+        let too_many: Vec<u32> = (0..MAX_LAYERS as u32 + 1).collect();
+        expect_err(
+            &meta_only(&layered(MAX_LAYERS as u32 + 1, &too_many)),
+            "多すぎます",
+        );
+        expect_err(&meta_only(&layered(2, &[0])), "レイヤー構成の個数");
+        expect_err(&meta_only(&layered(2, &[0, 2])), "スロット番号");
+    }
+
+    /// 正しい作品の後ろに余分なバイトが付いていたら拒否されること
+    #[test]
+    fn rejects_trailing_bytes() {
+        let texels = 512 * 512;
+        let work = WorkFile {
+            canvas_size: 512,
+            params: SimParams::default(),
+            palette: Palette::default_palette(),
+            layers: Vec::new(),
+            layer_palettes: Vec::new(),
+            textures: WorkTextures {
+                wet: [vec![0.0; texels * 4], vec![0.0; texels * 4], vec![0.0; texels * 4]],
+                dried: Vec::new(),
+                lines: [vec![0.0; texels], vec![0.0; texels], vec![0.0; texels]],
+                latents: vec![0.0; crate::gpu::LATENT_TOTAL * 4],
+            },
+        };
+        let mut bytes = encode(&work).unwrap();
+        assert!(decode(&bytes).is_ok());
+        bytes.push(0);
+        expect_err(&bytes, "余分なデータ");
     }
 
     /// 壊れたデータ(識別子違い・サイズ不足・未対応キャンバスサイズ)は Err になること
