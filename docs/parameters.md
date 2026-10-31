@@ -172,12 +172,12 @@ SimParams とは別に、顔料ごとの物性4値を uniform(binding 9、vec4 �
 |---|---|---|---|
 | `active_tiles` | 1 | チェックボックス | **アクティブタイル最適化(M6)**。0=全面計算 / 1=濡れタイル+ブラシ近傍のタイルだけシミュレーションを走らせる。シミュコストを「紙の広さ」比例から「濡れ面積」比例へ。0 で従来どおり全面計算に戻せる(A/B・不具合時の退避)。診断表示(H4)の「アクティブタイル」モードで計算中の範囲を目視できる |
 
-`tilescan.wgsl` がタイル(16×16 テクセル)ごとに濡れマスクとブラシ位置(流体へ流す splat)を走査して生の有効フラグを作り、`tiledilate.wgsl` が1タイル分ふくらませて `active` を確定する(にじみ前線の余裕)。各シミュパス(splat/velocity/relax/flowout/advect/diffuse/transfer)は共通レイアウトの binding 11 で `active` を読み、非アクティブなタイルは3テクスチャを素通し(ping-pong 一貫性)して計算を省く。タイルサイズ・タイル数の WGSL 定数(`TILE_SIZE`/`TILES_PER_SIDE`)はキャンバスサイズ依存(M8)のため、[src/gpu/mod.rs](../src/gpu/mod.rs) の `shader_prelude` が生成して各シェーダーの先頭に連結する(Rust 側定義が唯一の正典)。**view(パン/ズーム)と同じく最適化トグルは SimParams だが、これは表示でなく計算範囲を絞るノブ**。
+`tilescan.wgsl` がタイル(16×16 テクセル)ごとに濡れマスクとブラシ位置(流体へ流す splat)を走査して生の有効フラグを作り、`tiledilate.wgsl` が1タイル分ふくらませて `active` を確定する(にじみ前線の余裕)。各シミュパス(splat/velocity/relax/flowout/advect/diffuse/transfer)は共通レイアウトの binding 11 で `active` を読み、非アクティブなタイルは3テクスチャを素通し(ping-pong 一貫性)して計算を省く。タイルサイズ・タイル数の WGSL 定数(`TILE_SIZE`/`TILES_PER_SIDE`)はキャンバスサイズ依存(M8)のため、[src/gpu/prelude.rs](../src/gpu/prelude.rs) の `shader_prelude` が生成して各シェーダーの先頭に連結する(Rust 側定義が唯一の正典)。**view(パン/ズーム)と同じく最適化トグルは SimParams だが、これは表示でなく計算範囲を絞るノブ**。
 
 ## 11. パラメータを追加するときの手順(H2 の定型作業)
 
 1. [crates/paint-core/src/sim.rs](../crates/paint-core/src/sim.rs) の `SimParams` にフィールド1行(末尾の `_pad` があれば置き換える。全体サイズの 16 バイト整列を保つ)+ `Default` に既定値
 2. [src/app/ui/](../src/app/ui/) の該当パネルにスライダー1行
-3. [assets/shaders/common.wgsl](../assets/shaders/common.wgsl) の `struct SimParams` に1行(Rust 側と同レイアウト)
+3. [assets/shaders/common.wgsl](../assets/shaders/common.wgsl) の `struct SimParams` に1行(Rust 側と同レイアウト。名前・順序・型の不一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検出する)
 
 serde(default) により古いプリセット JSON はそのまま読める。線画パラメータを鉛筆/ペンで独立させた際(`line_strength`/`line_gran` → `pencil_radius`/`pencil_strength`/`pencil_gran`/`pen_radius`/`pen_strength`)に末尾へ `_pad_line`(serde skip)を1つ置いた。M4.5b/c で `line_block`・`highlight_radius`・`highlight_strength`・`show_highlight` を追加し `_pad_line` を末尾に戻し、M6 でその `_pad_line`(f32、serde skip)を `active_tiles`(u32、通常フィールド)へ昇格させた。置き馴染み一式(2026-07-09)は同日整理で3ノブ+WGSL 定数(note/06 §8)になり、さらに毛細管化(note/07、ブランチ)で `paint_spread` も削除して `paint_pickup`/`brush_charge` の2ノブになった。ぼかし筆・ならしの見直し(2026-07-09)で `smear_rate` を削除し、その枠は `_pad_paint` へ戻した。吸い取り(2026-07-10)で `absorb_rate` がその1つを使い、分離色(2026-07-11)で残りの2枠を `brush_channel2`(u32)+`brush_mix`(f32)が使い切った。現在 SimParams は 224 バイト(16×14)で**予備パディングなし**。次の追加時は末尾に `_pad: [f32; 3]` を新設して 16B 境界を保ってから足すこと。なお同日に `Splat` の `_pad` を1つ `feed` フラグ(筆の含み splat の識別)へ昇格させた(32B 不変、残りパディング2)。

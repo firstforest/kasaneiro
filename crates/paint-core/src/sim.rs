@@ -32,7 +32,8 @@ pub const DEFAULT_CANVAS_SIZE: u32 = 512;
 pub const MAX_SPLATS: usize = 8192;
 
 /// 全シミュレーションパラメータの唯一の置き場(H2)。
-/// フィールドを足したら: ①ここに1行 ②app.rs のスライダー1行 ③common.wgsl の struct に1行。
+/// フィールドを足したら: ①ここに1行 ②app.rs のスライダー1行 ③common.wgsl の struct に1行
+/// (名前・順序・型の一致は tests/sim_params_layout.rs が検査する)。
 /// メモリレイアウトは WGSL の uniform 規則(16 バイト整列)に合わせること。
 /// 全体サイズは 16 の倍数を保つ(末尾の _pad を置き換えてからフィールドを増やす)。
 /// serde(default): プリセット(H3)にないフィールドは Default 値で埋める
