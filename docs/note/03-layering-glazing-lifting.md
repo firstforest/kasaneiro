@@ -2,7 +2,7 @@
 
 「乾いた色の上に描いて綺麗な重なりを作る」機能と、「既に描いた色を削って白い部分を作る」機能のための技術ノート。調査日: 2026-07-03。
 
-関連ノート: [01-fluid-simulation.md](01-fluid-simulation.md) / [02-pigment-mixing.md](02-pigment-mixing.md) / [04-implementation-stack.md](04-implementation-stack.md)
+関連ノート: [01-fluid-simulation.md](01-fluid-simulation.md) / [02-pigment-mixing.md](02-pigment-mixing.md) / [04-platform-and-references.md](04-platform-and-references.md)
 
 ---
 
@@ -189,10 +189,3 @@ Adobe の特許 [US10008011](https://patents.google.com/patent/US10008011) に�
 
 - **Van Laerhoven & Van Reeth** "Real-time watercolor painting on a distributed paper model" (CGI 2004) / "Real-time simulation of watery paint" (CAVW 2005, [Wiley](https://onlinelibrary.wiley.com/doi/abs/10.1002/cav.95), [PDF](http://www.cs.ucf.edu/courses/cap6105/fall09/readings/watercolor_sim.pdf)) — Curtis の3層モデル(浅水+沈着+毛細管)をリアルタイム化。Worley ノイズベースの手続き的紙テクスチャで粒状感とエッジ効果を駆動。「水流が紙から顔料を持ち上げ、運び、再沈着させる」を再現。
 - **Chu & Tai "MoXi"** (SIGGRAPH 2005, [ACM](https://dl.acm.org/doi/10.1145/1073204.1073221)) — 格子ボルツマン法による吸収性紙のインク拡散。エッジダークニングやフェザリングは出るが、乾いた層の再湿潤や多顔料の粒状感は対象外。詳細は [01-fluid-simulation.md](01-fluid-simulation.md)。
-
-## 9. このプロジェクトへの示唆
-
-1. **レイヤー構造は「レイヤー確定=乾燥」モデルが Curtis のグレージングと一致**し、要件「一度乾いた色の上に描くと綺麗に重なる」を最も素直に実現する。アクティブな湿レイヤーは1枚だけシミュレーションし、乾燥したら焼き込む。
-2. 層合成は KM の R/T 合成式が本命。まず multiply で動かし、後から KM に置き換えるという段階的実装も可能。
-3. 削り機能は、(a) Curtis 流のリフティング(ステイン床あり・エッジに再沈着・紙目で変調)と (b) デジタルならではの完全消去、の**2ツール構成**を推奨(Painter と同じ分離)。
-4. 顔料ごとのパラメータは `density(沈着速度) / staining(剥がれにくさ) / granulation(紙目への反応)` の3つで水彩の個性のほぼ全てが表現できる。

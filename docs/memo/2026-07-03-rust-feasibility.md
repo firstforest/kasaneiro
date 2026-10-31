@@ -2,15 +2,15 @@
 
 「Rust でこの水彩ペイントツールを作れるか」の調査ノート。調査日: 2026-07-03。
 
-関連ノート: [00-overview.md](00-overview.md) / [01-fluid-simulation.md](01-fluid-simulation.md) / [02-pigment-mixing.md](02-pigment-mixing.md) / [03-layering-glazing-lifting.md](03-layering-glazing-lifting.md) / [04-implementation-stack.md](04-implementation-stack.md)
+関連ノート: [00-overview.md](../note/00-overview.md) / [01-fluid-simulation.md](../note/01-fluid-simulation.md) / [02-pigment-mixing.md](../note/02-pigment-mixing.md) / [03-layering-glazing-lifting.md](../note/03-layering-glazing-lifting.md) / [04-implementation-stack.md](2026-07-03-implementation-stack.md)
 
 ---
 
 ## 結論: 実現可能。しかも本プロジェクトとの相性は良い
 
-**Rust + wgpu で全要件が実現できる。** 理由は単純で、このプロジェクトの技術的核心(Curtis 1997 系の流体シミュレーション、KM 混色、レイヤー合成)はすべて **WGSL compute shader のコード**であり、それは TypeScript + WebGPU 案と Rust + wgpu 案で**一字一句同じものが動く**からだ。wgpu は WebGPU API の Rust 実装そのもの([wgpu.rs](https://wgpu.rs/) / [gfx-rs/wgpu](https://github.com/gfx-rs/wgpu))であり、Firefox の WebGPU 実装のバックエンドでもある。つまり [04](04-implementation-stack.md) で立てたシミュレーション設計(テクスチャ構成・ping-pong・アクティブタイル)は**プラットフォーム選択と独立に成立**する。
+**Rust + wgpu で全要件が実現できる。** 理由は単純で、このプロジェクトの技術的核心(Curtis 1997 系の流体シミュレーション、KM 混色、レイヤー合成)はすべて **WGSL compute shader のコード**であり、それは TypeScript + WebGPU 案と Rust + wgpu 案で**一字一句同じものが動く**からだ。wgpu は WebGPU API の Rust 実装そのもの([wgpu.rs](https://wgpu.rs/) / [gfx-rs/wgpu](https://github.com/gfx-rs/wgpu))であり、Firefox の WebGPU 実装のバックエンドでもある。つまり [04](2026-07-03-implementation-stack.md) で立てたシミュレーション設計(テクスチャ構成・ping-pong・アクティブタイル)は**プラットフォーム選択と独立に成立**する。
 
-Rust 選択で変わるのは「シェル」側 — ウィンドウ、ペン入力、UI、配布 — であり、2021〜2023 年頃はここが Web 系に大きく劣っていた。しかし 2025〜2026 年時点では下記の通り、個人開発ツールとして十分な水準に達している。[04](04-implementation-stack.md) §3-3 に書いた「WinTab 対応を自前実装する必要があり、これは Web 系を選ぶ大きな理由になる」という評価は、**winit 0.31 と octotablet の登場により古くなった**(§2 参照)。
+Rust 選択で変わるのは「シェル」側 — ウィンドウ、ペン入力、UI、配布 — であり、2021〜2023 年頃はここが Web 系に大きく劣っていた。しかし 2025〜2026 年時点では下記の通り、個人開発ツールとして十分な水準に達している。[04](2026-07-03-implementation-stack.md) §3-3 に書いた「WinTab 対応を自前実装する必要があり、これは Web 系を選ぶ大きな理由になる」という評価は、**winit 0.31 と octotablet の登場により古くなった**(§2 参照)。
 
 | 懸念だった点 | 2026年時点の状況 | 深刻度 |
 |---|---|---|
@@ -25,7 +25,7 @@ Rust 選択で変わるのは「シェル」側 — ウィンドウ、ペン入�
 ## 1. GPU 基盤: wgpu
 
 - **wgpu は WebGPU API 準拠の Rust ライブラリ**。ネイティブでは Vulkan / DirectX 12 / Metal / OpenGL ES バックエンドで動き、`wasm32` ターゲットではブラウザの WebGPU に直接マップされる([wgpu.rs](https://wgpu.rs/))
-- シェーダー言語は WGSL(内部のシェーダー変換系は [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga))。**[04](04-implementation-stack.md) の推奨構成「WGSL compute で Curtis 簡略版」はそのまま流用できる** — compute pipeline、storage texture、ping-pong、atomics すべて WebGPU と同一 API 概念
+- シェーダー言語は WGSL(内部のシェーダー変換系は [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga))。**[04](2026-07-03-implementation-stack.md) の推奨構成「WGSL compute で Curtis 簡略版」はそのまま流用できる** — compute pipeline、storage texture、ping-pong、atomics すべて WebGPU と同一 API 概念
 - ブラウザ由来の制約(タブごとの GPU メモリ制限、readback の非同期強制、タイマー精度制限)が**ネイティブでは存在しない**。特にキャンバスの保存・undo 用のテクスチャ readback はネイティブのほうが素直に書ける
 - 流体シミュレーションの実績: [Wumpf/blub](https://github.com/Wumpf/blub)(wgpu で PIC/FLIP/APIC 3D 流体 — 本プロジェクトの 2D グリッドよりはるかに重い計算が動いている実証)、[lisyarus/webgpu-shallow-water](https://github.com/lisyarus/webgpu-shallow-water)(浅水方程式、WebGPU API)
 - 注意: wgpu は開発が活発でメジャーバージョンが年数回上がり、**wgpu / winit / egui の3者はバージョンをロックステップで上げる**必要がある(egui の対応 wgpu バージョンに合わせるのが楽)
@@ -52,7 +52,7 @@ Rust ネイティブの弱点とされてきた領域だが、2024〜2025 年に
 
 ### Web 版 Pointer Events との対応関係
 
-| Web ([04](04-implementation-stack.md) §3-3) | Rust での対応物 |
+| Web ([04](2026-07-03-implementation-stack.md) §3-3) | Rust での対応物 |
 |---|---|
 | `PointerEvent.pressure` / `tiltX/Y` | winit 0.31 Pointer / octotablet の軸データ |
 | `getCoalescedEvents()`(中間サンプル) | ネイティブではイベントが OS レートでそのまま届くため**そもそも間引きが起きない**(Windows Ink は 133Hz+) |
@@ -63,18 +63,18 @@ Rust ネイティブの弱点とされてきた領域だが、2024〜2025 年に
 ## 3. UI: egui / eframe
 
 - [egui](https://github.com/emilk/egui) は Rust の即時モード GUI。スライダー・カラーピッカー・ドッキングパネルなど、**ペイントツールの「周辺 UI」に必要な部品は標準またはエコシステムで揃う**。eframe(公式フレームワーク)+ [egui-wgpu](https://docs.rs/egui-wgpu) で wgpu レンダラを共有できる
-- キャンバス部分は egui の **`PaintCallback`** で任意の wgpu レンダーパスを UI 内に直接埋め込める — 「シミュレーション結果のテクスチャを egui ウィンドウ内に表示し、周囲に HTML ライクなパネルを置く」という [00](00-overview.md) のアーキテクチャ図がそのまま組める
-- 代替: [iced](https://github.com/iced-rs/iced)(Elm 風・保持モード)、[Slint](https://slint.dev/)(宣言的)。ツールパレット程度の UI なら egui が最速で、実験的パラメータ調整 UI(スライダー山盛りのデバッグパネル)を作る文化とも相性が良い — **流体シミュのパラメータ調整が品質の本体**([01](01-fluid-simulation.md) §1)である本プロジェクトでは、これは小さくない利点
+- キャンバス部分は egui の **`PaintCallback`** で任意の wgpu レンダーパスを UI 内に直接埋め込める — 「シミュレーション結果のテクスチャを egui ウィンドウ内に表示し、周囲に HTML ライクなパネルを置く」という [00](../note/00-overview.md) のアーキテクチャ図がそのまま組める
+- 代替: [iced](https://github.com/iced-rs/iced)(Elm 風・保持モード)、[Slint](https://slint.dev/)(宣言的)。ツールパレット程度の UI なら egui が最速で、実験的パラメータ調整 UI(スライダー山盛りのデバッグパネル)を作る文化とも相性が良い — **流体シミュのパラメータ調整が品質の本体**([01](../note/01-fluid-simulation.md) §1)である本プロジェクトでは、これは小さくない利点
 - HTML/CSS 比の劣位は残る: 凝ったビジュアルデザイン、テキスト処理、アクセシビリティ。個人用ツールでは許容範囲
 
 **評価: リスクなし(デザイン性への期待値を正しく持てば)。**
 
 ## 4. 混色: Mixbox 公式 Rust クレート + 自作スペクトラル
 
-- **[mixbox クレート](https://crates.io/crates/mixbox)が公式に存在する**([lib.rs](https://lib.rs/crates/mixbox)、[scrtwpns/mixbox](https://github.com/scrtwpns/mixbox) リポジトリに Rust 実装同梱)。`mixbox::lerp` / `rgb_to_latent` / `latent_to_rgb` で [02](02-pigment-mixing.md) の設計そのまま。ライセンスは同じく **CC BY-NC 4.0(非商用)**。ラッパー [pigment-mixing-rs](https://github.com/virtualritz/pigment-mixing-rs) もある
+- **[mixbox クレート](https://crates.io/crates/mixbox)が公式に存在する**([lib.rs](https://lib.rs/crates/mixbox)、[scrtwpns/mixbox](https://github.com/scrtwpns/mixbox) リポジトリに Rust 実装同梱)。`mixbox::lerp` / `rgb_to_latent` / `latent_to_rgb` で [02](../note/02-pigment-mixing.md) の設計そのまま。ライセンスは同じく **CC BY-NC 4.0(非商用)**。ラッパー [pigment-mixing-rs](https://github.com/virtualritz/pigment-mixing-rs) もある
 - GPU 側の混色は Mixbox 同梱の GLSL シェーダーを WGSL に移植(LUT テクスチャ1枚+多項式評価のみなので機械的な作業)
-- ライセンスフリー路線([02](02-pigment-mixing.md) §3 の spectral.js / WGM 方式)は**そもそも数式を自前実装する方針なので言語を問わない**。むしろ CPU 参照実装(テスト用)とWGSL 実装を並走させて突き合わせる開発スタイルは、cargo test が回しやすい Rust の得意分野
-- KM 層合成([03](03-layering-glazing-lifting.md) §3)も同様に数式の直接実装であり、言語依存なし
+- ライセンスフリー路線([02](../note/02-pigment-mixing.md) §3 の spectral.js / WGM 方式)は**そもそも数式を自前実装する方針なので言語を問わない**。むしろ CPU 参照実装(テスト用)とWGSL 実装を並走させて突き合わせる開発スタイルは、cargo test が回しやすい Rust の得意分野
+- KM 層合成([03](../note/03-layering-glazing-lifting.md) §3)も同様に数式の直接実装であり、言語依存なし
 
 **評価: リスクなし。**
 
@@ -131,7 +131,7 @@ Rust ネイティブの弱点とされてきた領域だが、2024〜2025 年に
 
 | 役割 | クレート | 備考 |
 |---|---|---|
-| GPU | [wgpu](https://crates.io/crates/wgpu) | WGSL compute。設計は [04](04-implementation-stack.md) §3 のまま |
+| GPU | [wgpu](https://crates.io/crates/wgpu) | WGSL compute。設計は [04](2026-07-03-implementation-stack.md) §3 のまま |
 | ウィンドウ・入力 | [winit](https://crates.io/crates/winit) 0.31+ | Pointer 刷新でペン対応 |
 | タブレット詳細 | [octotablet](https://crates.io/crates/octotablet) | Windows Ink。傾き・ホバー・消しゴム検出 |
 | UI | [egui](https://crates.io/crates/egui) + eframe + egui-wgpu | PaintCallback でキャンバス統合 |
@@ -140,7 +140,7 @@ Rust ネイティブの弱点とされてきた領域だが、2024〜2025 年に
 | 画像 I/O | [image](https://crates.io/crates/image) | PNG 書き出し等 |
 | ファイルダイアログ | [rfd](https://crates.io/crates/rfd) | ネイティブダイアログ |
 
-### ロードマップへの影響([00](00-overview.md) の Phase 構成に対する差分)
+### ロードマップへの影響([00](../note/00-overview.md) の Phase 構成に対する差分)
 
 - **Phase 0 を追加**: winit + wgpu + egui の空アプリ(ウィンドウ+テクスチャ表示+スライダー1本+WGSL ホットリロード)を最初に組む。ここが TS 案には無い先行投資(数日規模)
 - Phase 1 のブラシは**マウスで開始**してよい(splat の確認に筆圧は不要)。筆圧統合は Phase 1 の後半で octotablet を足す

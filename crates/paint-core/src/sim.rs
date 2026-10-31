@@ -179,7 +179,7 @@ pub struct SimParams {
     /// 同じ浮遊層で混ざるので、置いた境界が馴染む。0=無効
     ///
     /// なお「置いた色が外へ広がる」挙動はパラメータではなく水の毛細管拡散
-    /// (diffuse.wgsl の WATER_DIFFUSE / WATER_GAMMA 定数、note/07)が担う:
+    /// (diffuse.wgsl の WATER_DIFFUSE / WATER_GAMMA 定数、note/05)が担う:
     /// 広がる距離は置く水の量(brush_water)と含み(brush_charge)で決まる
     pub paint_pickup: f32,
     /// 筆の含み(秒): 塗るブラシを置いたまま動かさなくても、この秒数だけ色水が
@@ -235,7 +235,7 @@ impl Default for SimParams {
             wet_expand: 0.0,
             brush_pigment: 0.11,
             deposit_rate: 0.05,
-            // 毛細管モデル(note/07)では既存色が新しい塗りへ戻る経路が再浮遊→拡散だけなので
+            // 毛細管モデル(note/05)では既存色が新しい塗りへ戻る経路が再浮遊→拡散だけなので
             // 脱着は速め。ステイニング ω の「剥がれない」個性はそのまま効く
             lift_rate: 0.1,
             // 水量 0.5 の塗りが約1分保つ値(0.0003×dt0.5×60fps ≈ 0.009/秒)。

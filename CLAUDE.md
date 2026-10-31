@@ -16,7 +16,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | [docs/architecture.md](docs/architecture.md) | 実装構造(スタック・モジュール構成・テクスチャ・パス順序・シェーダー一覧・混色の2段構え) |
 | [docs/parameters.md](docs/parameters.md) | 全パラメータ(`SimParams`)と顔料個性 ρ/ω/γ/μ のリファレンス(既定値・UI 範囲・意味・実効式) |
 | [docs/plan.md](docs/plan.md) | 設計方針(試行錯誤ループと装備 H1〜H6 の狙い・プロジェクト構成)と先送り判断 §3 |
-| [docs/note/00-overview.md](docs/note/00-overview.md) | 技術調査ノートの起点。設計判断に迷ったら参照 |
+| [docs/note/00-overview.md](docs/note/00-overview.md) | 技術ノートの起点。再利用できる知見と最新の情報だけを置く(要素技術の調査・実装で確かめた仕組み)。設計判断に迷ったら参照 |
+| [docs/memo/](docs/memo/) | 時系列が意味を持つ記録(その時点の検討・比較・試行錯誤の経緯)。ファイル名は `YYYY-MM-DD-<内容>.md` |
+
+**書き方の規則:**
+
+- memo/ と changelog.md 以外は**最新の情報と判断だけ**を書く。古くなった記述は「追記」で書き足さず本文を書き換え、本文を肥大化させない(コードコメントも同じ)
+- その時点の検討や経緯として残したいものは memo/ に日付つきの新しいファイルとして置き、note からは必要ならリンクする。memo は書いた時点の記録なので後から現状に合わせて直さない
+- note に当時の計画・ロードマップ・「〜に決定」のような判断の経緯を混ぜない。今も通用する結論だけを note に書き、経緯は memo へ
 
 **更新規則(コード変更と同じコミットで):**
 

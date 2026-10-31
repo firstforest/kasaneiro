@@ -22,7 +22,7 @@
 | `brush_channel2` | 3 | 色見本ボタン(塗るツールの「2色目」) | 分離色の2色目の顔料スロット(0〜3)。`brush_mix` > 0 のとき塗る筆が `brush_channel` とこの2チャンネルへ顔料を按分して同時に注ぐ(splat.wgsl の描画・feed 両ブランチ) |
 | `brush_mix` | 0.0 | 0〜1 | 分離色の混合比: 0=単色 / 0.5=半々 / 1=2色目のみ。総顔料量(`brush_pigment`)は変えず比率で按分する。紙の上で2色が分かれるのは注入でなく顔料個性の差(粒の細かさ μ・密度 ρ・染みつき ω)が起こす物理(§9) |
 
-「置いた色が外へ広がる」挙動はパラメータではなく**水の毛細管拡散**([note/07](note/07-capillary-water.md)、§4 の定数 `WATER_DIFFUSE`/`WATER_GAMMA`)が担う。広がる距離は置く水の量(`brush_water`)と含み(`brush_charge`)で決まる。
+「置いた色が外へ広がる」挙動はパラメータではなく**水の毛細管拡散**([note/05](note/05-wet-spreading.md)、§4 の定数 `WATER_DIFFUSE`/`WATER_GAMMA`)が担う。広がる距離は置く水の量(`brush_water`)と含み(`brush_charge`)で決まる。
 
 ## 2. 筆圧(M1.5)
 
@@ -54,7 +54,7 @@
 | `pigment_diffuse` | 0.2 | 0〜1 | 顔料拡散率(1反復あたり。安定条件のため WGSL 側で 0.2 に制限)。既定 0.2×dt0.5=実効 0.1=上限の半分(約1分濡れたままの乾き方で混ざりすぎない値)。0.4 以上で上限に張り付く。水の毛細管拡散(WATER_DIFFUSE)には影響しない |
 | `diffuse_iters` | 12 | 0〜32 | 拡散の反復回数/ステップ。実効的なにじみ速度 = 拡散率 × 反復回数。速いにじみはこちらで稼ぐ |
 | `deposit_rate` | 0.05 | 0〜0.5 | 吸着率: 浮遊顔料が紙へ沈着する速さ(水が少ないほど強い)。顔料の ρ と粒状ゲートで変調 |
-| `lift_rate` | 0.1 | 0〜0.5 | 脱着率: 沈着顔料が水に浮き上がる速さ(水が多いほど強い)。顔料の (1−ω) で変調。毛細管モデル(note/07)では既存色が新しい塗りへ戻る経路が再浮遊→拡散だけなので速めにしている |
+| `lift_rate` | 0.1 | 0〜0.5 | 脱着率: 沈着顔料が水に浮き上がる速さ(水が多いほど強い)。顔料の (1−ω) で変調。毛細管モデル(note/05)では既存色が新しい塗りへ戻る経路が再浮遊→拡散だけなので速めにしている |
 | `evap_rate` | 0.0003 | 0〜0.05(log) | 蒸発率: 濡れ領域の水が 1 ステップに減る量。既定は水量 0.5 の塗りが約1分保つ値(60fps 基準)。ステップ毎に引くのでモニタの Hz に比例して速くなる点に注意 |
 
 transfer.wgsl の実効式(per-channel、M3):
@@ -67,12 +67,12 @@ transfer.wgsl の実効式(per-channel、M3):
 
 ### 調整済みの WGSL 定数(SimParams ではない)
 
-作画中に変えない「シミュの性格」は SimParams ではなく各シェーダーの `const` に置く(判断の記録は [note/06](note/06-wet-blending-tuning.md) §8 と [note/07](note/07-capillary-water.md))。再調整はホットリロード(H1)でシェーダーを直接編集する(SimParams のレイアウトが変わらないので再起動不要):
+作画中に変えない「シミュの性格」は SimParams ではなく各シェーダーの `const` に置く(理由と調整ガイドは [note/05](note/05-wet-spreading.md) §6)。再調整はホットリロード(H1)でシェーダーを直接編集する(SimParams のレイアウトが変わらないので再起動不要):
 
 | 定数 | 値 | 場所 | 意味 |
 |---|---|---|---|
 | `FLOW_MIN` | 0.3 | [velocity.wgsl](../assets/shaders/velocity.wgsl) | 薄い水膜の流れ止め(潤滑近似): この水量以下で速度が消えはじめる。乾きかけの紙目駆動の流れが浮遊顔料を谷へ寄せてざらつくのを防ぐ。吸着の立ち上がり(DEPOSIT_DRY_POINT)よりわずかに下 |
-| `WATER_DIFFUSE` | 0.15 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 水の毛細管拡散の速さ(per-iter 上限 0.2、×diffuse_iters)。置いた水が濡れた紙を伝って広がる(note/07) |
+| `WATER_DIFFUSE` | 0.15 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 水の毛細管拡散の速さ(per-iter 上限 0.2、×diffuse_iters)。置いた水が濡れた紙を伝って広がる(note/05) |
 | `WATER_GAMMA` | 2.0 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 水の毛細管の水依存カーブ: 流束の重み = max(両セル水量)^γ。max なのは乾きかけへ吸い込まれる向きを殺さないため |
 | `DIFFUSE_GAMMA` | 4.0 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 顔料の混ざりの水依存 γ: 拡散流束の重み = (水量平均)^γ。水たっぷり=自由に混ざる/引くと止まる |
 | `CHARGE_PIGMENT` | 0.15 | [splat.wgsl](../assets/shaders/splat.wgsl) | 筆の含みの feed splat 1フレームが注ぐ顔料の通常比。0 で水だけ |

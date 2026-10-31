@@ -2,7 +2,7 @@
 
 開発の進め方の原則(§1・§2)と、いま決めないことの一覧(§3)。各マイルストーン・装備の実装状況は [status.md](status.md)、技術調査は [note/00-overview.md](note/00-overview.md) 起点のノートを参照。
 
-**設計方針: 試行錯誤の速度を最優先する。** このプロジェクトの品質はアルゴリズムの選択ではなく**パラメータ調整の反復回数**で決まる([01](note/01-fluid-simulation.md) §1「パラメータ調整が見た目を大きく左右する」、[05](note/05-rust-feasibility.md) §7「調整作業の大半=シェーダーパラメータいじり」)。そこで次の2点を構造として組み込む:
+**設計方針: 試行錯誤の速度を最優先する。** このプロジェクトの品質はアルゴリズムの選択ではなく**パラメータ調整の反復回数**で決まる([01](note/01-fluid-simulation.md) §1「パラメータ調整が見た目を大きく左右する」)。そこで次の2点を構造として組み込む:
 
 1. **シミュレーション本体より先に調整ループを回す道具を持つ** — ホットリロード・パラメータパネル・デバッグ表示・ストローク再生(装備 H1〜H6)
 2. **完了条件は「目で見て判定できる体験」で定義する** — 数値目標ではなく「2色が馴染んで綺麗なグラデーションになるか」のような体感チェックにする。判定できないものは作りすぎのサイン。e2e テストもこの方針で、数値を固定せず体験が壊れていないかだけを見る
@@ -34,7 +34,7 @@
 
 ### CPU参照実装の位置づけ(やりすぎない)
 
-[05](note/05-rust-feasibility.md) §7 の「CPU 参照実装+cargo test」は有効だが、全パイプラインの二重実装は過剰。**GPU の数値が疑わしくなったカーネル単位で後追い実装する**:
+CPU 参照実装+cargo test で数値を検証する進め方([note/04](note/04-platform-and-references.md) §4)は有効だが、全パイプラインの二重実装は過剰。**GPU の数値が疑わしくなったカーネル単位で後追い実装する**:
 
 - KM 合成と K,S 逆算([03](note/03-layering-glazing-lifting.md) §3)は純粋関数なので CPU 実装+テストで書き、WGSL と突き合わせる(`crates/km`)
 - 流体本体は数値の正しさより見た目なので、デバッグ表示(H4)で診断する方が速い
@@ -68,7 +68,7 @@ kasaneiro/
 ```
 
 - workspace を km / pigment / paint-core の 3 crate に分けるのは、mixbox 隔離(CC BY-NC)を依存グラフで強制し、CPU 純粋部を wgpu 抜きで数秒テストできるようにするため
-- **依存クレートは egui の対応バージョンを起点にロックステップで固定**(egui → egui-wgpu → wgpu → winit の順に合わせる。[05](note/05-rust-feasibility.md) §1 の注意)
+- **依存クレートは egui の対応バージョンを起点にロックステップで固定**(egui → egui-wgpu → wgpu → winit の順に合わせる。[note/04](note/04-platform-and-references.md) §1)
 - コンパイル時間対策: `[profile.dev.package."*"] opt-level = 2`(依存だけ最適化)+ 自前コードは opt-level 1。シミュレーションは GPU 側なので dev ビルドでも 60fps が出る
 
 主要クレート: wgpu / egui + eframe + egui-wgpu / mixbox / notify(ホットリロード)/ serde + serde_json / image / rfd。筆圧は winit/egui 標準の Touch イベントで取る(octotablet はメッセージループのデッドロック [issue #18](https://github.com/Fuzzyzilla/octotablet/issues/18) で不採用)。
@@ -80,7 +80,7 @@ kasaneiro/
 | 論点 | 当面の選択 | 再検討のトリガー |
 |---|---|---|
 | 混色ライブラリ | mixbox クレート(CC BY-NC)。呼び出しは `crates/pigment` に隔離 | 配布・商用化したくなったら自作スペクトラル WGM([02](note/02-pigment-mixing.md) §3)へ差し替え |
-| 流体ソルバ | Curtis 簡略版(反復緩和)+**毛細管拡散**(水高さの拡散、[note/07](note/07-capillary-water.md)) | 不安定なら Stam 化、にじみ境界の表情が足りなければ LBM(MoXi) |
+| 流体ソルバ | Curtis 簡略版(反復緩和)+**毛細管拡散**(水高さの拡散、[note/05](note/05-wet-spreading.md)) | 不安定なら Stam 化、にじみ境界の表情が足りなければ LBM(MoXi) |
 | 紙の質感再現(シミュ側) | 既定オフ(paper_amp/gran/wet=0。機構・スライダーは残置) | しばらく使って不要が確定したら紙ハイト機構ごと削除。逆に粒状感が欲しくなったら値を戻すだけ |
 | undo(湿レイヤー) | 1段のみ(全面スナップショット)。線画・ハイライトは多段 Undo/Redo(ストローク再生方式) | 水彩側も複数段が欲しくなったら。2048² ではタイル差分化が前提 |
 | 線画 Undo の周期チェックポイント | なし(毎回全ストローク再ラスタライズ) | ストローク数が増えて Undo/Redo の再生が体感で遅くなったら(Kストロークごとにテクスチャ退避+差分再生) |

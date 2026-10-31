@@ -1,5 +1,5 @@
 // splat.wgsl — ブラシ入力の compute パス。ツール(params.tool)で3分岐する(M3):
-//   0 = 描画: 水+初速+顔料を置く(M1a/M1b)。置いた水は毛細管拡散(diffuse.wgsl、note/07)が
+//   0 = 描画: 水+初速+顔料を置く(M1a/M1b)。置いた水は毛細管拡散(diffuse.wgsl、note/05)が
 //       濡れた紙を伝ってひとりでに広げ、色の溶かし戻し(paint_pickup)で下の色と馴染む
 //   1 = リフト(削り): 沈着顔料を浮遊層へ戻し、その場を濡らして流す。ステイニング顔料(ω)は
 //       残り、紙の凸部から先に剥がれる(粒状化 γ の顔料は谷に残る) — Curtis の削りレシピ
@@ -26,7 +26,7 @@
 // アクティブタイル(M6): タイル有効フラグ。非アクティブなタイルは素通しして計算を省く
 @group(0) @binding(11) var<storage, read> tile_active: array<u32>;
 
-// 筆の含み(brush_charge)の調整済み定数(docs/note/06)。再調整はホットリロード(H1)で直接編集
+// 筆の含み(brush_charge)の調整済み定数(docs/note/05 §4)。再調整はホットリロード(H1)で直接編集
 const CHARGE_PIGMENT: f32 = 0.15; // feed splat 1フレームが注ぐ顔料の通常 splat に対する比
 
 @compute @workgroup_size(8, 8)

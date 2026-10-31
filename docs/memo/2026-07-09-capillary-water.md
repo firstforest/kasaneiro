@@ -7,7 +7,7 @@
 
 ブランチ `refactor/capillary-water` で試作 → 目視調整4ラウンド(§2 の調整ログ)を経て**同日 main へマージ=採用済み**。採否の記録は plan.md §3。
 
-関連ノート: [06-wet-blending-tuning.md](06-wet-blending-tuning.md)(置き換え対象のパッチ群がなぜ生まれたか)/ [01-fluid-simulation.md](01-fluid-simulation.md)(土台の Curtis 1997)
+関連ノート: [06-wet-blending-tuning.md](2026-07-09-wet-blending-tuning.md)(置き換え対象のパッチ群がなぜ生まれたか)/ [01-fluid-simulation.md](../note/01-fluid-simulation.md)(土台の Curtis 1997)
 
 ---
 

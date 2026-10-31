@@ -2,7 +2,7 @@
 
 「別の色を取った筆で描くと色が馴染んで綺麗なグラデーションになる」ためには、流体シミュレーション([01](01-fluid-simulation.md))だけでなく、**混ざった色が絵具らしい色になる**混色モデルが必要。調査日: 2026-07-03。
 
-関連ノート: [01-fluid-simulation.md](01-fluid-simulation.md) / [03-layering-glazing-lifting.md](03-layering-glazing-lifting.md) / [04-implementation-stack.md](04-implementation-stack.md)
+関連ノート: [01-fluid-simulation.md](01-fluid-simulation.md) / [03-layering-glazing-lifting.md](03-layering-glazing-lifting.md) / [04-platform-and-references.md](04-platform-and-references.md)
 
 ---
 
@@ -158,9 +158,9 @@ R_mix(λ) = Πᵢ Rᵢ(λ)^cᵢ    (Σcᵢ = 1)
 cover = 1 − exp(−pigment_density × 総顔料量)
 ```
 
-パラメータを追う際に効いてくる非自明な性質を記録しておく(2026-07-05 に顔料量デフォルト調整で判明):
+パラメータを追う際に効いてくる非自明な性質:
 
 - **画面の濃さは `pigment_density × brush_pigment` の積だけで決まる**。他の顔料系パラメータ(deposit_rate / lift / pigment_diffuse / evap)は濃度に対する比率・拡散なのでスケール不変で、絶対量には効かない。よって発色の濃淡調整は**実質1自由度**で、片方のスライダーだけ動かせば追い込める。
 - 表示は濃度**総和**を使うので、ストロークの splat 重なりがそのまま効く。`spacing = 半径 × 0.25`([src/app/mod.rs](../../src/app/mod.rs) `add_motion` 呼び出し)だと**中心線の1テクセルに coverage 総和 ≈ 6.3 個分**の顔料が積まれる。「1 splat あたりの `brush_pigment`」の体感濃度はこの倍率込みで考える。
 - したがってフルストローク1回の光学的濃度は `D ≈ pigment_density × 6.3 × brush_pigment`、N回重ねで `cover = 1 − exp(−D·N)`。狙いの重なりカーブから逆算するのが早い(cover≈0.5/回 なら D≈0.7)。
-- 初期値 `brush_pigment 0.6 / pigment_density 3.0` は D≈11.3 で1回で完全不透明だった。中間狙い(1回 cover≈0.5)で `brush_pigment 0.11 / pigment_density 1.0`(D≈0.70)に変更。プリセットは [assets/presets/default.json](../../assets/presets/default.json)、既定値は [crates/paint-core/src/sim.rs](../../crates/paint-core/src/sim.rs) の `SimParams::default`。
+- 既定値 `brush_pigment 0.11 / pigment_density 1.0` は D≈0.70 で、1回のストロークで cover≈0.5(重ねるほど濃くなる中間)を狙っている。プリセットは [assets/presets/default.json](../../assets/presets/default.json)、既定値は [crates/paint-core/src/sim.rs](../../crates/paint-core/src/sim.rs) の `SimParams::default`。

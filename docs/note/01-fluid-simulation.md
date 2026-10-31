@@ -2,7 +2,7 @@
 
 「濡れた紙の上で隣の色と馴染んで綺麗なグラデーションになる」現象をデジタルで再現するための技術ノート。調査日: 2026-07-03。
 
-関連ノート: [02-pigment-mixing.md](02-pigment-mixing.md) / [03-layering-glazing-lifting.md](03-layering-glazing-lifting.md) / [04-implementation-stack.md](04-implementation-stack.md)
+関連ノート: [02-pigment-mixing.md](02-pigment-mixing.md) / [03-layering-glazing-lifting.md](03-layering-glazing-lifting.md) / [04-platform-and-references.md](04-platform-and-references.md)
 
 ---
 
@@ -143,9 +143,3 @@ wetness == 0 で浮遊顔料を全量固定
 - 乾燥系パスは1/4解像度・数フレームに1回の更新で十分(視覚的にゆっくりなので)
 - **ストローク堆積と拡散シミュレーションは別フェーズに分離する**(Rebelle の初期からの決定的最適化。拡散は低頻度ティックやストローク間に回せる)
 - **UXの結論**: 自然乾燥をリアルタイムで待たせるより、**Rebelle式のユーザー制御乾燥(乾かすボタン、常に見えるワンタップ)**のほうが道具として使いやすい、というのが商用ソフトの収斂した答え。「レイヤー確定=乾燥」モデルや乾燥レイヤー管理の共通アーキテクチャは [03](03-layering-glazing-lifting.md) §6 に詳しい
-
-## 9. 実装ロードマップ(推奨)
-
-1. **Phase 1 — Curtis簡略版**: 水量・速度・浮遊顔料・沈着顔料・紙ハイトの5テクスチャをcompute shaderでping-pong更新。蒸発+FlowOutwardでエッジダークニングまで出す。Stuyck 2017の簡略化テクニックを参照。512²〜1024²@60fpsから開始
-2. **Phase 2 — アクティブタイル最適化**: 濡れているタイルだけ更新して全画面常時シミュを回避(Van Laerhoven / Fresco方式)
-3. **Phase 3 — 選択的高度化**: 繊維にじみが欲しければLBM(MoXi)へ換装、色のリアリティはKM混色([02](02-pigment-mixing.md))、拡大品質は超解像
