@@ -118,9 +118,16 @@ impl Player {
 
     /// 1フレーム分のポインタ入力を再生して splat を out に積む。
     /// ライブ描画と同じ経路(StrokeState → splat.wgsl)を通すため、現在のブラシ
-    /// パラメータがそのまま効く。顔料スロットだけは記録値で params を上書きする。
-    /// 再生し終えたら false を返す。
+    /// パラメータがそのまま効く。顔料スロットとツールだけは記録値で params を上書きする。
+    /// UI 側が毎フレーム params.tool を選択中ツールで書き直すため、ストローク中は
+    /// 毎フレーム記録値を書き直す。再生し終えたら false を返す。
     pub fn advance(&mut self, params: &mut SimParams, out: &mut Vec<Splat>) -> bool {
+        if self.in_stroke
+            && let Some(stroke) = self.recording.strokes.get(self.stroke_idx)
+        {
+            params.brush_channel = stroke.channel;
+            params.tool = stroke.tool;
+        }
         while self.stroke_idx < self.recording.strokes.len() {
             let stroke = &self.recording.strokes[self.stroke_idx];
             // 空ストロークや、現フレームに達していない先頭点はここで判定
@@ -187,5 +194,34 @@ mod tests {
         assert!(!out.is_empty());
         assert_eq!(out.last().unwrap().pos, [20.0, 10.0]);
         assert!(!player.advance(&mut params, &mut out));
+    }
+
+    /// UI が毎フレーム params.tool / brush_channel を書き直しても、ストローク中は
+    /// 2フレーム目以降も記録値で splat が出ること
+    #[test]
+    fn replay_keeps_recorded_tool_every_frame() {
+        let mut recorder = Recorder::new();
+        recorder.begin_stroke(2, 1);
+        recorder.add_point([10.0, 10.0], 1.0);
+        recorder.tick();
+        recorder.add_point([20.0, 10.0], 1.0);
+        recorder.tick();
+        recorder.add_point([30.0, 10.0], 1.0);
+        recorder.end_stroke();
+        let mut player = Player::new(recorder.finish());
+        let mut params = SimParams::default();
+        let mut out = Vec::new();
+
+        player.advance(&mut params, &mut out);
+        for _ in 0..2 {
+            // UI の選択ツール・顔料での上書き(tools.rs が advance より先に走る)
+            params.tool = 0;
+            params.brush_channel = 0;
+            out.clear();
+            player.advance(&mut params, &mut out);
+            assert!(!out.is_empty());
+            assert_eq!(params.tool, 1);
+            assert_eq!(params.brush_channel, 2);
+        }
     }
 }

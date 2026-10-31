@@ -693,6 +693,11 @@ impl PaintApp {
         self.clear_canvas();
         self.stroke.end();
         self.painting = false;
+        // 記録は水彩ストロークなので水彩レイヤーで再生する(線画レイヤー選択中だと
+        // line_target が立ち、splat が線画へ流れる)
+        if self.active_layer != ActiveLayer::Wet {
+            self.select_layer(ActiveLayer::Wet);
+        }
         self.palette = palette;
         self.apply_palette();
         // 再生前の顔料スロットを退避(再生終了時に stop_replay が戻す)。
