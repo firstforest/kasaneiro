@@ -70,36 +70,23 @@ pub fn works_dir() -> PathBuf {
 
 /// 保存済み作品名の一覧(拡張子なし・ソート済み)
 pub fn list() -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(works_dir()) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .filter_map(|e| {
-            let path = e.ok()?.path();
-            if path.extension().is_some_and(|ext| ext == EXT) {
-                Some(path.file_stem()?.to_string_lossy().into_owned())
-            } else {
-                None
-            }
-        })
-        .collect();
-    names.sort();
-    names
+    crate::assets::list_names(&works_dir(), EXT)
 }
 
+/// 同名の作品が既にあるか(上書き確認用。名前は保存時と同じく正規化して判定する)
+pub fn exists(name: &str) -> bool {
+    crate::assets::named_exists(&works_dir(), name, EXT)
+}
+
+/// 作品を保存する。名前は `sanitize_name` で正規化し、`{name}.kasane.tmp` に書いてから
+/// rename で置き換える(書き込み途中で落ちても既存の作品は壊れない)
 pub fn save(name: &str, work: &WorkFile) -> Result<PathBuf, String> {
-    let dir = works_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{} を作れません: {e}", dir.display()))?;
-    let path = dir.join(format!("{name}.{EXT}"));
     let bytes = encode(work)?;
-    std::fs::write(&path, bytes).map_err(|e| format!("{} に書けません: {e}", path.display()))?;
-    Ok(path)
+    crate::assets::save_named(&works_dir(), name, EXT, &bytes)
 }
 
 pub fn load(name: &str) -> Result<WorkFile, String> {
-    let path = works_dir().join(format!("{name}.{EXT}"));
-    let bytes =
-        std::fs::read(&path).map_err(|e| format!("{} を読めません: {e}", path.display()))?;
+    let bytes = crate::assets::read_named(&works_dir(), name, EXT)?;
     decode(&bytes).map_err(|e| format!("{name}.{EXT} の形式が不正です: {e}"))
 }
 

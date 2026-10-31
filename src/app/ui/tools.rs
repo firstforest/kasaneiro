@@ -157,14 +157,7 @@ impl PaintApp {
                         .on_hover_text("名前・色・性質を色ライブラリへ保存します(同名は上書き)")
                         .clicked()
                     {
-                        let p = self.palette.pigments[i].clone();
-                        self.status_msg = Some(match crate::pigment_store::save(&pname, &p) {
-                            Ok(path) => {
-                                self.palette_ui.pigment_cache = crate::pigment_store::load_all();
-                                format!("保存: {}", path.display())
-                            }
-                            Err(e) => e,
-                        });
+                        self.save_pigment_to_library(i);
                     }
                     if ui
                         .button("2色目にする(分離色)")

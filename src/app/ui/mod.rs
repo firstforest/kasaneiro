@@ -47,8 +47,17 @@ impl NamedStore {
         }
     }
 
-    /// 名前入力欄+保存ボタン+↻(一覧再読込)を横並びで描く。保存が押されたら `save(name)` を
-    /// 実行し、表示用ステータス文字列を返す(押されなければ None)。保存成功時は一覧を更新する。
+    /// 名前欄をファイル名として使える形に正規化し(`assets::sanitize_name`)、欄にも書き戻す。
+    /// 正規化後の名前を返す(空になるなら Err で、欄は変えない)
+    pub fn sanitize_input(&mut self) -> Result<String, String> {
+        let clean = crate::assets::sanitize_name(&self.name)?;
+        self.name = clean.clone();
+        Ok(clean)
+    }
+
+    /// 名前入力欄+保存ボタン+↻(一覧再読込)を横並びで描く。保存が押されたら名前を正規化して
+    /// 欄へ反映してから `save(name)` を実行し、表示用ステータス文字列を返す(押されなければ None)。
+    /// 保存成功時は一覧を更新する。
     pub fn save_controls(
         &mut self,
         ui: &mut egui::Ui,
@@ -68,11 +77,14 @@ impl NamedStore {
                 .add_enabled(!name.is_empty(), egui::Button::new("保存"))
                 .clicked()
             {
-                status = Some(match save(&name) {
-                    Ok(path) => {
-                        self.list = relist();
-                        format!("保存: {}", path.display())
-                    }
+                status = Some(match self.sanitize_input() {
+                    Ok(clean) => match save(&clean) {
+                        Ok(path) => {
+                            self.list = relist();
+                            format!("保存: {}", path.display())
+                        }
+                        Err(e) => e,
+                    },
                     Err(e) => e,
                 });
             }

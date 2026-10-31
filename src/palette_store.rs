@@ -2,14 +2,14 @@
 //!
 //! ランタイム編集した顔料パレット([`pigment::Palette`])を JSON で `assets/palettes/` に
 //! 保存・読込する。プリセット(H3、[`crate::preset`])・ストローク(H5、[`crate::replay`])と
-//! 同じ流儀(アセットディレクトリ解決 = assets.rs、`list_json_names` で一覧)。
+//! 同じ流儀(保存/読込/削除/一覧は assets.rs の JSON ストア共通関数)。
 //! **assets/palettes/*.json は git にコミットする**(「昨日作った顔料」を失わないため)。
 //!
 //! Pigment のフィールドは `#[serde(default)]` ではなく素の derive だが、顔料の意味的な最小単位は
 //! 4スロットまとめてなので、欠落フィールドのある壊れた JSON は素直に読込エラーにする(同梱
 //! パレットが全部読めることは cargo test で担保)。
 
-use crate::assets::{asset_dir, list_json_names};
+use crate::assets::{asset_dir, json_delete, json_list, json_load, json_save};
 use pigment::Palette;
 use std::path::PathBuf;
 
@@ -19,30 +19,21 @@ pub fn palettes_dir() -> PathBuf {
 
 /// 保存済みパレット名の一覧(ソート済み)
 pub fn list() -> Vec<String> {
-    list_json_names(&palettes_dir())
+    json_list(&palettes_dir())
 }
 
 pub fn save(name: &str, palette: &Palette) -> Result<PathBuf, String> {
-    let dir = palettes_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{} を作れません: {e}", dir.display()))?;
-    let path = dir.join(format!("{name}.json"));
-    let json = serde_json::to_string_pretty(palette).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| format!("{} に書けません: {e}", path.display()))?;
-    Ok(path)
+    json_save(&palettes_dir(), name, palette, true)
 }
 
 /// 保存済みパレットを削除する(ファイルごと消す)。パレット一覧の「…」メニューから使う。
 /// assets/palettes/ は git 管理なので、誤削除してもコミット済みなら復元できる
 pub fn delete(name: &str) -> Result<(), String> {
-    let path = palettes_dir().join(format!("{name}.json"));
-    std::fs::remove_file(&path).map_err(|e| format!("{} を削除できません: {e}", path.display()))
+    json_delete(&palettes_dir(), name)
 }
 
 pub fn load(name: &str) -> Result<Palette, String> {
-    let path = palettes_dir().join(format!("{name}.json"));
-    let json = std::fs::read_to_string(&path)
-        .map_err(|e| format!("{} を読めません: {e}", path.display()))?;
-    serde_json::from_str(&json).map_err(|e| format!("{name}.json の形式が不正です: {e}"))
+    json_load(&palettes_dir(), name)
 }
 
 /// 一覧+中身(パレットモーダルの4色見本チップ用。M5g)。読めないファイルはスキップする。
