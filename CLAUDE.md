@@ -29,8 +29,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise exec -- cargo run` / `cargo test --workspace` / `cargo clippy --workspace`。**workspace 構成**(km / pigment / paint-core の 3 crate + ルートの kasaneiro crate(lib + 起動だけの bin)。ルートが同時に package なので、下位 crate のテストまで回すには `--workspace` を付ける)。
 
-- コンパイル時間対策として `[profile.dev.package."*"] opt-level = 2` + 自前コード opt-level 1 を設定する方針(plan.md §2。profile はワークスペースルート Cargo.toml でのみ有効)
-- `crates/km`(Kubelka-Munk 純関数)と `crates/pigment`(mixbox 混色)は CPU 参照実装 + `cargo test` の対象。WGSL は naga のコンパイル可能性テスト([tests/shader_compile.rs](tests/shader_compile.rs))で守る
+- 絞って回す: `cargo test -p km`(km / pigment / paint-core は wgpu をリンクしないので数秒)/ `cargo test --test shader_compile` / `cargo test --test e2e_watercolor wet_on_wet`(テスト名の部分一致)
+- リリース配布だけ `cargo build --release --features embed-assets`(WGSL と既定 JSON を exe に埋め込み、パス基準が exe 隣になる)。通常ビルドで付けるとホットリロードが無効になるので付けない
+- コンパイル時間対策として、ワークスペースルートの Cargo.toml で依存クレートを opt-level 2・自前コードを opt-level 1 にしている(profile はルートでのみ有効)
+- `crates/km`(Kubelka-Munk 純関数)と `crates/pigment`(mixbox 混色)は CPU 参照実装 + `cargo test` の対象
+- WGSL は `cargo build` では検査されない。[tests/shader_compile.rs](tests/shader_compile.rs) が naga で全シェーダーをパース+検証し、[tests/sim_params_layout.rs](tests/sim_params_layout.rs) が `SimParams` の Rust 定義と `common.wgsl` の struct のフィールド名・順序・型の一致を検査する(uniform は bytemuck で生バイトのまま渡すので、ずれてもコンパイルは通る)
 - **e2e**(GPU 必須): [tests/e2e_watercolor.rs](tests/e2e_watercolor.rs) = headless でストローク再生 → 3要件を色相・明度の帯で判定 / [tests/e2e_ui.rs](tests/e2e_ui.rs) = egui_kittest で PaintApp を実入力で操作。流体シェーダーの数値は固定せず「体験が壊れていないか」だけを見る回帰検知なので、調整で指標が外れたら `target/tmp/e2e/*.png` を見て、体験として正しければ閾値側を直す。UI 要素は AccessKit の名前で引くので、文字のないウィジェットを足すときは `widget_info` で名前を付ける
 
 ## 設計の核心原則: 試行錯誤の速度を最優先
@@ -38,7 +41,8 @@ Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise
 品質はアルゴリズム選択ではなく**パラメータ調整の反復回数**で決まる。これを支える構造を壊さないこと:
 
 - **WGSL はビルドに埋め込まず `assets/shaders/` から実行時ロード**(ホットリロード H1)。シェーダーのコンパイルエラーでクラッシュさせず、オーバーレイ表示して直前の正常なパイプラインで続行する
-- 全シミュレーションパラメータは単一の `SimParams` 構造体に集約し uniform buffer 化。**パラメータ追加 = フィールド1行 + スライダー1行 + WGSL 1行**の定型作業を維持する(手順は parameters.md §10)
+- 全シミュレーションパラメータは単一の `SimParams` 構造体に集約し uniform buffer 化。**パラメータ追加 = フィールド1行 + スライダー1行 + WGSL 1行**の定型作業を維持する(手順と 16 バイト整列の保ち方は parameters.md §11)
+- シェーダーは「Rust が生成する共有定数(`src/gpu/prelude.rs` の `shader_prelude`)+ `common.wgsl`(`SimParams` / `Splat` の struct)+ 本体」の3段連結でコンパイルする。compute シェーダーの追加は `src/gpu/mod.rs` の `COMPUTE_SHADERS` 表に1行、パスの実行順は `src/gpu/callback.rs` の `encode_frame()` が正典(headless の e2e も同じ経路を通る)
 - `assets/presets/*.json`(SimParams プリセット)・`assets/palettes/*.json`(パレット=4色一式)・`assets/pigments/*.json`(色単体ライブラリ)・`assets/strokes/*.json`(テストストローク)は **git にコミットする**
 - マイルストーンの完了条件は数値ではなく「目で見て判定できる体験」(例: 黄+青を隣接させて緑に馴染むか)
 
