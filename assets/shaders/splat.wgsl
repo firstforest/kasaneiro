@@ -71,8 +71,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             vel *= keep;
             susp *= keep;
             dep *= keep;
+            // 濡れマスクを落とすセルは乾いたセル扱いになり残りが居座るので、
+            // keep で残る分(最大10%)も含めてゼロにする
             if (coverage > 0.9) {
                 wet = 0.0;
+                water = 0.0;
+                vel = vec2f(0.0);
+                susp = vec4f(0.0);
+                dep = vec4f(0.0);
             }
         } else if (params.tool == 1u) {
             // リフト(削り): 再湿潤して沈着顔料を浮遊層へ戻す(削除ではなく転送)。
