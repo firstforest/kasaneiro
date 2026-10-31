@@ -118,6 +118,8 @@ pub struct PresetUi {
 /// 作品保存(M7)の UI 状態。名前入力+保存済み一覧(`.kasane`)。
 pub struct WorkUi {
     pub store: NamedStore,
+    /// 確認モーダル(上書き保存 / 読込で現在の絵を破棄)の対象の作品名
+    pub pending: Option<String>,
 }
 
 /// パレット(M5)の UI 状態。ライブラリ保存/読込(M5d)+ スポイト待機(M5e)+

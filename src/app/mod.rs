@@ -104,6 +104,10 @@ enum ActiveLayer {
 pub(in crate::app) enum FileModal {
     /// 作品の保存+開く(統合モーダル)
     Work,
+    /// 同名作品への上書き保存の確認(対象名は WorkUi::pending)
+    WorkOverwrite,
+    /// 作品の読込で現在のキャンバスを破棄する確認(対象名は WorkUi::pending)
+    WorkLoad,
     /// 設定プリセット(SimParams)の保存+開く(統合モーダル)
     Preset,
     /// 新規キャンバス(サイズ選択+確認)
@@ -202,7 +206,8 @@ pub struct PaintApp {
     /// eframe storage に永続化(前回の状態で起動。初回のみ off)
     dev_mode: bool,
     /// 初回体験ガイド(F15): まだ一度も描いていない間だけ空キャンバスにヒントを出す。
-    /// 最初の一筆(apply_pointer_events の Down)で true になり、以降ガイドは消える
+    /// 最初の一筆(apply_pointer_events の Down)・作品の読込(load_work)・再生開始
+    /// (start_replay)で true になり、以降ガイドは消える
     has_painted: bool,
 }
 
@@ -281,6 +286,7 @@ impl PaintApp {
             },
             work_ui: WorkUi {
                 store: NamedStore::new(work::list()),
+                pending: None,
             },
             replay_ui: ReplayUi {
                 store: NamedStore::new(replay::list()),
@@ -720,6 +726,8 @@ impl PaintApp {
         // 再生中の再開でも最初の値を保つよう、既に退避済みなら上書きしない
         self.replay_ui.saved_channel.get_or_insert(self.params.brush_channel);
         self.replay_ui.player = Some(Player::new(recording));
+        // 再生で絵が載るので初回ガイドは出さない
+        self.has_painted = true;
     }
 
     /// 再生を止め、再生前に選択していた顔料スロットへ戻す。
@@ -1109,7 +1117,24 @@ impl PaintApp {
         self.undo_stack.clear();
         self.stroke.end();
         self.painting = false;
+        // 作品名欄は読み込んだ作品にする(続きを描いてそのまま上書き保存できる)
+        self.work_ui.store.name = name.to_owned();
+        // 絵が載ったので初回ガイドは出さない
+        self.has_painted = true;
         self.status_msg = Some(format!("読込: {name}"));
+    }
+
+    /// 破棄すると失われる絵がキャンバスにあるか(作品読込の確認に使う)。
+    /// 一度でも描いた / 作品を読み込んだ / 再生した(has_painted)か、乾燥レイヤーがあれば true
+    fn canvas_has_content(&self) -> bool {
+        if self.has_painted {
+            return true;
+        }
+        let renderer = self.render_state.renderer.read();
+        renderer
+            .callback_resources
+            .get::<GpuCanvas>()
+            .is_some_and(|c| !c.layers.is_empty())
     }
 
     /// 左パネルのスクロール内容。セクションごとのメソッドへ振り分けるだけ(R4)。

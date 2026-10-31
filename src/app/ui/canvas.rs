@@ -202,7 +202,7 @@ impl PaintApp {
         }
 
         // F15: 初回ガイド。まだ一度も描いていない間だけ、空キャンバス中央に淡いヒントを出す。
-        // 最初の一筆(has_painted)で消える。開発機能・描画には一切影響しない
+        // 最初の一筆・作品の読込・再生開始(has_painted)で消える。開発機能・描画には一切影響しない
         if !self.has_painted {
             ui.painter().text(
                 rect.center(),
