@@ -26,8 +26,10 @@ pub const CANVAS_SIZES: [u32; 3] = [512, 1024, 2048];
 /// 起動時のキャンバス1辺。試行錯誤は軽い 512² で回す(plan.md §3 M8 = 反復速度の原則)
 pub const DEFAULT_CANVAS_SIZE: u32 = 512;
 
-/// 1フレームで GPU に送る splat の上限(storage buffer の固定長)
-pub const MAX_SPLATS: usize = 1024;
+/// 1フレームで GPU に送る splat の上限(storage buffer の固定長。32B × 8192 = 256KB)。
+/// 1回のポインタ移動の補間数はキャンバス対角 / 最小間隔 0.5(2048² で約 5800)以下なので、
+/// 通常の描画では届かない。超えた分は gpu/callback.rs が警告ログを出して切り捨てる
+pub const MAX_SPLATS: usize = 8192;
 
 /// 全シミュレーションパラメータの唯一の置き場(H2)。
 /// フィールドを足したら: ①ここに1行 ②app.rs のスライダー1行 ③common.wgsl の struct に1行。
@@ -330,8 +332,12 @@ impl Splat {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SplatHeader {
+    /// splat 数(splat.wgsl / linesplat.wgsl が読む)
     pub count: u32,
-    pub _pad: [u32; 3],
+    /// 流体へ流す splat 数(tilescan.wgsl のブラシ近傍判定が読む)。線画ツールのフレームは 0
+    /// (splat は線画テクスチャにだけ描かれ、流体のタイルを立てる必要がない)
+    pub fluid_count: u32,
+    pub _pad: [u32; 2],
 }
 
 #[cfg(test)]

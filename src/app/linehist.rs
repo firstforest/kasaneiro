@@ -89,11 +89,8 @@ pub fn stroke_splats(stroke: &RasterStroke) -> Vec<Splat> {
     let mut out = Vec::new();
     for &(pos, pressure) in &stroke.points {
         let spacing = (stroke.params.radius_at_base(base, pressure) * 0.25).max(1.0);
-        // 1 セグメント(隣接点間)ごとに補間する。区間は短いので MAX_SPLATS 上限に当たらない。
-        // まとめて1本の Vec に生成すると長い線が上限で切れるため、セグメント単位で足す
-        let mut seg = Vec::new();
-        state.add_motion(pos, pressure, spacing, &mut seg);
-        out.append(&mut seg);
+        // ライブ描画と同じ補間。GPU へ流すときは rasterize_line が MAX_SPLATS 単位に分割する
+        state.add_motion(pos, pressure, spacing, &mut out);
     }
     out
 }

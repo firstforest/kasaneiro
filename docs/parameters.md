@@ -172,7 +172,7 @@ SimParams とは別に、顔料ごとの物性4値を uniform(binding 9、vec4 �
 |---|---|---|---|
 | `active_tiles` | 1 | チェックボックス | **アクティブタイル最適化(M6)**。0=全面計算 / 1=濡れタイル+ブラシ近傍のタイルだけシミュレーションを走らせる。シミュコストを「紙の広さ」比例から「濡れ面積」比例へ。0 で従来どおり全面計算に戻せる(A/B・不具合時の退避)。診断表示(H4)の「アクティブタイル」モードで計算中の範囲を目視できる |
 
-`tilescan.wgsl` がタイル(16×16 テクセル)ごとに濡れマスク・水・顔料・ブラシ位置を走査して生の有効フラグを作り、`tiledilate.wgsl` が1タイル分ふくらませて `active` を確定する(にじみ前線の余裕)。各シミュパス(splat/velocity/relax/flowout/advect/diffuse/transfer)は共通レイアウトの binding 11 で `active` を読み、非アクティブなタイルは3テクスチャを素通し(ping-pong 一貫性)して計算を省く。タイルサイズ・タイル数の WGSL 定数(`TILE_SIZE`/`TILES_PER_SIDE`)はキャンバスサイズ依存(M8)のため、[src/gpu/mod.rs](../src/gpu/mod.rs) の `shader_prelude` が生成して各シェーダーの先頭に連結する(Rust 側定義が唯一の正典)。**view(パン/ズーム)と同じく最適化トグルは SimParams だが、これは表示でなく計算範囲を絞るノブ**。
+`tilescan.wgsl` がタイル(16×16 テクセル)ごとに濡れマスクとブラシ位置(流体へ流す splat)を走査して生の有効フラグを作り、`tiledilate.wgsl` が1タイル分ふくらませて `active` を確定する(にじみ前線の余裕)。各シミュパス(splat/velocity/relax/flowout/advect/diffuse/transfer)は共通レイアウトの binding 11 で `active` を読み、非アクティブなタイルは3テクスチャを素通し(ping-pong 一貫性)して計算を省く。タイルサイズ・タイル数の WGSL 定数(`TILE_SIZE`/`TILES_PER_SIDE`)はキャンバスサイズ依存(M8)のため、[src/gpu/mod.rs](../src/gpu/mod.rs) の `shader_prelude` が生成して各シェーダーの先頭に連結する(Rust 側定義が唯一の正典)。**view(パン/ズーム)と同じく最適化トグルは SimParams だが、これは表示でなく計算範囲を絞るノブ**。
 
 ## 11. パラメータを追加するときの手順(H2 の定型作業)
 

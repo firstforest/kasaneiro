@@ -37,20 +37,27 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
         // M6: パン/ズームの変換を display 用 uniform へ(compute には影響しない)
         queue.write_buffer(&canvas.view_buffer, 0, bytemuck::bytes_of(&self.view));
 
-        let splat_count = self.splats.len().min(MAX_SPLATS);
-        if splat_count > 0 {
-            let header = SplatHeader {
-                count: splat_count as u32,
-                _pad: [0; 3],
-            };
-            let mut bytes = Vec::with_capacity(
-                std::mem::size_of::<SplatHeader>()
-                    + splat_count * std::mem::size_of::<Splat>(),
+        if self.splats.len() > MAX_SPLATS {
+            log::warn!(
+                "1フレームの splat が上限を超えたため {} 個を切り捨てます({} > {MAX_SPLATS})",
+                self.splats.len() - MAX_SPLATS,
+                self.splats.len()
             );
-            bytes.extend_from_slice(bytemuck::bytes_of(&header));
-            bytes.extend_from_slice(bytemuck::cast_slice(&self.splats[..splat_count]));
-            queue.write_buffer(&canvas.splat_buffer, 0, &bytes);
         }
+        let splat_count = self.splats.len().min(MAX_SPLATS);
+        // ヘッダは splat 0 個のフレームでも毎回書く(tilescan が前フレームの count・位置で
+        // タイルを立て続けないように)。線画ツールのフレームは流体側に splat を見せない
+        let header = SplatHeader {
+            count: splat_count as u32,
+            fluid_count: if self.line_target.is_none() { splat_count as u32 } else { 0 },
+            _pad: [0; 2],
+        };
+        let mut bytes = Vec::with_capacity(
+            std::mem::size_of::<SplatHeader>() + splat_count * std::mem::size_of::<Splat>(),
+        );
+        bytes.extend_from_slice(bytemuck::bytes_of(&header));
+        bytes.extend_from_slice(bytemuck::cast_slice(&self.splats[..splat_count]));
+        queue.write_buffer(&canvas.splat_buffer, 0, &bytes);
 
         let mut current = canvas.current;
         if let Some(pipelines) = &canvas.pipelines {

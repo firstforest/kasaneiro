@@ -107,8 +107,8 @@ struct Splat {
 };
 
 struct SplatBuffer {
-    count: u32,
-    _pad0: u32,
+    count: u32,        // splat 数(splat / linesplat が読む)
+    fluid_count: u32,  // 流体へ流す splat 数(tilescan が読む。線画ツールのフレームは 0)
     _pad1: u32,
     _pad2: u32,
     splats: array<Splat>,

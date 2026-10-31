@@ -95,7 +95,7 @@ enum ComputeLayout {
     Bake,
     /// ラスタ線画(M4.5a): 対象の線画テクスチャ(read_write)+ params + splats + 紙ハイト
     Raster,
-    /// アクティブタイル走査(M6、tilescan): 水/浮遊/沈着(read)+ params + splats + raw_active(write)
+    /// アクティブタイル走査(M6、tilescan): 水(read)+ params + splats + raw_active(write)
     TileScan,
     /// アクティブタイル膨張(M6、tiledilate): raw_active(read)→ active(write)
     TileDilate,
@@ -451,9 +451,11 @@ impl GpuCanvas {
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(params));
         let workgroups = self.size.div_ceil(8);
         for chunk in splats.chunks(MAX_SPLATS) {
+            // 線画専用の即時実行なので tilescan 向けの fluid_count は 0
             let header = SplatHeader {
                 count: chunk.len() as u32,
-                _pad: [0; 3],
+                fluid_count: 0,
+                _pad: [0; 2],
             };
             let mut bytes = Vec::with_capacity(
                 std::mem::size_of::<SplatHeader>() + std::mem::size_of_val(chunk),

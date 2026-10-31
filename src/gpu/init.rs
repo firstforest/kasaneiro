@@ -472,14 +472,12 @@ impl GpuCanvas {
             ],
         });
 
-        // アクティブタイル走査(M6、tilescan): 水/浮遊/沈着(read)+ params + splats +
-        // raw_active(write)。current テクスチャを src として読むので bind group は parity 別
+        // アクティブタイル走査(M6、tilescan): 水(read)+ params + splats + raw_active(write)。
+        // current テクスチャを src として読むので bind group は parity 別
         let tilescan_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tilescan_bgl"),
             entries: &[
                 sampled_entry(0, wgpu::ShaderStages::COMPUTE),
-                sampled_entry(1, wgpu::ShaderStages::COMPUTE),
-                sampled_entry(2, wgpu::ShaderStages::COMPUTE),
                 buffer_entry(
                     3,
                     wgpu::ShaderStages::COMPUTE,
@@ -661,7 +659,7 @@ impl GpuCanvas {
         ];
 
         // アクティブタイル走査(M6): current テクスチャ(parity 別)を読んで raw_active を書く。
-        // 水[0]/浮遊[1]/沈着[2] の各 parity ビューを 0/1/2 に、params/splats/raw を 3/4/5 に
+        // 水の parity ビューを 0 に、params/splats/raw を 3/4/5 に
         let make_tilescan_bg = |i: usize| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("tilescan_bg"),
@@ -670,14 +668,6 @@ impl GpuCanvas {
                     wgpu::BindGroupEntry {
                         binding: 0,
                         resource: wgpu::BindingResource::TextureView(&sim_views[0][i]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&sim_views[1][i]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(&sim_views[2][i]),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,

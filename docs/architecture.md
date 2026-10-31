@@ -111,7 +111,7 @@ compute の binding は種別ごとに5レイアウト(R3 の `ComputeLayout`):
 - **共通**(splat 系ほか、[assets/shaders/common.wgsl](../assets/shaders/common.wgsl)): `0/1` 水 src/dst、`2/3` 浮遊 src/dst、`4/5` 沈着 src/dst、`6` SimParams uniform、`7` splat storage、`8` 紙ハイト、`9` 顔料個性 uniform、`10` 清書ペンの線画(M4.5b、透水率境界。読むのは velocity/diffuse だけで他パスは宣言せず素通し)、`11` アクティブタイル有効フラグ(M6、storage read。splat/velocity/relax/flowout/advect/diffuse/transfer が読み、非アクティブなタイルを素通しする。fastdry/rewet は宣言せず全面計算)
 - **bake**: 共通の `0..6, 8` + `9` = 乾燥レイヤーの書き込みスライス(splats なし)
 - **raster**(M4.5a/c、linesplat.wgsl): `0` 対象の線画テクスチャ(read_write r32float)、`1` SimParams、`2` splat storage、`3` 紙ハイト。描画先(鉛筆/ペン/ハイライト)は bind group を差し替えて選ぶ(パイプラインは1本)。ライブ描画は流体パスがペン線を sampled で読むため `linesplat` を専用 compute パスに分ける(同一パス内で read_write と sampled を兼ねると使用範囲が衝突するため)
-- **tilescan**(M6、tilescan.wgsl): `0/1/2` 水/浮遊/沈着(read。current 側を parity 別 bind group で)、`3` SimParams、`4` splat storage、`5` raw_active(write)
+- **tilescan**(M6、tilescan.wgsl): `0` 水(read。current 側を parity 別 bind group で)、`3` SimParams、`4` splat storage、`5` raw_active(write)
 - **tiledilate**(M6、tiledilate.wgsl): `0` raw_active(read)、`1` active(write)、`2` SimParams(common.wgsl の pressure_curve が参照するため束ねるだけ・未使用)
 
 display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 latent、`5` 紙ハイト、`6` 乾燥レイヤー array、`7` LayerUniform、`8/9` 線画(鉛筆/ペン、M4.5a)、`10` ハイライト(M4.5c)、`11` ViewUniform(M6、パン/ズーム/回転)、`12` アクティブタイル有効フラグ(M6、storage read。表示モード7の可視化)。
@@ -127,7 +127,8 @@ egui-wgpu の `CallbackTrait` で駆動する(`gpu/callback.rs` の `CanvasCallb
 ```
 prepare(毎フレーム):
   SimParams を uniform に write_buffer(スライダー即時反映)
-  splat があれば storage buffer へ(一時停止中でもブラシは反映)
+  splat storage buffer へヘッダ+splat 列を毎フレーム書く(0 個でもヘッダは書く。一時停止中でもブラシは反映。
+    上限 MAX_SPLATS=8192、超過分は警告ログを出して切り捨て。fluid_count は線画ツールのフレームで 0)
   ブラシ入力パス:
     ラスタツール(M4.5a/c、line_target=Some)→ 専用 line_pass で linesplat.wgsl(対象の線画テクスチャへ直描き。水は注入しない)
     流体ツール → sim_pass 先頭で splat.wgsl(水+初速+顔料の注入。tool で分岐)
@@ -162,7 +163,7 @@ paint:
 | fastdry.wgsl | Fast Dry(浮遊→沈着に落として水と流れをゼロに。焼き込まない) |
 | rewet.wgsl | Wet the Layer(全面マスク=1+rewet_water。沈着は既存の脱着で再浮遊) |
 | linesplat.wgsl | ラスタ線画(M4.5a/c)。鉛筆/ペン/ハイライトを対象の r32float テクスチャへ直描き(line_mode で視覚分岐、line_eraser で減算)。流体を通らない |
-| tilescan.wgsl | アクティブタイル(M6)第1段。タイル(16²)ごとに濡れ/水/顔料/ブラシ有無を走査し raw_active に 0/1 を書く。active_tiles=0 で全タイル有効 |
+| tilescan.wgsl | アクティブタイル(M6)第1段。タイル(16²)ごとに濡れマスクとブラシ近傍(流体へ流す splat)の有無を走査し raw_active に 0/1 を書く。active_tiles=0 で全タイル有効 |
 | tiledilate.wgsl | アクティブタイル(M6)第2段。raw_active を3×3で膨張(1タイルの余裕)して active を確定する |
 | display.wgsl | 表示: 層内発色(mixbox latent)→ レイヤー合成(multiply / KM)→ 線画合成(鉛筆→ペン→ハイライト、M4.5a/c)→ sRGB。デバッグ表示 H4 の分岐もここ(モード7=アクティブタイル可視化) |
 
@@ -195,7 +196,7 @@ paint:
 
 シミュレーションコストを「紙の広さ」比例から「濡れ面積」比例へ絞る土台(M8 の 2048² 化の前提)。**タイル早期リターン方式**で、ping-pong 構造を崩さずに実装している。
 
-- **2段のタイル判定**: `tilescan.wgsl` がタイル(16×16 テクセル)ごとに、タイル内の濡れマスク・水量・浮遊/沈着顔料の有無と、このフレームのブラシ(splat 位置)の近傍かを走査して生フラグ `raw_active` を作る。`tiledilate.wgsl` が 3×3 で膨張(1タイル=16px の余裕)して `active` を確定する。膨張は「濡れ前線が1フレームに進む距離 < TILE_SIZE」を保証するための halo(既定 vel_max×sim_steps ≪ 16px)
+- **2段のタイル判定**: `tilescan.wgsl` がタイル(16×16 テクセル)ごとに、タイル内に濡れたセル(濡れマスク a > 0.5)があるかと、このフレームのブラシ(流体へ流す splat の位置)の近傍かを走査して生フラグ `raw_active` を作る。乾いたセルは各シミュパスが素通しにするので、顔料が載っているだけ(Fast Dry 後など)のタイルは立てない。splat バッファのヘッダは毎フレーム書き(0 個でも)、`fluid_count` は線画ツールのフレームで 0 になる(線画の splat で流体のタイルを立てない)。`tiledilate.wgsl` が 3×3 で膨張(1タイル=16px の余裕)して `active` を確定する。膨張は「濡れ前線が1フレームに進む距離 < TILE_SIZE」を保証するための halo(既定 vel_max×sim_steps ≪ 16px)
 - **ゲート**: 各シミュパス(splat/velocity/relax/flowout/advect/diffuse/transfer)は共通レイアウトの binding 11 で `active` を読み、**非アクティブなタイルは水/浮遊/沈着の3テクスチャを src→dst に素通しして return**(ping-pong の両バッファを常に一致させるため、計算を省いても必ず書く)。`tile_index_of`(common.wgsl)でテクセル→タイル添字に写す
 - **実行順とハザード**: sim_pass の先頭で tilescan → tiledilate → splat → sim ループを同一 compute パスに積む。tiledilate が書いた `active` を後続パスが読む storage RAW は、テクスチャ ping-pong と同様に wgpu が自動バリアで解決する
 - **退避と可視化**: `active_tiles=0` で tilescan が全タイルを有効化=従来どおり全面計算(A/B・不具合時の退避)。display のモード7が `active` を可視化(計算中=緑 / 素通し=暗く + タイル格子)して「コストが濡れ面積比例か」を目視できる
