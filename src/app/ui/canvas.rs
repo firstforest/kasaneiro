@@ -17,6 +17,8 @@ impl PaintApp {
             egui::vec2(side, side),
             egui::Sense::drag(),
         );
+        // 支援技術向けの名前(e2e テストもこの名前でキャンバスの位置を引く)
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "キャンバス"));
 
         // M6: パン/ズーム/回転。ホイール=カーソル中心に拡大、Shift+ホイール=15°ずつ回転、
         // 中ボタン or スペース+左ドラッグ=パン。ポインタ状態はグローバル(ウィジェットの Sense に

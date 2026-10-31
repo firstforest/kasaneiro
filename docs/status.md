@@ -2,9 +2,11 @@
 
 [plan.md](plan.md) のマイルストーン・装備(H1〜H6)に対する現在地。**マイルストーンの完了条件を目で確認したとき・装備を追加/変更したときに、このファイルを更新する**(コード変更と同じコミットに含めるのが望ましい)。
 
-最終更新: 2026-07-13
+最終更新: 2026-10-31
 
 ## 現在地
+
+**e2e テストの仕組みを導入(2026-10-31)**: ユーザー要望「e2e テストの仕組みを入れたい」への対応。2層構成。**①headless の水彩シミュ e2e**([tests/e2e_watercolor.rs](../tests/e2e_watercolor.rs)): ルート crate を lib + 起動だけの bin に分け([src/lib.rs](../src/lib.rs))、`CanvasCallback::prepare` の compute 本体を `GpuCanvas::encode_frame` へ切り出して([src/gpu/callback.rs](../src/gpu/callback.rs))、ウィンドウなしで同じ経路を回す `HeadlessCanvas`([src/headless.rs](../src/headless.rs)。H5 の `Player` で記録を再生 → encode_frame → snapshot)を追加。3要件を色相・明度の帯で判定する6件: wet-on-wet(同梱 two-color-adjacent の境界が緑のグラデーション)/ グレージング(乾いた黄が上塗りで不変・交差部が両色より濃い緑)/ 消去(紙の白へ)/ 削り(リフト→吸い取り→乾燥で薄くなる)/ 顔料個性(ω の強いフタロブルーはシェンナより削れ残る)/ 同梱ストロークがすべて再生できる。シェーダーを壊すと該当テストが落ちることを確認済み(消去無効化・ω 無視の2通り)。**②UI 込みの e2e**([tests/e2e_ui.rs](../tests/e2e_ui.rs)、dev-dependency に egui_kittest 0.35): PaintApp 全体を起動し、マウスドラッグ・ペン(筆圧付き Touch)・ツールボタン・色スウォッチのダブルクリック→「色をつくる」モーダル・「乾かす(固定)」を実入力イベントで操作して画面と UI 状態を判定する6件。UI 側の変更はキャンバスと色スウォッチへの AccessKit 名(「キャンバス」「塗る色 N: 顔料名」)の付与のみ。結果画像は `target/tmp/e2e/*.png`。テスト方針(CLAUDE.md・requirements.md・architecture.md §9)を「流体シェーダーの数値は固定しないが、体験の回帰は色の指標で検知する」に更新。SimParams・シェーダー不変。検証(cargo test --workspace 全テスト通過=e2e 12件含む、Metal で約3秒 / clippy --workspace --all-targets 警告0 / embed-assets ビルド)。
 
 **既存の同梱6色を見直し: ライブラリをコード既定値へ同期+ユーザー保存2色の物性更新(2026-07-13)**: 18色追加の際に見つかった既存色の不整合の解消。過去のコミット `5a0839a` でハンザイエロー・キナクリドンマゼンタのライブラリ JSON だけ色味・ρ/ω が調整されコード側 `default_palette()`([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs))とズレていたが、**ユーザー確認の結果この調整は意図したものではなかった**ため、コード既定値(mixbox 推奨顔料色+Curtis/handprint 参照の物性)を正として JSON を同期(parameters.md §9 の「4色は同じ値で同梱」が再び真に)。フタロブルー・バーントシェンナは見直しの結果そのまま(新18色の基準スケールなので整合済み)。ユーザー保存の2色は μ 未設定(serde default 1.0)だったのを実物基準で更新: **ビビッドレッド** ρ1.2/ω0.55/γ0.1 → ρ0.9/ω0.65/γ0.05/μ1.0(ピロールレッド系=透明寄り・中ステイン・非粒状)/ **フタロターコイズ** μ1.2 追加(フタロ系=微細でよく伸びる)+基本色を (0,176,186)→(0,75,82) の深いマスストーンへ(明るい基本色は薄めても淡くならず、フタロブルー/グリーンの慣例=濃い基本色を薄めて鮮やかなウォッシュ、から外れていた)。コード・SimParams 不変(アセットのみ)=色ライブラリの ↻ で反映。検証(cargo test --workspace 全35件、実行中アプリの exe ロックのため別 target dir)。
 

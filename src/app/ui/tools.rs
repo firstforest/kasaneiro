@@ -133,6 +133,10 @@ impl PaintApp {
                     button = button.stroke((3.0, ui.visuals().selection.stroke.color));
                 }
                 let resp = ui.add(button).on_hover_text(hover.clone());
+                // 文字のないボタンなので、支援技術向けに「塗る色 N: 顔料名」の名前を付ける
+                // (e2e テストもこの名前でスウォッチを引く)
+                let name = format!("塗る色 {}: {}", i + 1, self.palette.pigments[i].name);
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
                 if resp.clicked() {
                     self.tool = Tool::Wet(WetTool::Paint);
                     self.params.brush_channel = i as u32;

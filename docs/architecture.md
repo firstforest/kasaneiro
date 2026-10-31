@@ -19,10 +19,10 @@
 
 ## 2. モジュール構成
 
-**workspace(R1)**: CPU 純粋部を 3 crate に切り出し、GPU / UI はバイナリ crate に残す。`cargo tree` で mixbox 依存が `pigment` crate だけなことを機械的に確認でき、商用化時の差し替え範囲がこの crate に閉じる(plan.md §4)。km / paint-core は wgpu をリンクせず `cargo test -p <crate>` が数秒で回る。
+**workspace(R1)**: CPU 純粋部を 3 crate に切り出し、GPU / UI はルートの kasaneiro crate(lib + 起動だけの bin)に残す。`cargo tree` で mixbox 依存が `pigment` crate だけなことを機械的に確認でき、商用化時の差し替え範囲がこの crate に閉じる(plan.md §4)。km / paint-core は wgpu をリンクせず `cargo test -p <crate>` が数秒で回る。
 
 ```
-kasaneiro/                (workspace ルート = バイナリ crate。[profile.*] もここ)
+kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[profile.*] もここ)
 ├─ Cargo.toml             [workspace] + [package] kasaneiro(GPU / UI / 入力)
 ├─ crates/
 │  ├─ km/src/lib.rs       Kubelka-Munk 純関数の CPU 参照実装(依存ゼロ、cargo test 対象)
@@ -35,8 +35,10 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
 │        ├─ paper.rs      紙ハイトテクスチャの CPU 生成(値ノイズ3成分)
 │        ├─ replay.rs     ストローク記録・再生モデル(H5。Recorder / Player)
 │        └─ tool.rs       ツールの階層 enum(R2。Tool = Wet/Raster、gpu_id、ToolInfo)
-├─ src/                   バイナリ crate(egui / wgpu / naga はここだけ)
-│  ├─ main.rs             eframe 起動
+├─ src/                   kasaneiro crate(egui / wgpu / naga はここだけ)
+│  ├─ main.rs             eframe 起動(lib の app::PaintApp を走らせるだけ)
+│  ├─ lib.rs              ライブラリ部のルート(e2e テストが同じモジュールをウィンドウなしで駆動する)
+│  ├─ headless.rs         ウィンドウなしの GPU 駆動(HeadlessCanvas: 記録再生 → encode_frame → snapshot。e2e 用)
 │  ├─ app/                egui UI
 │  │  ├─ mod.rs           PaintApp の状態・ライフサイクル・二層ディスパッチャ tool_panel・App::ui/save(R4)
 │  │  │                   (App::ui のパネル順: Panel::top("menu_bar") → left("tools") → right("layers") → CentralPanel → file_modals)
@@ -58,7 +60,8 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
 │  │  │                   (M5h: layer_palettes = 乾燥レイヤーの記録時パレットの CPU 正典。
 │  │  │                    bake_dry(palette) が latent 焼き込みと対で push、不変条件 len==layers.len())
 │  │  ├─ init.rs          GpuCanvas::new(テクスチャ・バッファ・bind group の生成)
-│  │  ├─ callback.rs      CanvasCallback(フレーム描画。パス実行順の正典)
+│  │  ├─ callback.rs      CanvasCallback(egui の prepare/paint)と GpuCanvas::encode_frame
+│  │  │                   (1フレームの compute。パス実行順の正典。headless 駆動も同じ経路)
 │  │  ├─ snapshot.rs      GpuCanvas::snapshot(PNG 読み戻し。H6。R8 で readback を一般化予定)
 │  │  ├─ persist.rs       GpuCanvas::export_state / import_state(作品保存の GPU 読み戻し/書き戻し。M7)
 │  │  ├─ shader_error.rs  WGSL コンパイルエラーの行番号補正の純関数+テスト(R3 QoL)
@@ -73,7 +76,11 @@ kasaneiro/                (workspace ルート = バイナリ crate。[profile.*
 │  │                       GpuCanvas::layer_palettes の不変条件の入口。リリース前なので後方互換なし)
 │  └─ assets.rs           基準ディレクトリ解決(base_dir: 通常= CARGO_MANIFEST_DIR / embed-assets = exe 隣)
 │                         と配布ビルドの既定 JSON 書き出し(seed_default_assets)
-├─ tests/shader_compile.rs  WGSL コンパイル可能性テスト(naga)
+├─ tests/
+│  ├─ shader_compile.rs  WGSL コンパイル可能性テスト(naga)
+│  ├─ e2e_watercolor.rs  水彩シミュの e2e(headless でストローク再生 → 3要件を色の指標で判定)
+│  ├─ e2e_ui.rs          UI 込みの e2e(egui_kittest で PaintApp を操作 → 画面と UI 状態を判定)
+│  └─ common/mod.rs      e2e の共通部品(テスト用 wgpu・記録の組み立て・色の指標)
 └─ assets/
    ├─ shaders/*.wgsl      実行時ロード(通常ビルドは埋め込まない。配布用 embed-assets のみ埋め込み)
    ├─ presets/*.json      SimParams プリセット(git 管理)
@@ -122,10 +129,10 @@ display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 late
 
 ## 4. フレームの流れ
 
-egui-wgpu の `CallbackTrait` で駆動する(`gpu/callback.rs` の `CanvasCallback`):
+egui-wgpu の `CallbackTrait` で駆動する(`gpu/callback.rs` の `CanvasCallback`)。compute は `GpuCanvas::encode_frame` に集約してあり、prepare と headless 駆動(e2e)が同じ経路を通る:
 
 ```
-prepare(毎フレーム):
+prepare(毎フレーム)= encode_frame:
   SimParams を uniform に write_buffer(スライダー即時反映)
   splat があれば storage buffer へ(一時停止中でもブラシは反映)
   ブラシ入力パス:
@@ -219,7 +226,7 @@ paint:
 
 - WGSL は `assets/shaders/` から実行時ロード。notify で監視し、保存で `rebuild_pipelines()`。コンパイルエラー時は `pipelines = None` にして描画をスキップ(クラッシュしない)+エラーオーバーレイ表示、直前の正常なパイプラインで続行
 - **リリース配布ビルドのみ例外**: feature `embed-assets`(`cargo build --release --features embed-assets`)で exe 単体配布にする。(1) `assets/shaders/` 全体を `include_dir!` でバイナリへ埋め込み(取得元の分岐は `GpuCanvas::shader_source` の1箇所。ファイル監視は無効 = ShaderWatcher が早期 return)、(2) 既定 JSON アセット(pigments/palettes/presets/strokes)も埋め込み、初回起動時に `assets::seed_default_assets()` が exe 隣へ書き出す(ディレクトリ単位で「無ければ書く」— ユーザーの編集・削除を復活させない)、(3) パス基準が exe ディレクトリになる(`assets::base_dir`)。通常ビルドには include_dir はコンパイルされない(optional 依存)
-- compute パイプラインは `COMPUTE_SHADERS` の表(WGSL ファイル名 → レイアウト種別)を回して作る(R3。**シェーダー追加 = 表に1行**)。名前引き `Pipelines::compute("splat.wgsl")` で参照し、パス実行順は `prepare()` のハードコードが正典。コンパイルエラーの行番号は common.wgsl 連結分ずれるので `remap_shader_error_lines` で補正して表示(R3。純関数、cargo test 対象)
+- compute パイプラインは `COMPUTE_SHADERS` の表(WGSL ファイル名 → レイアウト種別)を回して作る(R3。**シェーダー追加 = 表に1行**)。名前引き `Pipelines::compute("splat.wgsl")` で参照し、パス実行順は `encode_frame()` のハードコードが正典。コンパイルエラーの行番号は common.wgsl 連結分ずれるので `remap_shader_error_lines` で補正して表示(R3。純関数、cargo test 対象)
 - SimParams / Splat の WGSL 構造体定義は common.wgsl に1箇所化し、Rust 側で各シェーダーの先頭に連結 — 「パラメータ追加 = WGSL 1行」をシェーダーが増えても維持。**連結は3段**(M8): `shader_prelude`(キャンバスサイズ依存の const 2行を Rust が生成)+ common.wgsl + シェーダー本体。行番号補正(R3)はプレリュード込みのプレフィックス行数で行う
 - SimParams は毎フレーム uniform へ書くのでスライダーは即時反映。WGSL uniform 規則(16 バイト整列)に合わせ、末尾の `_pad` を置き換えてからフィールドを増やす
 
@@ -227,4 +234,8 @@ paint:
 
 - **CPU 参照実装+cargo test**(`cargo test --workspace`): km crate(KM 純関数5件)、pigment crate(黄+青=緑、latent 往復、物性範囲)、paint-core(SimParams 整列・筆圧式、brush 補間、replay 往復、paper 生成)、プリセット互換・ストローク読込(バイナリ crate)
 - **WGSL コンパイル可能性テスト**([tests/shader_compile.rs](../tests/shader_compile.rs)): 実行時ロードのため cargo build では壊れた WGSL を検出できない。naga(wgpu と同バージョン)で全シェーダーをパース+検証
-- 流体シェーダーの**挙動はテストしない**方針 — 数値の正しさより見た目なので、デバッグ表示(H4)+ストローク再生(H5)で診断する
+- **e2e(体験の回帰検知)**: 流体シェーダーの数値は固定しない(見た目の調整で動いてよい)が、「目で見て判定する体験」が壊れていないかは色相・明度の帯で機械判定する。結果画像は `target/tmp/e2e/*.png` に書き出し、落ちたらまず画像を見る
+  - [tests/e2e_watercolor.rs](../tests/e2e_watercolor.rs): `headless::HeadlessCanvas` でストロークを再生(アプリの H5 再生と同じ `Player` → `encode_frame` 経路)し、wet-on-wet(黄+青の境界が緑のグラデーション)/ グレージング(乾いた下層が不変・交差部が濃い緑)/ 消去(紙の白へ)/ 削り(リフト→吸い取りで薄くなる・ω の強い顔料ほど残る)/ 同梱ストロークの再生を判定
+  - [tests/e2e_ui.rs](../tests/e2e_ui.rs): egui_kittest で PaintApp 全体を起動し、マウスドラッグ・ペン(筆圧付き Touch)・ボタン・スウォッチのダブルクリックを実際の入力イベントで送って、描画結果と UI 状態を判定。要素は AccessKit の名前(キャンバス・「塗る色 N: 顔料名」・ボタン文字)で引く。キャンバスのシミュは描画時(prepare)に進むので毎フレーム `render()` する。step_dt は実機と同じ 1/60 秒
+  - テスト用 wgpu デバイスは egui_kittest の `create_render_state`(ウィンドウなし)。GPU のないマシンでは e2e は動かない
+- 細部の診断はデバッグ表示(H4)+ストローク再生(H5)で行う
