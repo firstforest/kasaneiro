@@ -305,6 +305,14 @@ impl PaintApp {
             Some(WetTool::Lift) => {
                 ui.add(
                     egui::Slider::new(&mut self.params.lift_strength, 0.0..=1.0).text("削りの強さ"),
+                )
+                .on_hover_text("紙に付いた色を水で浮かせる割合。染みつき(ω)が強い色は残る");
+                ui.add(
+                    egui::Slider::new(&mut self.params.lift_blot, 0.0..=1.0).text("押さえて吸う"),
+                )
+                .on_hover_text(
+                    "浮かせた色を水ごと吸い取る割合。上げるほどその場で白く抜ける。\
+                     0 = 浮かせるだけ(色は周りへ移る)",
                 );
             }
             Some(WetTool::Absorb) => {

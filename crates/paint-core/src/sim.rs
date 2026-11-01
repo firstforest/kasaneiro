@@ -190,8 +190,12 @@ pub struct SimParams {
     /// 含みの持ち(px): 塗る筆でこの長さをなぞると筆の中身(水と顔料)が半分になる。
     /// 水と顔料は同じ割合で減るので濃さは変わらない(load.rs)。0=減らない
     pub brush_hold: f32,
+    /// 削り(tool=1)の吸い取り: 1 splat で、浮かせた色ごと水を取り去る割合(coverage×筆圧で変調)。
+    /// 浮かせるだけだと色は周りへ移るだけなので、その場から色を抜くために押さえて吸う。
+    /// 0 = 浮かせるだけ(水だけの筆に近い)
+    pub lift_blot: f32,
     #[serde(skip)]
-    pub _pad_brush: [f32; 2],
+    pub _pad_brush: f32,
 }
 
 impl SimParams {
@@ -257,7 +261,7 @@ impl Default for SimParams {
             tool: 0,
             lift_strength: 0.3,
             compose_mode: 1, // 既定は KM。0 で multiply
-            line_mode: 0, // 既定は鉛筆
+            line_mode: 0,    // 既定は鉛筆
             line_eraser: 0,
             pencil_radius: 8.0, // 鉛筆は柔らかめの中細
             pencil_strength: 0.7,
@@ -275,7 +279,8 @@ impl Default for SimParams {
             brush_charge: 2.0, // 筆の含み: 置いたまま2秒は色水が流れ出続ける
             absorb_rate: 0.5,  // 吸い取り: ひとなでで水たまりの大半を回収できる強さ
             brush_hold: 2000.0, // 長いストロークの終わりがやや淡くなる程度
-            _pad_brush: [0.0; 2],
+            lift_blot: 0.5,    // 削り: 吸い取りツールと同じ強さで押さえる
+            _pad_brush: 0.0,
         }
     }
 }

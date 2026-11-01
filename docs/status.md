@@ -13,7 +13,7 @@
 | 系統 | ツール | 要点 |
 |---|---|---|
 | 水彩(湿レイヤー) | 塗る(`tool`=0) | 筆の中身(水と4色の顔料)を置く。ツールバーの色スウォッチ = 筆に色を取る(押している間取り続けて濃くなる。2色取れば筆の中で混ざり、分離色にもなる)、水 = 浸して薄める(長く押すと透明)、洗う = 水も顔料も 0 の空の筆(リセット。空の筆では何も置かない。続けて水を押すと水だけの筆)。どれも押すと塗るツールになる。なぞると中身が減り(`brush_hold`)、自動補充 on なら筆を下ろすたびに最後に作った中身へ戻る。置いたまま動かさなくても中身の水が尽きるまで色水が流れ出る(feed splat、満タンで `brush_charge` 秒)。水だけの筆で塗れば水を置き、下の色を溶かす(`paint_pickup`)ので、先濡らしとぼかしもこのツールで行う |
-| | 削り(1) | リフト。沈着顔料を浮遊層へ戻す(ω が高い顔料は残る) |
+| | 削り(1) | リフト。濡らして沈着顔料を浮遊層へ戻し、浮いた色ごと水を吸い取る(`lift_blot`)ので、その場から色が抜けて白に近づく(ω が高い顔料は残る)。色を周りへ馴染ませるのは水だけの筆 |
 | | 消す(2) | 水・速度・浮遊・沈着・濡れマスクをゼロへ(紙の白まで戻す) |
 | | 吸い取り(3) | 乾いた筆。表面の自由水と浮遊顔料を同率で取り除く(沈着は残る) |
 | 線画 | 下書き鉛筆 / 清書ペン / ハイライト | 流体を通らないラスタ線画(各 r32float)。清書ペンの線は水の境界(透水率 `line_block`)。各ツールに消しゴムモード |
@@ -68,7 +68,7 @@
 - **性能**(Apple Silicon / Metal、headless 計測 [tests/perf_bench.rs](../tests/perf_bench.rs)、1フレーム): 2048² で乾いた紙 2.4ms・一部濡れ(320²)2.7ms・全面計算 16.7ms・全面を濡らして蒸発し切った後 2.8ms、表示はキャンバス解像度で 0.45ms(乾燥レイヤーの枚数によらない)。残る乾いた紙のコストは、何もせずに戻るワークグループを全面に起動する分
 - **時間**: シミュは 1/60 秒の固定刻みで進む(`paint_core::clock::SimClock` がフレームの経過時間を刻み数に変え、1フレーム最大4刻み)。1刻みのステップ数が速度倍率。ストローク記録の時刻も刻み単位なので、乾く速さ・再生のテンポはモニタのリフレッシュレートに依らない。headless は1フレーム=1刻み
 - **乾き方**: `evap_rate` 既定 0.0003 = 水量 0.5 の塗りが約1分濡れたまま
-- **パラメータ**: `SimParams` は 54 フィールド+末尾パディング2 = 224B。Rust と common.wgsl の struct の一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検査。Rust と WGSL で共有する定数(MAX_LAYERS・latent 枠・タイル)は [src/gpu/prelude.rs](../src/gpu/prelude.rs) がプレリュードとして生成する
+- **パラメータ**: `SimParams` は 55 フィールド+末尾パディング1 = 224B。Rust と common.wgsl の struct の一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検査。Rust と WGSL で共有する定数(MAX_LAYERS・latent 枠・タイル)は [src/gpu/prelude.rs](../src/gpu/prelude.rs) がプレリュードとして生成する
 - **テスト**: `cargo test --workspace` 全84件(kasaneiro crate 27 / km 6 / pigment 7 / paint-core 22 / shader_compile 1 / sim_params_layout 1 / e2e_watercolor 11 / e2e_ui 7 / e2e_video 2)+ `#[ignore]` の計測1件(perf_bench)。e2e は GPU 必須
 
 ### 1.5 既知の課題・制約
@@ -85,6 +85,13 @@
   - GPU の読み戻しが [src/gpu/snapshot.rs](../src/gpu/snapshot.rs)(PNG)と [src/gpu/persist.rs](../src/gpu/persist.rs)(作品保存)に inline で重複している。読み戻し箇所が増える、またはキャンバスサイズの 64 の倍数制限(行バイト数の 256B 整列を保証している)を外すときに `gpu/readback.rs` へ寄せる
 
 ### 1.6 要目視確認
+
+**削り = 濡らして吸い取る(2026-11-01)**:
+
+- 乾いた塗りを削りでなでると、その場の色が抜けて紙の白に近づく。抜けた色が周りに溜まって輪ができない
+- 水だけの筆でなでた場合(色が周りへ広がって馴染む)と見た目がはっきり違う
+- フタロブルー(ω 高)は削っても色が残り、粒状感の強い顔料は紙の谷に残る
+- 削りの下の「押さえて吸う」を 0 にすると、浮かせるだけ(以前の削り)になる
 
 **ぼかし筆の統合・洗うで空の筆(2026-11-01)**:
 
@@ -161,7 +168,7 @@
 | M1d 紙ハイト(+FlowOutward) | ✅ 完了(FlowOutward は先送り) | 紙ハイトは [crates/paint-core/src/paper.rs](../crates/paint-core/src/paper.rs) が起動時に生成する r32float(値ノイズ4成分)。速度勾配(`paper_amp`)・にじみ拡張(`paper_wet`)・吸着(`paper_gran`)の3箇所を変調するが、いずれも既定 0。FlowOutward([flowout.wgsl](../assets/shaders/flowout.wgsl))は `edge_eta`=0 で dispatch ごと省略 |
 | M1.5 筆圧 | ✅ 完了 | [src/input.rs](../src/input.rs) の `PointerSource`(マウス / ペン = egui Touch)。筆圧は Windows Ink → winit → egui Touch の標準経路で取り、`実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に掛ける。ペン接地中はマウス入力を無視する |
 | M2 乾燥とレイヤー | ✅ 完了 | 乾燥レイヤーは rgba32float texture array(最大8枚、顔料濃度のまま)。下の層は下地(`GpuCanvas::merge_into_base`)へ統合して枠を空けられる。「乾かす」= [bake.wgsl](../assets/shaders/bake.wgsl) で `(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を新スライスへ焼き、湿レイヤーをゼロに。Fast Dry([fastdry.wgsl](../assets/shaders/fastdry.wgsl))・Wet the Layer([rewet.wgsl](../assets/shaders/rewet.wgsl))で焼かずに止める/濡らし直す。焼き込みは一方通行 |
-| M3 削り・顔料個性・KM 合成 | ✅ 完了 | 削り = リフト(`lift_strength` × (1−ω) × 紙凸ゲート)と消す(完全消去)の2ツール。顔料個性は physics uniform(binding 9)で吸着・脱着・拡散を per-channel に変調。合成は KM: 各層を白地/黒地に置いた発色から `R=R_b`、`T²=(R_w−R_b)(1−R_b)` を導いて下から光学合成(CPU 参照実装は [crates/km/src/lib.rs](../crates/km/src/lib.rs)) |
+| M3 削り・顔料個性・KM 合成 | ✅ 完了 | 削り = リフト(`lift_strength` × (1−ω) × 紙凸ゲートで浮かせ、`lift_blot` で吸い取る)と消す(完全消去)の2ツール。顔料個性は physics uniform(binding 9)で吸着・脱着・拡散を per-channel に変調。合成は KM: 各層を白地/黒地に置いた発色から `R=R_b`、`T²=(R_w−R_b)(1−R_b)` を導いて下から光学合成(CPU 参照実装は [crates/km/src/lib.rs](../crates/km/src/lib.rs)) |
 | M4 仕上げ | ✅ 完了 | 吸い取り(tool=3。`absorb_rate`)。先濡らし・ぼかしは水だけの筆で塗る(`paint_pickup` の溶かし戻し) |
 | M4.5 線画とハイライト | ✅ 完了 | 鉛筆・ペン・ハイライトの r32float 3枚に [linesplat.wgsl](../assets/shaders/linesplat.wgsl) が read_write storage で直接蓄積(流体パスとは別の compute パス)。清書ペンの濃度から透水率 `1 − line_block×濃度` を velocity / diffuse に掛ける。display が色の上に鉛筆 → ペン → ハイライトを合成。多段 Undo/Redo は生ポインタ点+描画時の SimParams からの決定論的再ラスタライズ([src/app/linehist.rs](../src/app/linehist.rs)) |
 | M5 パレット | ✅ 完了 | `pigment::Palette`(4スロット)をランタイム編集し、`GpuCanvas::set_palette` が physics と現行 latent 枠を `write_buffer`。パレットと色単体のライブラリ([src/palette_store.rs](../src/palette_store.rs) / [src/pigment_store.rs](../src/pigment_store.rs))、スポイト、「色をつくる」モーダル、乾いた層の記録パレットからの取り込み |

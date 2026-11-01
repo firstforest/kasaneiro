@@ -15,6 +15,7 @@
 | `brush_channel` | 0 | 色見本ボタン | 選択中の顔料スロット(0〜3 = パレットの4スロット。§9)。スポイト・色をつくるの対象。塗る色は筆の中身(下記)が決める |
 | `tool` | 0 | ツールボタン | 0=描画 / 1=リフト(削り) / 2=消去 / 3=吸い取り(splat.wgsl が分岐) |
 | `lift_strength` | 0.3 | 0〜1 | リフト(tool=1)の基準強度。実効値は顔料の ω と紙ハイト(凸部ほど剥がれる)で変調 |
+| `lift_blot` | 0.5 | 0〜1 | リフト(tool=1)の吸い取り: 浮かせた後、1 splat で水・浮遊顔料・速度を取り去る割合(coverage×筆圧で変調。吸い取り tool=3 と同じ式)。浮かせるだけだと色は周りへ移るだけなので、その場から色を抜くために押さえて吸う。0 = 浮かせるだけ |
 | `paint_pickup` | 0.2 | 0〜1 | 色の溶かし戻し: 塗る筆が触れた沈着顔料を浮遊層へ戻す割合(coverage×筆圧×(1−ω) で変調。リフト tool=1 の弱い版)。筆の色と下の色が同じ浮遊層で混ざり、置いた境界が馴染む。水だけの筆(顔料 0)でなでるときはこれがぼかしの強さになる。feed splat 経由(筆の含み)では毎フレーム適用になるため 0.1 倍に減衰される。0=無効 |
 | `brush_charge` | 2.0 | 0〜5 秒 | 筆の含み: 塗る筆を置いたまま動かさなくても色水が流れ出続ける。満タンの筆ならこの秒数で中身の水が尽きる(CPU が毎フレーム feed splat を積む=目標水位への水補充(max)+`brush_pigment`×`CHARGE_PIGMENT`(=0.15、splat.wgsl の定数)×筆の中身の顔料。`Splat.feed` フラグで分岐)。動いているフレームは通常注入があるので積まない。0=無効 |
 | `absorb_rate` | 0.5 | 0〜1 | 吸い取り(tool=3)の強さ: 1 splat で表面の自由水と浮遊顔料を取り除く割合(coverage×筆圧で変調)。浮遊顔料は水に乗っているだけなので水と同率で取れ、ω(染みつき)は関与しない。沈着顔料は紙に付いているので残る(剥がすのはリフト)。速度も同率で減衰=吸った水の運動量ごと持ち去る |
@@ -194,7 +195,7 @@ GPU へ渡す前に `physics_uniform()` が ρ・μ を 0 以上、ω・γ を 0
 2. [src/app/ui/](../src/app/ui/) の該当パネルにスライダー1行
 3. [assets/shaders/common.wgsl](../assets/shaders/common.wgsl) の `struct SimParams` に1行(Rust 側と同レイアウト。名前・順序・型の不一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検出する)
 
-**現在のレイアウト**: `SimParams` は 54 フィールド+パディング2(全て f32 / u32 の 4 バイト)= 224 バイト(16×14)。`SimParams` の末尾8バイトは `_pad_brush: [f32; 2]`(serde skip。WGSL には書かない)。`Splat` は 48 バイト(`pos`・`vel`・`pressure`・`feed`・`water`・`_pad`・`pigment: [f32; 4]`。vec4 を含むので WGSL の配列要素は 16 バイト整列で、`pigment` をオフセット 32 に置く)。
+**現在のレイアウト**: `SimParams` は 55 フィールド+パディング1(全て f32 / u32 の 4 バイト)= 224 バイト(16×14)。`SimParams` の末尾4バイトは `_pad_brush`(serde skip。WGSL には書かない)。`Splat` は 48 バイト(`pos`・`vel`・`pressure`・`feed`・`water`・`_pad`・`pigment: [f32; 4]`。vec4 を含むので WGSL の配列要素は 16 バイト整列で、`pigment` をオフセット 32 に置く)。
 
 **16 バイト整列の保ち方**: uniform buffer は Rust の構造体を bytemuck で生バイトのまま渡すので、全体サイズを 16 の倍数に保つ(`params_size_aligned` テスト)。次にフィールドを足すとき 16 の倍数から外れるなら、Rust 側の末尾に `#[serde(skip)]` のパディング(例: 1個足すなら `_pad: [f32; 3]`)を置き、以降はそのパディングを1つずつ実フィールドへ置き換えていく。パディングは WGSL 側の struct には書かない([tests/sim_params_layout.rs](../tests/sim_params_layout.rs) は直列化されるフィールドの名前・順序・型を common.wgsl と突き合わせ、直列化されない末尾 16 バイト未満だけをパディングとして許す)。
 
