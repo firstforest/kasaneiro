@@ -30,10 +30,16 @@
 Rust は [mise](https://mise.jdx.dev/) で管理している(`mise.toml`)。
 
 ```sh
-mise exec -- cargo run        # 実行
-cargo test --workspace        # テスト(workspace 構成なので --workspace 必須)
-cargo clippy --workspace      # リント
+mise run run          # 起動
+mise run test         # 全テスト(e2e は GPU 必須)
+mise run test:quick   # GPU 不要のテストだけ(純関数クレート + シェーダー検証 + SimParams レイアウト)
+mise run test:e2e     # e2e テストだけ(GPU 必須)
+mise run bench        # 性能計測(GPU 必須)
+mise run lint         # clippy
+mise run release      # 配布用リリースビルド(アセット埋め込み)
 ```
+
+`mise tasks` で一覧が出る。中身は `mise.toml` の `[tasks]` を参照。
 
 workspace は `km`(Kubelka-Munk 純関数)・`pigment`(mixbox 混色)・`paint-core` の3クレート+ルートのバイナリクレートで構成。シェーダー(WGSL)は `assets/shaders/` から実行時ロードされ、保存すると即座にホットリロードされる。
 

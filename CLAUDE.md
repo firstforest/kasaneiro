@@ -35,7 +35,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## コマンド
 
-Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise exec -- cargo run` / `cargo test --workspace` / `cargo clippy --workspace`。**workspace 構成**(km / pigment / paint-core の 3 crate + ルートの kasaneiro crate(lib + 起動だけの bin)。ルートが同時に package なので、下位 crate のテストまで回すには `--workspace` を付ける)。
+Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は mise タスク(`mise run run` / `test` / `test:quick` / `test:e2e` / `bench` / `lint` / `release`、定義は `mise.toml`)、直接なら `mise exec -- cargo run` / `cargo test --workspace` / `cargo clippy --workspace`。**workspace 構成**(km / pigment / paint-core の 3 crate + ルートの kasaneiro crate(lib + 起動だけの bin)。ルートが同時に package なので、下位 crate のテストまで回すには `--workspace` を付ける)。
 
 - 絞って回す: `cargo test -p km`(km / pigment / paint-core は wgpu をリンクしないので数秒)/ `cargo test --test shader_compile` / `cargo test --test e2e_watercolor wet_on_wet`(テスト名の部分一致)
 - リリース配布だけ `cargo build --release --features embed-assets`(WGSL と既定 JSON を exe に埋め込み、パス基準が exe 隣になる)。通常ビルドで付けるとホットリロードが無効になるので付けない

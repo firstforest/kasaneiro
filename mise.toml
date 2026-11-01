@@ -1,2 +1,33 @@
 [tools]
 rust = "1.96.0"
+
+[tasks.run]
+description = "アプリを起動する"
+run = "cargo run"
+
+[tasks.test]
+description = "全テスト(e2e は GPU 必須)"
+run = "cargo test --workspace"
+
+[tasks."test:quick"]
+description = "GPU 不要のテストだけ(純関数クレート + シェーダー検証 + SimParams レイアウト)"
+run = [
+  "cargo test -p km -p pigment -p paint-core",
+  "cargo test --test shader_compile --test sim_params_layout",
+]
+
+[tasks."test:e2e"]
+description = "e2e テスト(GPU 必須。失敗時は target/tmp/e2e/*.png を確認)"
+run = "cargo test --test e2e_watercolor --test e2e_ui --test e2e_video"
+
+[tasks.bench]
+description = "512/1024/2048 のフレーム時間を計測(GPU 必須)"
+run = "cargo test --test perf_bench -- --ignored --nocapture"
+
+[tasks.lint]
+description = "clippy"
+run = "cargo clippy --workspace"
+
+[tasks.release]
+description = "配布用リリースビルド(WGSL と既定 JSON を exe に埋め込む)"
+run = "cargo build --release --features embed-assets"
