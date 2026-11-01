@@ -203,9 +203,7 @@ impl SimParams {
     /// 任意の基準半径に筆圧を反映した実効半径(splat.wgsl / linesplat.wgsl と同じ式)。
     /// 水ブラシは brush_radius、ラスタ線画は pencil_radius / pen_radius を base に渡す
     pub fn radius_at_base(&self, base: f32, pressure: f32) -> f32 {
-        let p = pressure
-            .clamp(0.0, 1.0)
-            .powf(self.pressure_gamma.max(0.01));
+        let p = pressure.clamp(0.0, 1.0).powf(self.pressure_gamma.max(0.01));
         let factor = 1.0 + (p - 1.0) * self.pressure_radius.clamp(0.0, 1.0);
         (base * factor).max(0.5)
     }
@@ -265,20 +263,20 @@ impl Default for SimParams {
             lift_strength: 0.3,
             compose_mode: 1, // 既定は KM。0 で multiply
             water_lift: 0.3, // ぼかし筆の溶かし戻し率。リフト(lift_strength 0.3)と同格の効き
-            line_mode: 0,     // 既定は鉛筆
+            line_mode: 0,    // 既定は鉛筆
             line_eraser: 0,
-            pencil_radius: 8.0,   // 鉛筆は柔らかめの中細
+            pencil_radius: 8.0, // 鉛筆は柔らかめの中細
             pencil_strength: 0.7,
             pencil_gran: 0.5,
-            pen_radius: 4.0,      // ペンは細く硬い線
-            pen_strength: 0.9,    // ペンは濃い
+            pen_radius: 4.0,   // ペンは細く硬い線
+            pen_strength: 0.9, // ペンは濃い
             show_pencil: 1,
             show_pen: 1,
-            line_block: 0.0,          // M4.5b: 既定は境界なし(明示的に上げると水が越えにくくなる)
-            highlight_radius: 6.0,    // M4.5c: ハイライトは中太
+            line_block: 0.0, // M4.5b: 既定は境界なし(明示的に上げると水が越えにくくなる)
+            highlight_radius: 6.0, // M4.5c: ハイライトは中太
             highlight_strength: 0.85, // M4.5c: 白の不透明度
             show_highlight: 1,
-            active_tiles: 1, // M6: 既定で有効(濡れ面積に比例。0 で全面計算へ戻せる)
+            active_tiles: 1,   // M6: 既定で有効(濡れ面積に比例。0 で全面計算へ戻せる)
             paint_pickup: 0.2, // 筆が下の色を軽く溶かして混ぜる(ω が高い顔料は残る)
             brush_charge: 2.0, // 筆の含み: 置いたまま2秒は色水が流れ出続ける
             absorb_rate: 0.5,  // 吸い取り: ひとなでで水たまりの大半を回収できる強さ

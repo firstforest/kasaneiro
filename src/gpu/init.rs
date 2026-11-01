@@ -6,12 +6,12 @@
 //! WGSL の実行時ロード(H1)に委ねるため、ここでは `pipelines: None` で始める。
 
 use super::{
-    BASE_SLICES, DRIED_CACHE_FORMAT, GpuCanvas, LayerUniform, MAX_LAYERS, PAPER_SEED, SIM_FORMAT, TEX_KINDS, TILE_SIZE,
-    ViewUniform,
+    BASE_SLICES, DRIED_CACHE_FORMAT, GpuCanvas, LayerUniform, MAX_LAYERS, PAPER_SEED, SIM_FORMAT,
+    TEX_KINDS, TILE_SIZE, ViewUniform,
 };
+use eframe::egui_wgpu::wgpu;
 use paint_core::paper;
 use paint_core::sim::{CANVAS_SIZES, MAX_SPLATS, SimParams, Splat, SplatHeader};
-use eframe::egui_wgpu::wgpu;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
@@ -134,7 +134,8 @@ impl GpuCanvas {
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let dried_cache_view = dried_cache_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let dried_cache_view =
+            dried_cache_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // 下地: 下の乾燥レイヤーを焼き固めた合成結果。キャッシュと同じ形式の2スライス
         // (0 = 乗算 / 1 = KM)。has_base が立つまで読まれない
         let base_texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -272,8 +273,8 @@ impl GpuCanvas {
         });
         let splat_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("splats"),
-            size: (std::mem::size_of::<SplatHeader>()
-                + MAX_SPLATS * std::mem::size_of::<Splat>()) as u64,
+            size: (std::mem::size_of::<SplatHeader>() + MAX_SPLATS * std::mem::size_of::<Splat>())
+                as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -351,17 +352,18 @@ impl GpuCanvas {
             mapped_at_creation: false,
         });
 
-        let sampled_entry = |binding: u32, visibility: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility,
-            ty: wgpu::BindingType::Texture {
-                // rgba32float はフィルタ不可(シェーダー側は textureLoad で読む)
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-            count: None,
-        };
+        let sampled_entry =
+            |binding: u32, visibility: wgpu::ShaderStages| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility,
+                ty: wgpu::BindingType::Texture {
+                    // rgba32float はフィルタ不可(シェーダー側は textureLoad で読む)
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            };
         let storage_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -372,18 +374,19 @@ impl GpuCanvas {
             },
             count: None,
         };
-        let buffer_entry = |binding: u32,
-                            visibility: wgpu::ShaderStages,
-                            ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility,
-            ty: wgpu::BindingType::Buffer {
-                ty,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        };
+        let buffer_entry =
+            |binding: u32, visibility: wgpu::ShaderStages, ty: wgpu::BufferBindingType| {
+                wgpu::BindGroupLayoutEntry {
+                    binding,
+                    visibility,
+                    ty: wgpu::BindingType::Buffer {
+                        ty,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }
+            };
 
         // 全 compute パス共通のレイアウト。binding は common.wgsl のコメントと対応:
         // 0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats,

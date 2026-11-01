@@ -24,7 +24,11 @@ fn rust_fields() -> Vec<(String, &'static str)> {
         .map(|kv| {
             let (key, value) = kv.split_once(':').expect("key:value");
             let key = key.trim_matches('"').to_owned();
-            let ty = if value.contains(['.', 'e', 'E']) { "f32" } else { "u32" };
+            let ty = if value.contains(['.', 'e', 'E']) {
+                "f32"
+            } else {
+                "u32"
+            };
             (key, ty)
         })
         .collect()
@@ -34,7 +38,9 @@ fn rust_fields() -> Vec<(String, &'static str)> {
 fn wgsl_fields() -> Vec<(String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/shaders/common.wgsl");
     let src = std::fs::read_to_string(&path).expect("common.wgsl");
-    let start = src.find("struct SimParams {").expect("struct SimParams が見つかりません");
+    let start = src
+        .find("struct SimParams {")
+        .expect("struct SimParams が見つかりません");
     let body = &src[start + "struct SimParams {".len()..];
     let end = body.find('}').expect("struct SimParams の終わり");
     body[..end]

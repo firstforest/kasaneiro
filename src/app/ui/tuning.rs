@@ -27,9 +27,7 @@ impl PaintApp {
             egui::Slider::new(&mut self.params.dry_shift, 0.0..=1.5)
                 .text("乾燥シフト(<1で乾くと薄く)"),
         );
-        ui.add(
-            egui::Slider::new(&mut self.params.rewet_water, 0.0..=2.0).text("再湿潤の水量"),
-        );
+        ui.add(egui::Slider::new(&mut self.params.rewet_water, 0.0..=2.0).text("再湿潤の水量"));
 
         // 筆圧 (M1.5)
         ui.separator();
@@ -45,9 +43,16 @@ impl PaintApp {
                 ui.label("ペンでキャンバスに触れると筆圧が表示されます(マウスは 1.0 固定)");
             }
         }
-        ui.add(egui::Slider::new(&mut self.params.pressure_radius, 0.0..=1.0).text("筆圧→半径の効き"));
-        ui.add(egui::Slider::new(&mut self.params.pressure_water, 0.0..=1.0).text("筆圧→水量の効き"));
-        ui.add(egui::Slider::new(&mut self.params.pressure_pigment, 0.0..=1.0).text("筆圧→顔料量の効き"));
+        ui.add(
+            egui::Slider::new(&mut self.params.pressure_radius, 0.0..=1.0).text("筆圧→半径の効き"),
+        );
+        ui.add(
+            egui::Slider::new(&mut self.params.pressure_water, 0.0..=1.0).text("筆圧→水量の効き"),
+        );
+        ui.add(
+            egui::Slider::new(&mut self.params.pressure_pigment, 0.0..=1.0)
+                .text("筆圧→顔料量の効き"),
+        );
         ui.add(
             egui::Slider::new(&mut self.params.pressure_gamma, 0.25..=4.0)
                 .logarithmic(true)
@@ -74,19 +79,41 @@ impl PaintApp {
                 ui.separator();
                 ui.heading("水シミュレーション (M1a)");
                 ui.add(egui::Slider::new(&mut self.params.dt, 0.05..=1.0).text("時間刻み dt"));
-                ui.add(egui::Slider::new(&mut self.params.accel, 0.0..=4.0).text("移流強度(勾配→加速)"));
+                ui.add(
+                    egui::Slider::new(&mut self.params.accel, 0.0..=4.0)
+                        .text("移流強度(勾配→加速)"),
+                );
                 ui.add(egui::Slider::new(&mut self.params.damping, 0.0..=0.5).text("速度減衰"));
                 ui.add(egui::Slider::new(&mut self.params.xi, 0.0..=0.5).text("発散緩和 ξ"));
-                ui.add(egui::Slider::new(&mut self.params.relax_iters, 1..=50).text("緩和反復回数"));
-                ui.add(egui::Slider::new(&mut self.params.vel_max, 0.1..=2.0).text("速度上限 (CFL)"));
-                ui.add(egui::Slider::new(&mut self.params.wet_expand, 0.0..=0.5).text("にじみ拡張(0=固定マスク)"));
+                ui.add(
+                    egui::Slider::new(&mut self.params.relax_iters, 1..=50).text("緩和反復回数"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.params.vel_max, 0.1..=2.0).text("速度上限 (CFL)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.params.wet_expand, 0.0..=0.5)
+                        .text("にじみ拡張(0=固定マスク)"),
+                );
 
                 ui.separator();
                 ui.heading("顔料 (M1b)");
-                ui.add(egui::Slider::new(&mut self.params.pigment_diffuse, 0.0..=1.0).text("拡散率(にじみの速さ)"));
-                ui.add(egui::Slider::new(&mut self.params.diffuse_iters, 0..=32).text("拡散反復回数(速いにじみはこちらで)"));
-                ui.add(egui::Slider::new(&mut self.params.deposit_rate, 0.0..=0.5).text("吸着率(沈着の速さ)"));
-                ui.add(egui::Slider::new(&mut self.params.lift_rate, 0.0..=0.5).text("脱着率(再浮遊の速さ)"));
+                ui.add(
+                    egui::Slider::new(&mut self.params.pigment_diffuse, 0.0..=1.0)
+                        .text("拡散率(にじみの速さ)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.params.diffuse_iters, 0..=32)
+                        .text("拡散反復回数(速いにじみはこちらで)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.params.deposit_rate, 0.0..=0.5)
+                        .text("吸着率(沈着の速さ)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.params.lift_rate, 0.0..=0.5)
+                        .text("脱着率(再浮遊の速さ)"),
+                );
                 ui.add(
                     egui::Slider::new(&mut self.params.evap_rate, 0.0..=0.05)
                         .logarithmic(true)
@@ -103,14 +130,26 @@ impl PaintApp {
 
                 ui.separator();
                 ui.heading("紙・エッジ (M1d)");
-                ui.add(egui::Slider::new(&mut self.params.paper_amp, 0.0..=1.0).text("紙ハイト振幅(谷へ流す)"));
-                ui.add(egui::Slider::new(&mut self.params.paper_gran, 0.0..=1.0).text("粒状化(凹部に沈着)"));
-                ui.add(egui::Slider::new(&mut self.params.paper_wet, 0.0..=1.0).text("にじみ縁の紙目変調"));
+                ui.add(
+                    egui::Slider::new(&mut self.params.paper_amp, 0.0..=1.0)
+                        .text("紙ハイト振幅(谷へ流す)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.params.paper_gran, 0.0..=1.0)
+                        .text("粒状化(凹部に沈着)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.params.paper_wet, 0.0..=1.0)
+                        .text("にじみ縁の紙目変調"),
+                );
                 ui.add(
                     egui::Slider::new(&mut self.params.edge_eta, 0.0..=0.2)
                         .text("エッジダークニング η(0=無効)"),
                 );
-                ui.add(egui::Slider::new(&mut self.params.edge_radius, 1..=8).text("縁バンド幅(ぼかし半径)"));
+                ui.add(
+                    egui::Slider::new(&mut self.params.edge_radius, 1..=8)
+                        .text("縁バンド幅(ぼかし半径)"),
+                );
             });
 
         // 診断表示(H4): デバッグ用ヒートマップ。通常描画は「通常」モード固定で十分なので畳む
@@ -156,7 +195,11 @@ impl PaintApp {
         ui.separator();
         ui.heading("シミュレーション制御");
         ui.horizontal(|ui| {
-            let pause_label = if self.paused { "▶ 再開" } else { "⏸ 一時停止" };
+            let pause_label = if self.paused {
+                "▶ 再開"
+            } else {
+                "⏸ 一時停止"
+            };
             if ui.button(pause_label).clicked() {
                 self.paused = !self.paused;
             }

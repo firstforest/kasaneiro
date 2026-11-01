@@ -13,7 +13,11 @@ use eframe::egui;
 
 /// レイヤー合成方式(M3)。値は SimParams::compose_mode / display.wgsl の分岐と対応。
 const COMPOSE_MODES: [(u32, &str, &str); 2] = [
-    (0, "乗算(重ねて暗く)", "multiply(M2)の乗算合成(重ねるほど暗く。散乱を無視した安価な近似)"),
+    (
+        0,
+        "乗算(重ねて暗く)",
+        "multiply(M2)の乗算合成(重ねるほど暗く。散乱を無視した安価な近似)",
+    ),
     (
         1,
         "グレーズ(内側から光る)",
@@ -43,7 +47,10 @@ fn layer_row(
                     .on_disabled_hover_text("描画先レイヤーは常に表示");
             }
         }
-        clicked = ui.selectable_label(selected, label).on_hover_text(hint).clicked();
+        clicked = ui
+            .selectable_label(selected, label)
+            .on_hover_text(hint)
+            .clicked();
     });
     (clicked, vis_changed)
 }
@@ -141,9 +148,11 @@ impl PaintApp {
                 sanitize_to_wet = true;
             }
             ui.label(
-                egui::RichText::new(format!("乾いた層 {count}/{MAX_LAYERS} 枚(固定済み・編集不可)"))
-                    .weak()
-                    .small(),
+                egui::RichText::new(format!(
+                    "乾いた層 {count}/{MAX_LAYERS} 枚(固定済み・編集不可)"
+                ))
+                .weak()
+                .small(),
             );
             let active = self.active_layer;
             let mut changed = false;
@@ -196,7 +205,8 @@ impl PaintApp {
                 canvas.sync_layers(&self.render_state.queue);
             }
             if let Some(n) = merge {
-                match canvas.merge_into_base(&self.render_state.device, &self.render_state.queue, n) {
+                match canvas.merge_into_base(&self.render_state.device, &self.render_state.queue, n)
+                {
                     Ok(()) => {
                         // 選択中の乾燥レイヤーが焼かれたら水彩へ、残った層なら詰めた位置へ追従
                         if let ActiveLayer::Dried(i) = self.active_layer {
@@ -224,7 +234,11 @@ impl PaintApp {
         ui.horizontal(|ui| {
             let mut always = true;
             ui.add_enabled(false, egui::Checkbox::new(&mut always, ""));
-            let label = if has_base { "下地(統合した層+紙)" } else { "紙(最下層)" };
+            let label = if has_base {
+                "下地(統合した層+紙)"
+            } else {
+                "紙(最下層)"
+            };
             ui.label(egui::RichText::new(label).weak());
         });
 

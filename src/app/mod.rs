@@ -13,23 +13,23 @@ mod ui;
 use crate::gpu::DriedLayer;
 use crate::gpu::GpuCanvas;
 use crate::gpu::LineTarget;
-use linehist::{LineHistory, stroke_splats};
 use crate::gpu::hot_reload::{ScreenshotWatcher, ShaderWatcher, screenshots_dir, shader_dir};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase};
 use crate::palette_store;
 use crate::pigment_store;
 use crate::preset;
 use crate::replay::{self, Player, Recording};
-use paint_core::load::BrushLoad;
 use crate::work;
-use paint_core::brush::StrokeState;
-use paint_core::clock::SimClock;
-use paint_core::sim::{DEFAULT_CANVAS_SIZE, SimParams, Splat};
-use paint_core::tool::{RasterTool, Tool, WetTool};
-use ui::{NamedStore, PaletteUi, PresetUi, ReplayUi, WorkUi};
 use eframe::egui;
 use eframe::egui_wgpu;
+use linehist::{LineHistory, stroke_splats};
+use paint_core::brush::StrokeState;
+use paint_core::clock::SimClock;
+use paint_core::load::BrushLoad;
+use paint_core::sim::{DEFAULT_CANVAS_SIZE, SimParams, Splat};
+use paint_core::tool::{RasterTool, Tool, WetTool};
 use std::path::PathBuf;
+use ui::{NamedStore, PaletteUi, PresetUi, ReplayUi, WorkUi};
 
 /// UI フォントを M PLUS 1p(Google Fonts / OFL、`assets/fonts/`)に差し替える。
 /// egui のデフォルトフォントは日本語グリフを含まないため、実行ファイルに埋め込んだ
@@ -480,13 +480,22 @@ impl PaintApp {
         match layer {
             ActiveLayer::Wet => self.tool = Tool::Wet(self.last_wet_tool),
             ActiveLayer::Pencil => {
-                self.tool = Tool::Raster { kind: RasterTool::Pencil, eraser };
+                self.tool = Tool::Raster {
+                    kind: RasterTool::Pencil,
+                    eraser,
+                };
             }
             ActiveLayer::Pen => {
-                self.tool = Tool::Raster { kind: RasterTool::Pen, eraser };
+                self.tool = Tool::Raster {
+                    kind: RasterTool::Pen,
+                    eraser,
+                };
             }
             ActiveLayer::Highlight => {
-                self.tool = Tool::Raster { kind: RasterTool::Highlight, eraser };
+                self.tool = Tool::Raster {
+                    kind: RasterTool::Highlight,
+                    eraser,
+                };
             }
             ActiveLayer::Dried(_) => {} // ツールは据え置き(canvas 側で描画をブロックする)
         }
@@ -510,9 +519,7 @@ impl PaintApp {
     fn rebuild_shaders(&mut self) {
         let mut renderer = self.render_state.renderer.write();
         if let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() {
-            self.shader_error = canvas
-                .rebuild_pipelines(&self.render_state.device)
-                .err();
+            self.shader_error = canvas.rebuild_pipelines(&self.render_state.device).err();
         }
     }
 
@@ -721,11 +728,7 @@ impl PaintApp {
         let result = {
             let mut renderer = self.render_state.renderer.write();
             match renderer.callback_resources.get_mut::<GpuCanvas>() {
-                Some(canvas) => action(
-                    canvas,
-                    &self.render_state.device,
-                    &self.render_state.queue,
-                ),
+                Some(canvas) => action(canvas, &self.render_state.device, &self.render_state.queue),
                 None => Err("キャンバスが初期化されていません".to_owned()),
             }
         };
@@ -755,7 +758,9 @@ impl PaintApp {
         self.apply_palette();
         // 再生前の顔料スロットを退避(再生終了時に stop_replay が戻す)。
         // 再生中の再開でも最初の値を保つよう、既に退避済みなら上書きしない
-        self.replay_ui.saved_channel.get_or_insert(self.params.brush_channel);
+        self.replay_ui
+            .saved_channel
+            .get_or_insert(self.params.brush_channel);
         self.replay_ui.player = Some(Player::new(recording));
         // 再生で絵が載るので初回ガイドは出さない
         self.has_painted = true;
@@ -903,9 +908,18 @@ impl PaintApp {
     /// 独立半径、流体ツールは brush_radius。ストローク補間の間隔算出に使う
     fn active_base_radius(&self) -> f32 {
         match self.tool {
-            Tool::Raster { kind: RasterTool::Pencil, .. } => self.params.pencil_radius,
-            Tool::Raster { kind: RasterTool::Pen, .. } => self.params.pen_radius,
-            Tool::Raster { kind: RasterTool::Highlight, .. } => self.params.highlight_radius,
+            Tool::Raster {
+                kind: RasterTool::Pencil,
+                ..
+            } => self.params.pencil_radius,
+            Tool::Raster {
+                kind: RasterTool::Pen,
+                ..
+            } => self.params.pen_radius,
+            Tool::Raster {
+                kind: RasterTool::Highlight,
+                ..
+            } => self.params.highlight_radius,
             _ => self.params.brush_radius,
         }
     }
@@ -915,9 +929,18 @@ impl PaintApp {
     /// active_base_radius と同じ対応で書き込み先を選ぶ
     fn adjust_active_radius(&mut self, delta: f32) {
         let r = match self.tool {
-            Tool::Raster { kind: RasterTool::Pencil, .. } => &mut self.params.pencil_radius,
-            Tool::Raster { kind: RasterTool::Pen, .. } => &mut self.params.pen_radius,
-            Tool::Raster { kind: RasterTool::Highlight, .. } => &mut self.params.highlight_radius,
+            Tool::Raster {
+                kind: RasterTool::Pencil,
+                ..
+            } => &mut self.params.pencil_radius,
+            Tool::Raster {
+                kind: RasterTool::Pen,
+                ..
+            } => &mut self.params.pen_radius,
+            Tool::Raster {
+                kind: RasterTool::Highlight,
+                ..
+            } => &mut self.params.highlight_radius,
             _ => &mut self.params.brush_radius,
         };
         *r = (*r + delta).clamp(1.0, 64.0);
@@ -927,9 +950,18 @@ impl PaintApp {
     /// CanvasCallback へ渡し、Some なら splat を linesplat.wgsl へ流す
     fn line_target(&self) -> Option<LineTarget> {
         match self.tool {
-            Tool::Raster { kind: RasterTool::Pencil, .. } => Some(LineTarget::Pencil),
-            Tool::Raster { kind: RasterTool::Pen, .. } => Some(LineTarget::Pen),
-            Tool::Raster { kind: RasterTool::Highlight, .. } => Some(LineTarget::Highlight),
+            Tool::Raster {
+                kind: RasterTool::Pencil,
+                ..
+            } => Some(LineTarget::Pencil),
+            Tool::Raster {
+                kind: RasterTool::Pen,
+                ..
+            } => Some(LineTarget::Pen),
+            Tool::Raster {
+                kind: RasterTool::Highlight,
+                ..
+            } => Some(LineTarget::Highlight),
             _ => None,
         }
     }

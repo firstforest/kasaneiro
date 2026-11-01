@@ -39,7 +39,8 @@ pub struct RecordedStroke {
 impl RecordedStroke {
     /// 再生するときの筆の中身
     pub fn brush_load(&self) -> BrushLoad {
-        self.load.unwrap_or_else(|| BrushLoad::standard(self.channel))
+        self.load
+            .unwrap_or_else(|| BrushLoad::standard(self.channel))
     }
 }
 

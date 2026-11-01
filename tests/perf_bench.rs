@@ -84,7 +84,9 @@ fn time_display(c: &HeadlessCanvas, frames: u32) -> f64 {
 #[test]
 #[ignore = "計測用。--ignored --nocapture で回す"]
 fn perf_bench() {
-    println!("| サイズ | 乾いた紙 | 一部濡れ(320²) | 全面計算 | 全面濡れの蒸発後 | 表示 層0 | 表示 層8 |");
+    println!(
+        "| サイズ | 乾いた紙 | 一部濡れ(320²) | 全面計算 | 全面濡れの蒸発後 | 表示 層0 | 表示 層8 |"
+    );
     println!("|---|---|---|---|---|---|---|");
     for size in SIZES {
         let mut c = new_canvas(size);

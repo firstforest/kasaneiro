@@ -108,7 +108,8 @@ impl HeadlessCanvas {
 
     /// 下から `count` 枚の乾燥レイヤーを下地に焼き固める
     pub fn merge_into_base(&mut self, count: usize) -> Result<(), String> {
-        self.canvas.merge_into_base(&self.device, &self.queue, count)
+        self.canvas
+            .merge_into_base(&self.device, &self.queue, count)
     }
 
     /// Fast Dry: 水だけ除き、浮遊顔料をその場で沈着させる

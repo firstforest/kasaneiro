@@ -118,11 +118,22 @@ fn merge_into_base_keeps_look() {
             .max()
             .unwrap();
         // 下地は合成キャッシュと同じ半精度なので、丸めの差が 8bit で数段出る程度に収まる
-        assert!(worst <= 2, "統合で見た目が変わった(合成方式 {mode}、最大差 {worst})\n{}", png.display());
+        assert!(
+            worst <= 2,
+            "統合で見た目が変わった(合成方式 {mode}、最大差 {worst})\n{}",
+            png.display()
+        );
     }
 
     // 空いた枠にまた乾かせて、下地の上に重なる
-    c.play(recording(vec![hstroke(WetTool::Paint, BLUE, 100.0, 400.0, 450.0, 0)]));
+    c.play(recording(vec![hstroke(
+        WetTool::Paint,
+        BLUE,
+        100.0,
+        400.0,
+        450.0,
+        0,
+    )]));
     c.idle(120);
     c.bake_dry().unwrap();
     assert_eq!(c.layer_count(), 2);
@@ -132,7 +143,14 @@ fn merge_into_base_keeps_look() {
 #[test]
 fn dried_layer_density_scales_look() {
     let mut c = canvas();
-    c.play(recording(vec![hstroke(WetTool::Paint, BLUE, 100.0, 400.0, 250.0, 0)]));
+    c.play(recording(vec![hstroke(
+        WetTool::Paint,
+        BLUE,
+        100.0,
+        400.0,
+        250.0,
+        0,
+    )]));
     c.idle(120);
     c.bake_dry().unwrap();
     let look = |c: &mut HeadlessCanvas, density: f32| {
@@ -158,9 +176,18 @@ fn dried_layer_density_scales_look() {
         at(&dark),
         at(&none)
     );
-    assert!(at(&dark) < at(&base) && at(&base) < at(&light) && at(&light) < paper, "濃さが倍率の順に並ばない\n{ctx}");
-    assert!((at(&none) - paper).abs() < 0.02, "倍率 0 で紙に戻らない\n{ctx}");
-    assert!(base.rgba == back.rgba, "倍率を 1 に戻しても元の見た目にならない\n{ctx}");
+    assert!(
+        at(&dark) < at(&base) && at(&base) < at(&light) && at(&light) < paper,
+        "濃さが倍率の順に並ばない\n{ctx}"
+    );
+    assert!(
+        (at(&none) - paper).abs() < 0.02,
+        "倍率 0 で紙に戻らない\n{ctx}"
+    );
+    assert!(
+        base.rgba == back.rgba,
+        "倍率を 1 に戻しても元の見た目にならない\n{ctx}"
+    );
 }
 
 /// グレージング: 乾かした黄の上に青を重ねると、交差部だけ緑に濃くなり、下の層は変わらない
@@ -362,14 +389,35 @@ fn active_tiles_match_full_compute() {
     let run = |active_tiles: u32| {
         let mut c = canvas();
         c.params.active_tiles = active_tiles;
-        c.play(recording(vec![hstroke(WetTool::Paint, YELLOW, 80.0, 220.0, 120.0, 0)]));
+        c.play(recording(vec![hstroke(
+            WetTool::Paint,
+            YELLOW,
+            80.0,
+            220.0,
+            120.0,
+            0,
+        )]));
         c.idle(30);
         c.fast_dry().unwrap();
-        c.play(recording(vec![hstroke(WetTool::Paint, BLUE, 260.0, 420.0, 260.0, 0)]));
+        c.play(recording(vec![hstroke(
+            WetTool::Paint,
+            BLUE,
+            260.0,
+            420.0,
+            260.0,
+            0,
+        )]));
         c.idle(30);
         c.bake_dry().unwrap();
         c.idle(3);
-        c.play(recording(vec![hstroke(WetTool::Paint, SIENNA, 80.0, 420.0, 400.0, 0)]));
+        c.play(recording(vec![hstroke(
+            WetTool::Paint,
+            SIENNA,
+            80.0,
+            420.0,
+            400.0,
+            0,
+        )]));
         c.idle(30);
         c.snapshot().unwrap()
     };
@@ -400,10 +448,23 @@ fn active_tiles_match_full_compute_after_evaporation() {
         c.params.active_tiles = active_tiles;
         // 蒸発を速めて、水が尽きるまでを短く回す
         c.params.evap_rate = 0.02;
-        c.play(recording(vec![hstroke(WetTool::Paint, YELLOW, 80.0, 420.0, 200.0, 0)]));
+        c.play(recording(vec![hstroke(
+            WetTool::Paint,
+            YELLOW,
+            80.0,
+            420.0,
+            200.0,
+            0,
+        )]));
         c.idle(200);
         c.params.evap_rate = 0.0003;
-        c.play(recording(vec![stroke(WetTool::Paint, BLUE, [250.0, 120.0], [250.0, 260.0], 0)]));
+        c.play(recording(vec![stroke(
+            WetTool::Paint,
+            BLUE,
+            [250.0, 120.0],
+            [250.0, 260.0],
+            0,
+        )]));
         c.idle(60);
         c.snapshot().unwrap()
     };
@@ -431,16 +492,42 @@ fn active_tiles_match_full_compute_after_evaporation() {
 #[test]
 fn inactive_tiles_keep_pingpong_in_sync() {
     let mut c = canvas();
-    c.play(recording(vec![hstroke(WetTool::Paint, YELLOW, 80.0, 220.0, 120.0, 0)]));
+    c.play(recording(vec![hstroke(
+        WetTool::Paint,
+        YELLOW,
+        80.0,
+        220.0,
+        120.0,
+        0,
+    )]));
     c.idle(10);
-    assert_ne!(c.pingpong_mismatch().unwrap(), [0; 3], "濡れている間は2枚が食い違うはず");
+    assert_ne!(
+        c.pingpong_mismatch().unwrap(),
+        [0; 3],
+        "濡れている間は2枚が食い違うはず"
+    );
     c.fast_dry().unwrap();
     c.idle(2);
-    assert_eq!(c.pingpong_mismatch().unwrap(), [0; 3], "Fast Dry の後に2枚がずれている");
+    assert_eq!(
+        c.pingpong_mismatch().unwrap(),
+        [0; 3],
+        "Fast Dry の後に2枚がずれている"
+    );
 
-    c.play(recording(vec![hstroke(WetTool::Paint, BLUE, 260.0, 420.0, 260.0, 0)]));
+    c.play(recording(vec![hstroke(
+        WetTool::Paint,
+        BLUE,
+        260.0,
+        420.0,
+        260.0,
+        0,
+    )]));
     c.idle(10);
     c.bake_dry().unwrap();
     c.idle(2);
-    assert_eq!(c.pingpong_mismatch().unwrap(), [0; 3], "乾かした後に2枚がずれている");
+    assert_eq!(
+        c.pingpong_mismatch().unwrap(),
+        [0; 3],
+        "乾かした後に2枚がずれている"
+    );
 }

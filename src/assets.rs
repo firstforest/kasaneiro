@@ -34,10 +34,22 @@ pub fn asset_dir(sub: &str) -> PathBuf {
 /// 起動時に seed_default_assets が exe 隣へ書き出して初期状態を作る
 #[cfg(feature = "embed-assets")]
 static EMBEDDED_JSON_ASSETS: [(&str, include_dir::Dir<'static>); 4] = [
-    ("pigments", include_dir::include_dir!("$CARGO_MANIFEST_DIR/assets/pigments")),
-    ("palettes", include_dir::include_dir!("$CARGO_MANIFEST_DIR/assets/palettes")),
-    ("presets", include_dir::include_dir!("$CARGO_MANIFEST_DIR/assets/presets")),
-    ("strokes", include_dir::include_dir!("$CARGO_MANIFEST_DIR/assets/strokes")),
+    (
+        "pigments",
+        include_dir::include_dir!("$CARGO_MANIFEST_DIR/assets/pigments"),
+    ),
+    (
+        "palettes",
+        include_dir::include_dir!("$CARGO_MANIFEST_DIR/assets/palettes"),
+    ),
+    (
+        "presets",
+        include_dir::include_dir!("$CARGO_MANIFEST_DIR/assets/presets"),
+    ),
+    (
+        "strokes",
+        include_dir::include_dir!("$CARGO_MANIFEST_DIR/assets/strokes"),
+    ),
 ];
 
 /// 初回起動時、既定 JSON アセット(顔料・パレット・プリセット・ストローク)を書き出す。
@@ -249,8 +261,8 @@ mod tests {
     /// 保存 → 一覧 → 読込 → 上書き → 削除の往復と、アトミック書き込みの .tmp が残らないこと
     #[test]
     fn json_store_roundtrip() {
-        let dir = std::env::temp_dir()
-            .join(format!("kasaneiro-assets-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("kasaneiro-assets-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = json_save(&dir, "a/b", &vec![1u32, 2, 3], true).unwrap();
         assert_eq!(path, dir.join("a_b.json"));

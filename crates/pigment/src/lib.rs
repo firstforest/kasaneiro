@@ -65,8 +65,22 @@ fn default_mobility() -> f32 {
 }
 
 impl Pigment {
-    fn new(name: &str, rgb: [u8; 3], density: f32, staining: f32, granulation: f32, mobility: f32) -> Self {
-        Self { name: name.to_owned(), rgb, density, staining, granulation, mobility }
+    fn new(
+        name: &str,
+        rgb: [u8; 3],
+        density: f32,
+        staining: f32,
+        granulation: f32,
+        mobility: f32,
+    ) -> Self {
+        Self {
+            name: name.to_owned(),
+            rgb,
+            density,
+            staining,
+            granulation,
+            mobility,
+        }
     }
 }
 
@@ -180,7 +194,10 @@ mod tests {
         let pal = Palette::default_palette();
         let mix = mixbox::lerp(&pal.pigments[0].rgb, &pal.pigments[1].rgb, 0.5);
         let [r, g, b] = mix;
-        assert!(g > r && g > b, "黄+青の混色が緑になっていません: rgb = {mix:?}");
+        assert!(
+            g > r && g > b,
+            "黄+青の混色が緑になっていません: rgb = {mix:?}"
+        );
     }
 
     /// 筆の中身の表示色: 単色はその色のまま、黄+青は緑
@@ -204,8 +221,16 @@ mod tests {
         let phys = pal.physics_uniform();
         for (i, p) in pal.pigments.iter().enumerate() {
             assert!(p.density > 0.0, "{} の密度が非正です", p.name);
-            assert!((0.0..=1.0).contains(&p.staining), "{} の ω が範囲外です", p.name);
-            assert!((0.0..=1.0).contains(&p.granulation), "{} の γ が範囲外です", p.name);
+            assert!(
+                (0.0..=1.0).contains(&p.staining),
+                "{} の ω が範囲外です",
+                p.name
+            );
+            assert!(
+                (0.0..=1.0).contains(&p.granulation),
+                "{} の γ が範囲外です",
+                p.name
+            );
             assert!(p.mobility > 0.0, "{} の μ が非正です", p.name);
             assert_eq!(phys[i], [p.density, p.staining, p.granulation, p.mobility]);
         }
@@ -225,7 +250,8 @@ mod tests {
     /// (色ライブラリ・.kasane の layer_palettes の前進互換。SimParams と同じ扱い)
     #[test]
     fn pigment_json_without_mobility_defaults_to_one() {
-        let json = r#"{"name":"旧顔料","rgb":[1,2,3],"density":1.0,"staining":0.5,"granulation":0.1}"#;
+        let json =
+            r#"{"name":"旧顔料","rgb":[1,2,3],"density":1.0,"staining":0.5,"granulation":0.1}"#;
         let p: Pigment = serde_json::from_str(json).expect("旧形式の顔料 JSON が読めません");
         assert_eq!(p.mobility, 1.0);
     }
@@ -262,7 +288,9 @@ mod tests {
     #[test]
     fn global_paper_roundtrip() {
         let g = global_latents();
-        let z = [g[0][0], g[0][1], g[0][2], g[0][3], g[1][0], g[1][1], g[1][2]];
+        let z = [
+            g[0][0], g[0][1], g[0][2], g[0][3], g[1][0], g[1][1], g[1][2],
+        ];
         let rgb = mixbox::latent_to_rgb(&z);
         for c in 0..3 {
             let expect = (PAPER_RGB[c] * 255.0).round() as i32;

@@ -189,7 +189,10 @@ impl PaintApp {
     fn pigment_library_section(&mut self, ui: &mut egui::Ui) {
         let ch = self.params.brush_channel.min(3) as usize;
         ui.horizontal(|ui| {
-            ui.strong(format!("色ライブラリ({}色)", self.palette_ui.pigment_cache.len()));
+            ui.strong(format!(
+                "色ライブラリ({}色)",
+                self.palette_ui.pigment_cache.len()
+            ));
             if ui.button("↻").on_hover_text("一覧を再読込").clicked() {
                 self.palette_ui.pigment_cache = pigment_store::load_all();
             }
@@ -366,7 +369,11 @@ impl PaintApp {
         // 読込: 4色チップ付き一覧。今のパレットが未保存なら上書きされる点はホバーで注意。
         // いま使っているパレット(名前欄と同名)の行は名前を強調する
         if self.palette_ui.palette_cache.is_empty() {
-            ui.label(egui::RichText::new("保存されたパレットはありません").weak().small());
+            ui.label(
+                egui::RichText::new("保存されたパレットはありません")
+                    .weak()
+                    .small(),
+            );
         }
         enum Act {
             Load(String, pigment::Palette),

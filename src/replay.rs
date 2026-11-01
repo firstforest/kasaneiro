@@ -71,10 +71,17 @@ mod tests {
             channel: 1,
             tool: 0,
             load: None,
-            points: vec![TimedPoint { frame: 0, pos: [1.0, 2.0], pressure: 1.0 }],
+            points: vec![TimedPoint {
+                frame: 0,
+                pos: [1.0, 2.0],
+                pressure: 1.0,
+            }],
         });
         let pal = pigment::Palette::default_palette();
-        let stored = StoredRecording { recording: rec, palette: pal.clone() };
+        let stored = StoredRecording {
+            recording: rec,
+            palette: pal.clone(),
+        };
         let json = serde_json::to_string(&stored).unwrap();
         let back: StoredRecording = serde_json::from_str(&json).unwrap();
         assert_eq!(back.palette, pal);

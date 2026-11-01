@@ -4,50 +4,58 @@
 use crate::app::PaintApp;
 use crate::gpu::CanvasCallback;
 use crate::input::{PointerEvent, PointerPhase, PointerSource};
-use paint_core::sim::Splat;
 use eframe::egui;
 use eframe::egui_wgpu;
+use paint_core::sim::Splat;
 
 impl PaintApp {
     pub(in crate::app) fn canvas_ui(&mut self, ui: &mut egui::Ui) {
         // 正方形キャンバスを利用可能領域の中央に置く
         let available = ui.available_size();
         let side = available.min_elem().max(64.0);
-        let (rect, response) = ui.allocate_exact_size(
-            egui::vec2(side, side),
-            egui::Sense::drag(),
-        );
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::drag());
         // 支援技術向けの名前(e2e テストもこの名前でキャンバスの位置を引く)
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "キャンバス"));
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, "キャンバス"));
 
         // M6: パン/ズーム/回転。ホイール=カーソル中心に拡大、Shift+ホイール=15°ずつ回転、
         // 中ボタン or スペース+左ドラッグ=パン。ポインタ状態はグローバル(ウィジェットの Sense に
         // 依らない)なので input から直接読む。回転は離散させたいので MouseWheel イベント(未平滑)で拾う
         // 名前入力欄などにフォーカス中はスペースを奪わない
         let typing = ui.ctx().egui_wants_keyboard_input();
-        let (scroll_y, wheel_notch, shift, ctrl, alt, space, middle_down, primary_down, ptr_delta, hover) =
-            ui.input(|i| {
-                let wheel_notch: f32 = i
-                    .events
-                    .iter()
-                    .filter_map(|e| match e {
-                        egui::Event::MouseWheel { delta, .. } => Some(delta.y),
-                        _ => None,
-                    })
-                    .sum();
-                (
-                    i.smooth_scroll_delta.y,
-                    wheel_notch,
-                    i.modifiers.shift,
-                    i.modifiers.ctrl,
-                    i.modifiers.alt,
-                    i.key_down(egui::Key::Space),
-                    i.pointer.middle_down(),
-                    i.pointer.primary_down(),
-                    i.pointer.delta(),
-                    i.pointer.hover_pos(),
-                )
-            });
+        let (
+            scroll_y,
+            wheel_notch,
+            shift,
+            ctrl,
+            alt,
+            space,
+            middle_down,
+            primary_down,
+            ptr_delta,
+            hover,
+        ) = ui.input(|i| {
+            let wheel_notch: f32 = i
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::MouseWheel { delta, .. } => Some(delta.y),
+                    _ => None,
+                })
+                .sum();
+            (
+                i.smooth_scroll_delta.y,
+                wheel_notch,
+                i.modifiers.shift,
+                i.modifiers.ctrl,
+                i.modifiers.alt,
+                i.key_down(egui::Key::Space),
+                i.pointer.middle_down(),
+                i.pointer.primary_down(),
+                i.pointer.delta(),
+                i.pointer.hover_pos(),
+            )
+        });
         let over_canvas = hover.is_some_and(|p| rect.contains(p));
         if over_canvas && shift && wheel_notch != 0.0 {
             // Shift+ホイール: 1ノッチ 15°(上=反時計回り / 下=時計回り)
@@ -165,7 +173,11 @@ impl PaintApp {
 
         // H6: 一時停止中は 0 ステップ(1ステップボタンが押されていれば 1)
         let sim_steps = if self.paused {
-            if std::mem::take(&mut self.step_once) { 1 } else { 0 }
+            if std::mem::take(&mut self.step_once) {
+                1
+            } else {
+                0
+            }
         } else {
             ticks * self.steps_per_tick
         };
@@ -194,9 +206,7 @@ impl PaintApp {
         // 乾燥レイヤー(描画不可)では出さない
         let show_cursor = over_canvas
             && (resizing || (!panning && !self.palette_ui.eyedropper && !self.drawing_locked()));
-        if show_cursor
-            && let Some(pos) = hover
-        {
+        if show_cursor && let Some(pos) = hover {
             let base = self.active_base_radius();
             let scale = rect.width() / self.canvas_size as f32 * self.view_zoom;
             let r = (base * scale).max(1.5);
@@ -212,7 +222,13 @@ impl PaintApp {
                     (egui::vec2(1.0, 1.0), egui::Color32::from_black_alpha(180)),
                     (egui::Vec2::ZERO, egui::Color32::WHITE),
                 ] {
-                    painter.text(anchor + off, egui::Align2::LEFT_CENTER, &text, font.clone(), col);
+                    painter.text(
+                        anchor + off,
+                        egui::Align2::LEFT_CENTER,
+                        &text,
+                        font.clone(),
+                        col,
+                    );
                 }
             }
         }
@@ -245,14 +261,18 @@ impl PaintApp {
                     egui::Color32::from_rgb(255, 140, 140),
                     "WGSL コンパイルエラー(直前の正常なシェーダーで継続中。保存し直すと再試行):",
                 );
-                egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(error).monospace().color(egui::Color32::WHITE),
-                        )
-                        .wrap(),
-                    );
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(error)
+                                    .monospace()
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .wrap(),
+                        );
+                    });
             });
     }
 }

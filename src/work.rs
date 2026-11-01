@@ -13,8 +13,8 @@
 
 use crate::gpu::{BASE_SLICES, MAX_LAYERS, WorkTextures};
 use paint_core::sim::CANVAS_SIZES;
-use pigment::Palette;
 use paint_core::sim::SimParams;
+use pigment::Palette;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -180,7 +180,11 @@ fn decode(bytes: &[u8]) -> Result<WorkFile, String> {
             bad.slot, meta.layer_count
         ));
     }
-    if let Some(bad) = meta.layers.iter().find(|l| !(l.density.is_finite() && l.density >= 0.0)) {
+    if let Some(bad) = meta
+        .layers
+        .iter()
+        .find(|l| !(l.density.is_finite() && l.density >= 0.0))
+    {
         return Err(format!("レイヤーの濃度倍率が不正です({})", bad.density));
     }
     // M5h: 記録時パレットは層数と 1:1(GpuCanvas::layer_palettes の不変条件の入口検査)
@@ -283,7 +287,11 @@ mod tests {
                 (0..n).map(|i| base + i as f32 * 1e-4).collect()
             };
             let textures = WorkTextures {
-                wet: [ramp(1.0, texels * 4), ramp(2.0, texels * 4), ramp(3.0, texels * 4)],
+                wet: [
+                    ramp(1.0, texels * 4),
+                    ramp(2.0, texels * 4),
+                    ramp(3.0, texels * 4),
+                ],
                 dried: vec![ramp(4.0, texels * 4), ramp(5.0, texels * 4)],
                 lines: [ramp(6.0, texels), ramp(7.0, texels), ramp(8.0, texels)],
                 latents: ramp(9.0, crate::gpu::LATENT_TOTAL * 4),
@@ -300,8 +308,16 @@ mod tests {
                 },
                 palette: Palette::default_palette(),
                 layers: vec![
-                    StoredLayer { slot: 0, visible: true, density: 1.0 },
-                    StoredLayer { slot: 1, visible: false, density: 0.4 },
+                    StoredLayer {
+                        slot: 0,
+                        visible: true,
+                        density: 1.0,
+                    },
+                    StoredLayer {
+                        slot: 1,
+                        visible: false,
+                        density: 0.4,
+                    },
                 ],
                 layer_palettes: vec![recorded, Palette::default_palette()],
                 textures: textures.clone(),
@@ -329,8 +345,16 @@ mod tests {
             params: SimParams::default(),
             palette: Palette::default_palette(),
             layers: vec![
-                StoredLayer { slot: 0, visible: true, density: 1.0 },
-                StoredLayer { slot: 1, visible: true, density: 1.0 },
+                StoredLayer {
+                    slot: 0,
+                    visible: true,
+                    density: 1.0,
+                },
+                StoredLayer {
+                    slot: 1,
+                    visible: true,
+                    density: 1.0,
+                },
             ],
             layer_palettes: vec![Palette::default_palette()], // 2層なのに1個
             has_base: false,
@@ -341,7 +365,10 @@ mod tests {
         bytes.extend_from_slice(&(meta.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&meta);
         match decode(&bytes) {
-            Err(e) => assert!(e.contains("パレットの個数"), "個数検査で拒否されるはず: {e}"),
+            Err(e) => assert!(
+                e.contains("パレットの個数"),
+                "個数検査で拒否されるはず: {e}"
+            ),
             Ok(_) => panic!("個数不一致が受理されました"),
         }
     }
@@ -358,7 +385,10 @@ mod tests {
 
     fn expect_err(bytes: &[u8], needle: &str) {
         match decode(bytes) {
-            Err(e) => assert!(e.contains(needle), "「{needle}」の検査で拒否されるはず: {e}"),
+            Err(e) => assert!(
+                e.contains(needle),
+                "「{needle}」の検査で拒否されるはず: {e}"
+            ),
             Ok(_) => panic!("「{needle}」の不正が受理されました"),
         }
     }
@@ -373,7 +403,11 @@ mod tests {
             palette: Palette::default_palette(),
             layers: slots
                 .iter()
-                .map(|&slot| StoredLayer { slot, visible: true, density: 1.0 })
+                .map(|&slot| StoredLayer {
+                    slot,
+                    visible: true,
+                    density: 1.0,
+                })
                 .collect(),
             layer_palettes: vec![Palette::default_palette(); layer_count as usize],
             has_base: false,
@@ -398,7 +432,11 @@ mod tests {
             layers: Vec::new(),
             layer_palettes: Vec::new(),
             textures: WorkTextures {
-                wet: [vec![0.0; texels * 4], vec![0.0; texels * 4], vec![0.0; texels * 4]],
+                wet: [
+                    vec![0.0; texels * 4],
+                    vec![0.0; texels * 4],
+                    vec![0.0; texels * 4],
+                ],
                 dried: Vec::new(),
                 lines: [vec![0.0; texels], vec![0.0; texels], vec![0.0; texels]],
                 latents: vec![0.0; crate::gpu::LATENT_TOTAL * 4],
@@ -408,7 +446,10 @@ mod tests {
         let bytes = encode(&work).unwrap();
         let meta_len = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
         let mut meta: serde_json::Value = serde_json::from_slice(&bytes[8..8 + meta_len]).unwrap();
-        meta.as_object_mut().unwrap().remove("has_base").expect("has_base 欄がある");
+        meta.as_object_mut()
+            .unwrap()
+            .remove("has_base")
+            .expect("has_base 欄がある");
         let meta = serde_json::to_vec(&meta).unwrap();
         let mut old = Vec::new();
         old.extend_from_slice(MAGIC);
@@ -430,7 +471,11 @@ mod tests {
             layers: Vec::new(),
             layer_palettes: Vec::new(),
             textures: WorkTextures {
-                wet: [vec![0.0; texels * 4], vec![0.0; texels * 4], vec![0.0; texels * 4]],
+                wet: [
+                    vec![0.0; texels * 4],
+                    vec![0.0; texels * 4],
+                    vec![0.0; texels * 4],
+                ],
                 dried: Vec::new(),
                 lines: [vec![0.0; texels], vec![0.0; texels], vec![0.0; texels]],
                 latents: vec![0.0; crate::gpu::LATENT_TOTAL * 4],
@@ -465,7 +510,10 @@ mod tests {
         bytes.extend_from_slice(&meta);
         // WorkFile は巨大バッファ持ちで Debug 未実装のため unwrap_err でなく match で検査
         match decode(&bytes) {
-            Err(e) => assert!(e.contains("キャンバスサイズ"), "サイズ検査で拒否されるはず: {e}"),
+            Err(e) => assert!(
+                e.contains("キャンバスサイズ"),
+                "サイズ検査で拒否されるはず: {e}"
+            ),
             Ok(_) => panic!("未対応サイズが受理されました"),
         }
     }

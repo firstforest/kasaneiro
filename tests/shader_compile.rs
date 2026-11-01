@@ -22,21 +22,26 @@ fn all_shaders_compile() {
         .filter_map(|e| {
             let path = e.ok()?.path();
             let name = path.file_name()?.to_str()?.to_owned();
-            (path.extension().is_some_and(|x| x == "wgsl") && name != "common.wgsl")
-                .then_some(name)
+            (path.extension().is_some_and(|x| x == "wgsl") && name != "common.wgsl").then_some(name)
         })
         .collect();
     names.sort();
-    assert!(names.iter().any(|n| n == "display.wgsl"), "シェーダーが見つかりません");
+    assert!(
+        names.iter().any(|n| n == "display.wgsl"),
+        "シェーダーが見つかりません"
+    );
 
     for size in CANVAS_SIZES {
         let common = format!("{}{common_src}", prelude::shader_prelude(size));
         for name in &names {
-            let src = std::fs::read_to_string(dir.join(name))
-                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let src =
+                std::fs::read_to_string(dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
             let full = format!("{common}\n{src}");
             let module = naga::front::wgsl::parse_str(&full).unwrap_or_else(|e| {
-                panic!("{name}(size={size}): パースエラー:\n{}", e.emit_to_string(&full))
+                panic!(
+                    "{name}(size={size}): パースエラー:\n{}",
+                    e.emit_to_string(&full)
+                )
             });
             naga::valid::Validator::new(
                 naga::valid::ValidationFlags::all(),

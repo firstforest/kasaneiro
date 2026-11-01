@@ -119,7 +119,10 @@ mod tests {
             }
             let (r0, t0) = rt_from_ks(0.0, s, 1.0);
             let (r1, t1) = rt_from_ks(1e-4, s, 1.0);
-            assert!((r1 - r0).abs() < 1e-3 && (t1 - t0).abs() < 1e-3, "K→0 で不連続 (S={s})");
+            assert!(
+                (r1 - r0).abs() < 1e-3 && (t1 - t0).abs() < 1e-3,
+                "K→0 で不連続 (S={s})"
+            );
         }
     }
 

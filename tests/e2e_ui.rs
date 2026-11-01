@@ -159,11 +159,24 @@ fn brush_load_controls_density() {
     frames(&mut harness, 2);
     mouse_drag(&mut harness, 0.2, 0.8, 0.8);
     frames(&mut harness, 60);
-    let colors = canvas_color(&mut harness, "density", &[(0.5, 0.2), (0.5, 0.5), (0.5, 0.8)]);
+    let colors = canvas_color(
+        &mut harness,
+        "density",
+        &[(0.5, 0.2), (0.5, 0.5), (0.5, 0.8)],
+    );
     let ink = |c: [f32; 3]| 1.0 - lightness(c);
-    let ctx = format!("濃 {:?} / 薄 {:?} / 水 {:?}", colors[0], colors[1], colors[2]);
-    assert!(ink(colors[0]) > ink(colors[1]) + 0.03, "水で薄まっていない: {ctx}");
-    assert!(ink(colors[1]) > ink(colors[2]) + 0.03, "薄めた線が水の線と変わらない: {ctx}");
+    let ctx = format!(
+        "濃 {:?} / 薄 {:?} / 水 {:?}",
+        colors[0], colors[1], colors[2]
+    );
+    assert!(
+        ink(colors[0]) > ink(colors[1]) + 0.03,
+        "水で薄まっていない: {ctx}"
+    );
+    assert!(
+        ink(colors[1]) > ink(colors[2]) + 0.03,
+        "薄めた線が水の線と変わらない: {ctx}"
+    );
     assert!(hsv(colors[2]).1 < 0.1, "洗った筆で色が乗った: {ctx}");
 }
 

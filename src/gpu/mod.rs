@@ -44,9 +44,9 @@ pub use prelude::{LATENT_TOTAL, MAX_LAYERS};
 pub const BASE_SLICES: usize = 2;
 use prelude::{LIVE_PALETTE, PALETTE_SLOTS, TILE_SIZE, shader_prelude};
 
+use eframe::egui_wgpu::wgpu;
 use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
 use shader_error::remap_shader_error_lines;
-use eframe::egui_wgpu::wgpu;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -68,7 +68,6 @@ const MAX_RELAX_ITERS: u32 = 64;
 
 /// 顔料拡散の反復回数の上限(スライダー範囲より広めの安全弁)
 const MAX_DIFFUSE_ITERS: u32 = 32;
-
 
 /// compute シェーダーのバインドグループレイアウト種別。
 /// ほとんどは共通レイアウト、bake だけ専用(乾燥レイヤースライス binding 9)。
@@ -139,9 +138,9 @@ impl Pipelines {
     /// WGSL ファイル名で compute パイプラインを引く。ビルド成功時は COMPUTE_SHADERS が
     /// 全て揃っているので、未登録名(タイプミス)は開発時に落として気付けるよう panic する
     fn compute(&self, name: &str) -> &wgpu::ComputePipeline {
-        self.compute
-            .get(name)
-            .unwrap_or_else(|| panic!("compute パイプライン {name} が未登録です(COMPUTE_SHADERS を確認)"))
+        self.compute.get(name).unwrap_or_else(|| {
+            panic!("compute パイプライン {name} が未登録です(COMPUTE_SHADERS を確認)")
+        })
     }
 }
 
@@ -351,7 +350,12 @@ impl GpuCanvas {
     /// 2D テクスチャ(1 スライス・1 mip)群をゼロにする。`CLEAR_TEXTURE` が使えるデバイス
     /// (main.rs がアダプタ対応時に要求する)では GPU 上の clear_texture、使えなければ
     /// ゼロ埋めのバイト列を write_texture する(sim は rgba32float=16B、線画は r32float=4B)
-    fn zero_textures(&self, device: &wgpu::Device, queue: &wgpu::Queue, textures: &[&wgpu::Texture]) {
+    fn zero_textures(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        textures: &[&wgpu::Texture],
+    ) {
         if self.clear_texture {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("clear_textures"),
@@ -429,9 +433,8 @@ impl GpuCanvas {
                 aspect: wgpu::TextureAspect::All,
             }
         }
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some(label),
-        });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
         for kind in 0..TEX_KINDS {
             let live = &self.textures[kind][self.current];
             let saved = &self.wet_backup[kind];
@@ -563,7 +566,11 @@ impl GpuCanvas {
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.base_texture,
                     mip_level: 0,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: slice },
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: slice,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::Extent3d {
@@ -610,7 +617,11 @@ impl GpuCanvas {
         let at = |z: usize| wgpu::TexelCopyTextureInfo {
             texture: &self.dried_texture,
             mip_level: 0,
-            origin: wgpu::Origin3d { x: 0, y: 0, z: z as u32 },
+            origin: wgpu::Origin3d {
+                x: 0,
+                y: 0,
+                z: z as u32,
+            },
             aspect: wgpu::TextureAspect::All,
         };
         encoder.copy_texture_to_texture(
@@ -771,9 +782,8 @@ impl GpuCanvas {
         pick: impl Fn(&Pipelines) -> &wgpu::ComputePipeline,
     ) -> Result<(), String> {
         let pipelines = self.pipelines.as_ref().ok_or("シェーダーが未ビルドです")?;
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some(label),
-        });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some(label),
@@ -818,7 +828,8 @@ impl GpuCanvas {
         // 連結プレフィックスの分、コンパイルエラーの行番号がずれる。
         // 補正のため連結プレフィックス(プレリュード + common + "\n")の行数を数えておく
         let prefix_lines = common.matches('\n').count() + 1;
-        let load = |name: &str| -> Result<String, String> { Ok(format!("{common}\n{}", read(name)?)) };
+        let load =
+            |name: &str| -> Result<String, String> { Ok(format!("{common}\n{}", read(name)?)) };
         // 読込失敗で早期 return してもエラースコープを pop し損ねないよう、
         // スコープを push する前に全シェーダーを読み切る
         let mut compute_sources = Vec::with_capacity(COMPUTE_SHADERS.len());
@@ -955,7 +966,13 @@ mod tests {
     /// 手順どおりに写すと、どの並びでも層 j がスロット j に来る
     #[test]
     fn compaction_moves_place_each_layer() {
-        let cases: [&[usize]; 5] = [&[3, 4, 5], &[1, 0], &[7, 2, 0, 5], &[0, 1, 2], &[2, 0, 1, 6, 5, 4, 3]];
+        let cases: [&[usize]; 5] = [
+            &[3, 4, 5],
+            &[1, 0],
+            &[7, 2, 0, 5],
+            &[0, 1, 2],
+            &[2, 0, 1, 6, 5, 4, 3],
+        ];
         for slots in cases {
             // 中身 = 層番号(None = 空き)
             let mut tex: [Option<usize>; MAX_LAYERS] = [None; MAX_LAYERS];

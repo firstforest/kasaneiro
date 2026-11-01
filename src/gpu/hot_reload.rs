@@ -35,7 +35,10 @@ impl ScreenshotWatcher {
     pub fn new(dir: &Path) -> Self {
         // 監視対象ディレクトリが無いと watch が失敗するので先に作る
         if let Err(e) = std::fs::create_dir_all(dir) {
-            log::warn!("スクショ監視ディレクトリを作れません({}): {e}", dir.display());
+            log::warn!(
+                "スクショ監視ディレクトリを作れません({}): {e}",
+                dir.display()
+            );
         }
         let (tx, rx) = channel();
         let watcher = notify::recommended_watcher(tx).and_then(|mut w| {

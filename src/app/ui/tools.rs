@@ -6,25 +6,23 @@
 
 use crate::app::{ActiveLayer, PaintApp};
 use crate::gpu::{DriedLayer, GpuCanvas};
+use eframe::egui;
 use paint_core::load::{self, BrushLoad};
 use paint_core::tool::{RasterTool, Tool, ToolInfo, WetTool};
-use eframe::egui;
 
 impl PaintApp {
     /// 選択中レイヤーのツールパネル(左パネル先頭)。右のレイヤーパネルの選択で出し分ける。
     /// F12: 「今のツール」のブロックを Frame::group で囲み、下の設定セクションと視覚的に分離する
     pub(in crate::app) fn active_tools_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            match self.active_layer {
-                ActiveLayer::Wet => {
-                    self.brush_panel(ui);
-                    self.palette_panel(ui);
-                }
-                ActiveLayer::Pencil => self.pencil_panel(ui),
-                ActiveLayer::Pen => self.pen_panel(ui),
-                ActiveLayer::Highlight => self.highlight_panel(ui),
-                ActiveLayer::Dried(index) => self.dried_info_panel(ui, index),
+        egui::Frame::group(ui.style()).show(ui, |ui| match self.active_layer {
+            ActiveLayer::Wet => {
+                self.brush_panel(ui);
+                self.palette_panel(ui);
             }
+            ActiveLayer::Pencil => self.pencil_panel(ui),
+            ActiveLayer::Pen => self.pen_panel(ui),
+            ActiveLayer::Highlight => self.highlight_panel(ui),
+            ActiveLayer::Dried(index) => self.dried_info_panel(ui, index),
         });
     }
 
@@ -296,21 +294,28 @@ impl PaintApp {
                      中身の水が尽きる(なぞり直さなくても水を伝って広がっていく)。\
                      広がる距離は「水量」と含みの長さで決まる。0=置いた瞬間だけ",
                 );
-                ui.add(egui::Slider::new(&mut self.params.paint_pickup, 0.0..=1.0).text("下の色を溶かす"))
-                    .on_hover_text(
-                        "筆が触れた沈着顔料を浮かせて筆の色と混ぜる割合。\
+                ui.add(
+                    egui::Slider::new(&mut self.params.paint_pickup, 0.0..=1.0)
+                        .text("下の色を溶かす"),
+                )
+                .on_hover_text(
+                    "筆が触れた沈着顔料を浮かせて筆の色と混ぜる割合。\
                          染みつき(ω)が強い色は剥がれず残る",
-                    );
+                );
             }
             Some(WetTool::Lift) => {
-                ui.add(egui::Slider::new(&mut self.params.lift_strength, 0.0..=1.0).text("削りの強さ"));
+                ui.add(
+                    egui::Slider::new(&mut self.params.lift_strength, 0.0..=1.0).text("削りの強さ"),
+                );
             }
             Some(WetTool::WaterBrush) => {
-                ui.add(egui::Slider::new(&mut self.params.water_lift, 0.0..=1.0).text("ぼかしの強さ"))
-                    .on_hover_text(
-                        "筆が触れた沈着顔料を溶かして浮かせる割合。浮いた色は水の量に応じて\
+                ui.add(
+                    egui::Slider::new(&mut self.params.water_lift, 0.0..=1.0).text("ぼかしの強さ"),
+                )
+                .on_hover_text(
+                    "筆が触れた沈着顔料を溶かして浮かせる割合。浮いた色は水の量に応じて\
                          ひとりでに混ざって馴染む。染みつき(ω)が強い色は剥がれず残る",
-                    );
+                );
             }
             Some(WetTool::Absorb) => {
                 ui.add(
@@ -395,9 +400,11 @@ impl PaintApp {
     /// 線画レイヤー共通のフッタ: 筆圧の注記 + 線画履歴の本数(M4.5d)
     fn raster_tool_footer(&mut self, ui: &mut egui::Ui) {
         ui.label(
-            egui::RichText::new("※ペンの筆圧で濃さ・太さが変わります(効き具合は開発モードの「筆圧」で調整)")
-                .weak()
-                .small(),
+            egui::RichText::new(
+                "※ペンの筆圧で濃さ・太さが変わります(効き具合は開発モードの「筆圧」で調整)",
+            )
+            .weak()
+            .small(),
         );
         self.line_history_status(ui);
     }
@@ -414,8 +421,7 @@ impl PaintApp {
             let slot = canvas
                 .and_then(|c| c.layers.get(index))
                 .map(|l| l.slot as usize);
-            let recorded =
-                canvas.and_then(|c| slot.and_then(|s| c.layer_palette(s).cloned()));
+            let recorded = canvas.and_then(|c| slot.and_then(|s| c.layer_palette(s).cloned()));
             (slot, recorded)
         };
         match slot {
@@ -581,7 +587,9 @@ impl PaintApp {
                 (1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
                 egui::StrokeKind::Inside,
             );
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "筆の中身"));
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "筆の中身")
+            });
             ui.vertical(|ui| {
                 ui.label(format!("筆: {colors}"));
                 ui.label(

@@ -11,7 +11,13 @@
 /// プレフィックス内(LINE ≤ prefix_lines = common.wgsl 側)のエラーはそのままにする。
 /// 想定フォーマットに合わない行は変更しない(フォーマット変更に対する fail-safe)。
 pub(super) fn remap_shader_error_lines(msg: &str, prefix_lines: usize) -> String {
-    let shift = |n: usize| if n > prefix_lines { n - prefix_lines } else { n };
+    let shift = |n: usize| {
+        if n > prefix_lines {
+            n - prefix_lines
+        } else {
+            n
+        }
+    };
     msg.lines()
         .map(|line| remap_error_line(line, &shift))
         .collect::<Vec<_>>()
@@ -25,12 +31,7 @@ fn remap_error_line(line: &str, shift: &impl Fn(usize) -> usize) -> String {
         let rest = &line[idx + "wgsl:".len()..];
         let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
         if let Ok(n) = digits.parse::<usize>() {
-            return format!(
-                "{}wgsl:{}{}",
-                &line[..idx],
-                shift(n),
-                &rest[digits.len()..]
-            );
+            return format!("{}wgsl:{}{}", &line[..idx], shift(n), &rest[digits.len()..]);
         }
     }
     // 2) 行番号ガター "␠…␠LINE␠…│…" の LINE(数字の直後に空白を挟んで │ / | が来る行だけ)
@@ -59,7 +60,10 @@ mod tests {
         let msg = "parsing error: unknown identifier\n  ┌─ wgsl:37:13\n   │\n37 │     let x = foo;\n   │             ^^^ oops";
         let out = remap_shader_error_lines(msg, prefix);
         assert!(out.contains("wgsl:7:13"), "位置指定が未補正: {out}");
-        assert!(out.contains("7 │     let x = foo;"), "ガターが未補正: {out}");
+        assert!(
+            out.contains("7 │     let x = foo;"),
+            "ガターが未補正: {out}"
+        );
         // カラム番号(13)や caret 行(^^^)は触らない
         assert!(out.contains(":13"));
         assert!(out.contains("^^^ oops"));

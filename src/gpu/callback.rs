@@ -6,8 +6,8 @@
 //! パス実行順(encode_frame 内)はシミュレーションの心臓部で、ここがその正典。
 
 use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, ViewUniform};
-use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
+use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
 use std::sync::atomic::Ordering;
 
 /// 1フレーム分の描画データ。src/app/ui/canvas.rs で組み立てて PaintCallback として渡す。
@@ -85,7 +85,11 @@ impl GpuCanvas {
         // タイルを立て続けないように)。線画ツールのフレームは流体側に splat を見せない
         let header = SplatHeader {
             count: splat_count as u32,
-            fluid_count: if frame.line_target.is_none() { splat_count as u32 } else { 0 },
+            fluid_count: if frame.line_target.is_none() {
+                splat_count as u32
+            } else {
+                0
+            },
             _pad: [0; 2],
         };
         let mut bytes = Vec::with_capacity(
@@ -97,7 +101,10 @@ impl GpuCanvas {
 
         // 乾燥レイヤーの合成キャッシュ: レイヤー側が変わったか、キャッシュに効く SimParams が
         // 変わったフレームだけ焼き直す(display はこのフレームの paint でキャッシュを読む)
-        let cache_key = (frame.params.pigment_density.to_bits(), frame.params.compose_mode);
+        let cache_key = (
+            frame.params.pigment_density.to_bits(),
+            frame.params.compose_mode,
+        );
         if let Some(pipelines) = &canvas.pipelines
             && (canvas.dried_cache_dirty.load(Ordering::Relaxed)
                 || canvas.dried_cache_key != Some(cache_key))

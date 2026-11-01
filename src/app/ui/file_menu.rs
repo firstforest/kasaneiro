@@ -154,18 +154,21 @@ impl PaintApp {
     fn work_overwrite_modal(&mut self, ctx: &egui::Context) {
         let name = self.work_ui.pending.clone().unwrap_or_default();
         let mut decided = None;
-        let response = egui::Modal::new(egui::Id::new("file_modal_work_overwrite")).show(ctx, |ui| {
-            ui.heading("上書き保存");
-            ui.label(format!("作品「{name}」は既にあります。いまのキャンバスで上書きしますか?"));
-            ui.horizontal(|ui| {
-                if ui.add(danger_button("上書きする")).clicked() {
-                    decided = Some(true);
-                }
-                if ui.button("キャンセル").clicked() {
-                    decided = Some(false);
-                }
+        let response =
+            egui::Modal::new(egui::Id::new("file_modal_work_overwrite")).show(ctx, |ui| {
+                ui.heading("上書き保存");
+                ui.label(format!(
+                    "作品「{name}」は既にあります。いまのキャンバスで上書きしますか?"
+                ));
+                ui.horizontal(|ui| {
+                    if ui.add(danger_button("上書きする")).clicked() {
+                        decided = Some(true);
+                    }
+                    if ui.button("キャンセル").clicked() {
+                        decided = Some(false);
+                    }
+                });
             });
-        });
         if response.should_close() && decided.is_none() {
             decided = Some(false);
         }
@@ -244,13 +247,15 @@ impl PaintApp {
             // 下段=読込: 一覧から[読込]。読込後はモーダルを閉じる
             ui.label("保存済みプリセット");
             let mut do_load = None;
-            egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                if self.preset_ui.store.list.is_empty() {
-                    ui.label(egui::RichText::new("保存されたプリセットはありません").weak());
-                } else {
-                    do_load = self.preset_ui.store.list_rows(ui, "読込");
-                }
-            });
+            egui::ScrollArea::vertical()
+                .max_height(240.0)
+                .show(ui, |ui| {
+                    if self.preset_ui.store.list.is_empty() {
+                        ui.label(egui::RichText::new("保存されたプリセットはありません").weak());
+                    } else {
+                        do_load = self.preset_ui.store.list_rows(ui, "読込");
+                    }
+                });
             if let Some(name) = do_load {
                 match preset::load(&name) {
                     Ok(params) => {
@@ -333,49 +338,51 @@ impl PaintApp {
             );
             ui.separator();
 
-            egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                ui.label(egui::RichText::new("混色エンジン").strong());
-                ui.label("Mixbox © Secret Weapons — CC BY-NC 4.0(非商用)ライセンスで使用");
-                ui.horizontal(|ui| {
-                    ui.hyperlink_to("Mixbox", "https://scrtwpns.com/mixbox/");
-                    ui.hyperlink_to(
-                        "CC BY-NC 4.0",
-                        "https://creativecommons.org/licenses/by-nc/4.0/",
-                    );
-                });
-                ui.label(
-                    egui::RichText::new("このため、かさねいろ自体も非商用利用に限られます")
-                        .weak()
-                        .small(),
-                );
-                ui.add_space(8.0);
-
-                ui.label(egui::RichText::new("UI フォント").strong());
-                ui.label("M PLUS 1p © The M+ FONTS Project — SIL Open Font License 1.1");
-                egui::CollapsingHeader::new("OFL 1.1 全文")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(include_str!("../../../assets/fonts/OFL.txt"))
-                                .weak()
-                                .small(),
+            egui::ScrollArea::vertical()
+                .max_height(360.0)
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("混色エンジン").strong());
+                    ui.label("Mixbox © Secret Weapons — CC BY-NC 4.0(非商用)ライセンスで使用");
+                    ui.horizontal(|ui| {
+                        ui.hyperlink_to("Mixbox", "https://scrtwpns.com/mixbox/");
+                        ui.hyperlink_to(
+                            "CC BY-NC 4.0",
+                            "https://creativecommons.org/licenses/by-nc/4.0/",
                         );
                     });
-                ui.add_space(8.0);
-
-                ui.label(egui::RichText::new("依存ライブラリ").strong());
-                egui::CollapsingHeader::new("Rust クレート一覧(名前 — ライセンス)")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(include_str!(
-                                "../../../assets/licenses/third-party.txt"
-                            ))
+                    ui.label(
+                        egui::RichText::new("このため、かさねいろ自体も非商用利用に限られます")
                             .weak()
                             .small(),
-                        );
-                    });
-            });
+                    );
+                    ui.add_space(8.0);
+
+                    ui.label(egui::RichText::new("UI フォント").strong());
+                    ui.label("M PLUS 1p © The M+ FONTS Project — SIL Open Font License 1.1");
+                    egui::CollapsingHeader::new("OFL 1.1 全文")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(include_str!("../../../assets/fonts/OFL.txt"))
+                                    .weak()
+                                    .small(),
+                            );
+                        });
+                    ui.add_space(8.0);
+
+                    ui.label(egui::RichText::new("依存ライブラリ").strong());
+                    egui::CollapsingHeader::new("Rust クレート一覧(名前 — ライセンス)")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(include_str!(
+                                    "../../../assets/licenses/third-party.txt"
+                                ))
+                                .weak()
+                                .small(),
+                            );
+                        });
+                });
 
             ui.separator();
             if ui.button("閉じる").clicked() {

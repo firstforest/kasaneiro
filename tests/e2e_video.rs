@@ -65,7 +65,10 @@ fn exports_replay_to_mp4() {
     assert!(len > 0, "{} が空", path.display());
     // 白紙のままの動画でないこと: 最後のフレームに絵が載っている
     let last = c.snapshot().unwrap().mean_rgb(200, 220, 310, 270);
-    assert!(lightness(last) < 0.9, "ストロークが描かれていない: {last:?}");
+    assert!(
+        lightness(last) < 0.9,
+        "ストロークが描かれていない: {last:?}"
+    );
 }
 
 #[test]

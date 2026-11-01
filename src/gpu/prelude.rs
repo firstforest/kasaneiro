@@ -22,8 +22,7 @@ pub const PALETTE_SLOTS: usize = MAX_LAYERS + 1;
 pub const LIVE_PALETTE: usize = MAX_LAYERS;
 
 /// latents uniform の総 vec4 数 = グローバル光学 + パレット数 × 顔料ブロック
-pub const LATENT_TOTAL: usize =
-    pigment::GLOBAL_LATENTS + PALETTE_SLOTS * pigment::PIGMENT_LATENTS;
+pub const LATENT_TOTAL: usize = pigment::GLOBAL_LATENTS + PALETTE_SLOTS * pigment::PIGMENT_LATENTS;
 
 /// アクティブタイル(M6): 1タイルの1辺テクセル数
 pub const TILE_SIZE: u32 = 16;

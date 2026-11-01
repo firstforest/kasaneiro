@@ -19,16 +19,12 @@ impl GpuCanvas {
         queue: &wgpu::Queue,
         view: &ViewUniform,
     ) -> Result<Vec<u8>, String> {
-        let pipelines = self
-            .pipelines
-            .as_ref()
-            .ok_or("シェーダーが未ビルドです")?;
+        let pipelines = self.pipelines.as_ref().ok_or("シェーダーが未ビルドです")?;
 
         queue.write_buffer(&self.view_buffer, 0, bytemuck::bytes_of(view));
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("snapshot_encoder"),
-            });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("snapshot_encoder"),
+        });
         self.encode_offscreen_display(&mut encoder, pipelines);
         encoder.copy_texture_to_buffer(
             self.snapshot_texture.as_image_copy(),
@@ -70,11 +66,12 @@ impl GpuCanvas {
 
     /// display と同じシェーダーでオフスクリーン(snapshot_texture)に1回描く。読み戻しはしない。
     /// 表示コストの計測(tests/perf_bench.rs)用で、完了は待たない
-    pub fn render_offscreen(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), String> {
-        let pipelines = self
-            .pipelines
-            .as_ref()
-            .ok_or("シェーダーが未ビルドです")?;
+    pub fn render_offscreen(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<(), String> {
+        let pipelines = self.pipelines.as_ref().ok_or("シェーダーが未ビルドです")?;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("offscreen_encoder"),
         });
@@ -86,7 +83,11 @@ impl GpuCanvas {
     /// オフスクリーン描画を積む。フレームを挟まずに呼ばれる(乾かした直後のスナップショットなど)ので、
     /// 合成キャッシュが古ければ先に焼く。dirty は下ろさず、次の encode_frame がそのフレームの
     /// SimParams で焼き直す(params_buffer は rasterize_line が別の値で上書きしていることがある)
-    fn encode_offscreen_display(&self, encoder: &mut wgpu::CommandEncoder, pipelines: &super::Pipelines) {
+    fn encode_offscreen_display(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        pipelines: &super::Pipelines,
+    ) {
         if self.dried_cache_dirty.load(Ordering::Relaxed) {
             self.encode_dried_cache(encoder, pipelines);
         }

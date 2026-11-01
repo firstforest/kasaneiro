@@ -188,7 +188,11 @@ mod tests {
     fn raster_is_not_wet() {
         assert_eq!(Tool::Wet(WetTool::Paint).wet(), Some(WetTool::Paint));
         assert_eq!(
-            Tool::Raster { kind: RasterTool::Pen, eraser: false }.wet(),
+            Tool::Raster {
+                kind: RasterTool::Pen,
+                eraser: false
+            }
+            .wet(),
             None
         );
     }

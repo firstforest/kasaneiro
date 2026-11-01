@@ -89,7 +89,10 @@ mod tests {
     fn bundled_pigments_load() {
         let _guard = DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let all = load_all();
-        assert!(!all.is_empty(), "同梱の色が1つもありません(assets/pigments/)");
+        assert!(
+            !all.is_empty(),
+            "同梱の色が1つもありません(assets/pigments/)"
+        );
         assert_eq!(all.len(), list().len(), "読めない同梱 JSON があります");
         for (name, p) in &all {
             assert_eq!(&p.name, name, "保存名と顔料名がズレています: {name}.json");

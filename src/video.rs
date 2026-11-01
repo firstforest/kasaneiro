@@ -46,7 +46,11 @@ pub fn ffmpeg_path() -> PathBuf {
     if let Some(p) = std::env::var_os(FFMPEG_ENV) {
         return PathBuf::from(p);
     }
-    let local = crate::assets::base_dir().join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+    let local = crate::assets::base_dir().join(if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    });
     if local.is_file() {
         return local;
     }
@@ -162,7 +166,11 @@ impl Ffmpeg {
                 s
             })
         });
-        Ok(Self { child, stdin, stderr })
+        Ok(Self {
+            child,
+            stdin,
+            stderr,
+        })
     }
 
     fn write_frame(&mut self, rgba: &[u8]) -> Result<(), String> {
@@ -171,18 +179,27 @@ impl Ffmpeg {
             // 書き込みの失敗は ffmpeg 側が落ちたとき。理由は stderr にある
             self.stdin = None;
             let _ = self.child.wait();
-            return Err(format!("ffmpeg への書き込みに失敗: {e}\n{}", self.take_stderr()));
+            return Err(format!(
+                "ffmpeg への書き込みに失敗: {e}\n{}",
+                self.take_stderr()
+            ));
         }
         Ok(())
     }
 
     fn finish(mut self) -> Result<(), String> {
         self.stdin = None; // EOF で ffmpeg に書き終わりを伝える
-        let status = self.child.wait().map_err(|e| format!("ffmpeg の終了待ちに失敗: {e}"))?;
+        let status = self
+            .child
+            .wait()
+            .map_err(|e| format!("ffmpeg の終了待ちに失敗: {e}"))?;
         if status.success() {
             Ok(())
         } else {
-            Err(format!("ffmpeg が失敗しました({status})\n{}", self.take_stderr()))
+            Err(format!(
+                "ffmpeg が失敗しました({status})\n{}",
+                self.take_stderr()
+            ))
         }
     }
 
