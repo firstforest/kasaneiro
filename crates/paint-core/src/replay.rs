@@ -3,13 +3,16 @@
 //! 記録するのは「生のポインタ入力」(刻み番号+テクセル座標+筆圧)であって
 //! splat 列ではない。再生時に StrokeState の補間を通し直すため、ブラシ半径などの
 //! パラメータを変えて同一ストロークを再描画できる(= A/B 比較。docs/design.md §2 の狙い)。
-//! 顔料スロットだけはストロークの意味(何色で描いたか)なのでストロークごとに記録する。
+//! 顔料スロットと筆の中身(何色をどの濃さで含んでいたか)はストロークの意味なので
+//! ストロークごとに記録する。
 //!
 //! ファイルへの保存/読込(assets/strokes/*.json)はアセットディレクトリ解決に依存するため
 //! バイナリ crate 側(src/replay.rs)に置く。ここはその永続化が使う純粋なモデルだけを持つ。
 
 use crate::brush::StrokeState;
+use crate::load::BrushLoad;
 use crate::sim::{SimParams, Splat};
+use crate::tool::WetTool;
 use serde::{Deserialize, Serialize};
 
 /// 記録開始からの刻み番号付きポインタ位置(テクセル座標)。
@@ -22,12 +25,22 @@ pub struct TimedPoint {
 }
 
 /// 1 ストローク = ドラッグ開始〜終了。channel はそのとき選ばれていた顔料スロット、
-/// tool はツール(0=描画/1=リフト/2=消去。M3)
+/// tool はツール(0=描画/1=リフト/2=消去。M3)、load は筆を下ろした時点の筆の中身。
+/// load の無い記録は channel の色を標準の1回分含んだ筆で再生する
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordedStroke {
     pub channel: u32,
     pub tool: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load: Option<BrushLoad>,
     pub points: Vec<TimedPoint>,
+}
+
+impl RecordedStroke {
+    /// 再生するときの筆の中身
+    pub fn brush_load(&self) -> BrushLoad {
+        self.load.unwrap_or_else(|| BrushLoad::standard(self.channel))
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -63,10 +76,11 @@ impl Recorder {
         self.frame += 1;
     }
 
-    pub fn begin_stroke(&mut self, channel: u32, tool: u32) {
+    pub fn begin_stroke(&mut self, channel: u32, tool: u32, load: Option<BrushLoad>) {
         self.recording.strokes.push(RecordedStroke {
             channel,
             tool,
+            load,
             points: Vec::new(),
         });
         self.in_stroke = true;
@@ -75,7 +89,7 @@ impl Recorder {
     pub fn add_point(&mut self, pos: [f32; 2], pressure: f32) {
         if !self.in_stroke {
             // ドラッグ開始イベントを取りこぼした場合の保険
-            self.begin_stroke(0, 0);
+            self.begin_stroke(0, 0, None);
         }
         if let Some(stroke) = self.recording.strokes.last_mut() {
             stroke.points.push(TimedPoint {
@@ -103,6 +117,10 @@ pub struct Player {
     point_idx: usize,
     stroke_state: StrokeState,
     in_stroke: bool,
+    /// 再生中のストロークの筆の中身(塗るストロークでなぞるほど減る)
+    load: BrushLoad,
+    /// 直前の splat 位置(筆の中身を減らす長さの計測用)
+    last_splat: Option<[f32; 2]>,
 }
 
 impl Player {
@@ -114,6 +132,8 @@ impl Player {
             point_idx: 0,
             stroke_state: StrokeState::default(),
             in_stroke: false,
+            load: BrushLoad::clean(),
+            last_splat: None,
         }
     }
 
@@ -151,11 +171,18 @@ impl Player {
                 params.brush_channel = stroke.channel;
                 // ツールも記録値で上書き(リフト/消去ストロークを正しく再現する。M3)
                 params.tool = stroke.tool;
+                self.load = stroke.brush_load();
+                self.last_splat = None;
             }
             // サンプル間隔は筆圧を反映した実効半径から(ライブ描画 src/app/mod.rs と同じ式)
             let spacing = (params.radius_at(point.pressure) * 0.25).max(1.0);
+            let start = out.len();
             self.stroke_state
                 .add_motion(point.pos, point.pressure, spacing, out);
+            if stroke.tool == WetTool::Paint.gpu_id() {
+                self.load
+                    .load_splats(&mut out[start..], &mut self.last_splat, params.brush_hold);
+            }
             self.point_idx += 1;
         }
         self.frame += 1;
@@ -171,7 +198,7 @@ mod tests {
     #[test]
     fn record_then_replay() {
         let mut recorder = Recorder::new();
-        recorder.begin_stroke(2, 1);
+        recorder.begin_stroke(2, 1, None);
         recorder.add_point([10.0, 10.0], 1.0);
         recorder.tick();
         recorder.add_point([20.0, 10.0], 1.0);
@@ -202,7 +229,7 @@ mod tests {
     #[test]
     fn replay_keeps_recorded_tool_every_frame() {
         let mut recorder = Recorder::new();
-        recorder.begin_stroke(2, 1);
+        recorder.begin_stroke(2, 1, None);
         recorder.add_point([10.0, 10.0], 1.0);
         recorder.tick();
         recorder.add_point([20.0, 10.0], 1.0);
@@ -224,5 +251,28 @@ mod tests {
             assert_eq!(params.tool, 1);
             assert_eq!(params.brush_channel, 2);
         }
+    }
+
+    /// 塗るストロークは記録した筆の中身で再生され、load の無い記録は標準の1回分になる
+    #[test]
+    fn replay_paints_with_recorded_load() {
+        let mut loaded = BrushLoad::standard(1);
+        loaded.take_pigment(3, 1.0);
+        let mut recorder = Recorder::new();
+        recorder.begin_stroke(1, 0, Some(loaded));
+        recorder.add_point([10.0, 10.0], 1.0);
+        recorder.end_stroke();
+        recorder.tick();
+        recorder.begin_stroke(2, 0, None);
+        recorder.add_point([30.0, 10.0], 1.0);
+        recorder.end_stroke();
+        let mut player = Player::new(recorder.finish());
+        let mut params = SimParams::default();
+        let mut out = Vec::new();
+        player.advance(&mut params, &mut out);
+        assert_eq!(out[0].pigment, [0.0, 1.0, 0.0, 1.0]);
+        out.clear();
+        player.advance(&mut params, &mut out);
+        assert_eq!(out[0].pigment, [0.0, 0.0, 1.0, 0.0]);
     }
 }

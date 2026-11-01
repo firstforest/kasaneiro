@@ -1,5 +1,5 @@
 // splat.wgsl — ブラシ入力の compute パス。ツール(params.tool)で3分岐する(M3):
-//   0 = 描画: 水+初速+顔料を置く(M1a/M1b)。置いた水は毛細管拡散(diffuse.wgsl、note/05)が
+//   0 = 描画: 筆の中身(splat が運ぶ水と4色の顔料)を置く(M1a/M1b)。置いた水は毛細管拡散(diffuse.wgsl、note/05)が
 //       濡れた紙を伝ってひとりでに広げ、色の溶かし戻し(paint_pickup)で下の色と馴染む
 //   1 = リフト(削り): 沈着顔料を浮遊層へ戻し、その場を濡らして流す。ステイニング顔料(ω)は
 //       残り、紙の凸部から先に剥がれる(粒状化 γ の顔料は谷に残る) — Curtis の削りレシピ
@@ -132,28 +132,26 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 susp[c] += picked;
             }
         } else {
-            // 描画(既定): 水+初速+顔料の注入。
+            // 描画(既定): 水+初速+顔料の注入。量は splat が運ぶ筆の中身(s.water / s.pigment、
+            // 単位は満タン・標準の1回分)に brush_water / brush_pigment を掛けたもの。
+            // 筆の中で混ざった色はそのまま4スロットへ同時に注ぐ。紙の上で色が分かれるのは
+            // 注入の仕事ではなく、顔料個性の差(粒の細かさ μ・密度 ρ・染みつき ω)が起こす物理。
             // s.feed > 0.5 は「筆の含み」splat(置いたまま動かない間、CPU が毎フレーム積む):
             // 一括注入(+=)を毎フレーム繰り返すと溢れるので、水は目標水位への max 補充
             // (なでても積み上がらない。ぼかし筆と同じ流儀)、顔料は CHARGE_PIGMENT ぶんだけ注ぐ。
             // 補充され続ける水を毛細管拡散(diffuse.wgsl)が外へ運ぶので、
             // 「筆に含まれた色水が置いている間ずっと流れ出て広がる」動きになる
             let feed = s.feed > 0.5;
-            // 顔料は浮遊層の選択チャンネル(brush_channel = パレットの顔料スロット)へ注入する。
-            // 分離色(brush_mix > 0): 総顔料量はそのまま、brush_channel / brush_channel2 の
-            // 2チャンネルへ比率で按分する。紙の上で2色が分かれるのは注入の仕事ではなく、
-            // 顔料個性の差(粒の細かさ μ・密度 ρ・染みつき ω)が起こす物理
+            let w_in = coverage * params.brush_water * s.water * mix(1.0, press, params.pressure_water);
             var pig = coverage * params.brush_pigment * mix(1.0, press, params.pressure_pigment);
             if (!feed) {
-                water += coverage * params.brush_water * mix(1.0, press, params.pressure_water);
+                water += w_in;
                 vel += coverage * params.brush_velocity * s.vel;
             } else {
-                water = max(water, coverage * params.brush_water * mix(1.0, press, params.pressure_water));
+                water = max(water, w_in);
                 pig *= CHARGE_PIGMENT;
             }
-            let mix2 = clamp(params.brush_mix, 0.0, 1.0);
-            susp[min(params.brush_channel, 3u)] += pig * (1.0 - mix2);
-            susp[min(params.brush_channel2, 3u)] += pig * mix2;
+            susp += pig * max(s.pigment, vec4f(0.0));
             // 筆が届いた範囲を濡らす(wet-area mask)。水が動けるのはこの領域だけ。
             // 水を置く範囲(coverage > 0)と一致させ、マスク外に水が取り残されないようにする
             if (dist < radius) {

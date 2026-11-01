@@ -75,8 +75,7 @@ struct SimParams {
     paint_pickup: f32,      // 色の溶かし戻し: 筆が触れた沈着顔料を浮遊層へ戻す割合(0=無効)
     brush_charge: f32,      // 筆の含み(秒): 置いたまま色水が流れ出続ける時間(CPU 側で消費。0=無効)
     absorb_rate: f32,       // 吸い取り(tool=4): 1 splat で自由水+浮遊顔料を取り除く割合(沈着は残る)
-    brush_channel2: u32,    // 分離色: 2色目の顔料スロット(brush_mix > 0 のとき按分注入)
-    brush_mix: f32,         // 分離色の混合比: 0=単色 / 0.5=半々 / 1=2色目のみ(総顔料量は不変)
+    brush_hold: f32,        // 含みの持ち(px): なぞると筆の中身が半分になる長さ(CPU 側で消費。0=減らない)
 };
 
 // アクティブタイル(M6): シミュレーションを「濡れているタイル+ブラシ近傍」だけに絞る土台。
@@ -105,8 +104,9 @@ struct Splat {
     vel: vec2f,      // ストローク方向の単位ベクトル(初速の向き)
     pressure: f32,   // 筆圧(マウスは 1.0)
     feed: f32,       // 筆の含み(feed)フラグ: 1 = 置いたまま毎フレーム注がれる色水(splat.wgsl 参照)
-    _pad1: f32,
-    _pad2: f32,
+    water: f32,      // 塗る筆の中身の水(1 = 満タン。× brush_water で注ぐ)
+    _pad: f32,
+    pigment: vec4f,  // 塗る筆の中身の顔料(スロットごと。1 = 標準の1回分。× brush_pigment で注ぐ)
 };
 
 struct SplatBuffer {

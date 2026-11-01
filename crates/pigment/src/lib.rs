@@ -110,6 +110,24 @@ impl Palette {
         out
     }
 
+    /// 顔料の量の比(スロットごと)で混ぜた色(筆の中身の表示用)。量が全部 0 なら None。
+    /// display.wgsl と同じく latent を量の比で線形混合して RGB へ戻す
+    pub fn mix_rgb(&self, amounts: &[f32; PIGMENT_COUNT]) -> Option<[u8; 3]> {
+        let total: f32 = amounts.iter().map(|a| a.max(0.0)).sum();
+        if total <= 0.0 {
+            return None;
+        }
+        let mut z = [0.0f32; mixbox::LATENT_SIZE];
+        for (pigment, a) in self.pigments.iter().zip(amounts) {
+            let w = a.max(0.0) / total;
+            let zi = mixbox::rgb_to_latent(&pigment.rgb);
+            for (acc, v) in z.iter_mut().zip(zi) {
+                *acc += w * v;
+            }
+        }
+        Some(mixbox::latent_to_rgb(&z))
+    }
+
     /// 顔料個性(ρ/ω/γ/μ)を compute uniform 用に固める(M3、μ は分離色で追加)。
     /// レイアウト(common.wgsl の binding 9 = `array<vec4f, 4>` と対応):
     ///   [i] = 顔料 i の (密度 ρ, ステイニング ω, 粒状感 γ, 粒の細かさ μ)
@@ -163,6 +181,19 @@ mod tests {
         let mix = mixbox::lerp(&pal.pigments[0].rgb, &pal.pigments[1].rgb, 0.5);
         let [r, g, b] = mix;
         assert!(g > r && g > b, "黄+青の混色が緑になっていません: rgb = {mix:?}");
+    }
+
+    /// 筆の中身の表示色: 単色はその色のまま、黄+青は緑
+    #[test]
+    fn mix_rgb_of_amounts() {
+        let pal = Palette::default_palette();
+        assert_eq!(pal.mix_rgb(&[0.0; 4]), None);
+        let blue = pal.mix_rgb(&[0.0, 2.0, 0.0, 0.0]).unwrap();
+        for (got, want) in blue.iter().zip(pal.pigments[1].rgb) {
+            assert!((*got as i32 - want as i32).abs() <= 1);
+        }
+        let [r, g, b] = pal.mix_rgb(&[1.0, 1.0, 0.0, 0.0]).unwrap();
+        assert!(g > r && g > b, "黄+青が緑でない: {:?}", [r, g, b]);
     }
 
     /// 顔料個性(M3)の値が妥当な範囲か。ステイニング/粒状感は [0,1]、密度・粒の細かさは正。

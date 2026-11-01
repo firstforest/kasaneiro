@@ -35,6 +35,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │     └─ src/
 │        ├─ sim.rs        SimParams(全パラメータの唯一の置き場)・Splat・CANVAS_SIZES
 │        ├─ brush.rs      ストローク → splat 列(位置補間、筆圧の線形補間)
+│        ├─ load.rs       筆の中身 BrushLoad(水と4色の顔料。取る・浸す・洗う・splat への積み込みと消費)
 │        ├─ paper.rs      紙ハイトテクスチャの CPU 生成(値ノイズ4成分)
 │        ├─ replay.rs     ストローク記録・再生モデル(Recorder / Player)
 │        └─ tool.rs       ツールの階層 enum(Tool = Wet / Raster、gpu_id、ToolInfo)
@@ -203,7 +204,7 @@ paint:
 | ファイル | 役割 |
 |---|---|
 | common.wgsl | 共通定義(SimParams / Splat 構造体、濡れ判定、バイリニア補間、`tile_index_of`)。各シェーダーの先頭に連結する(§11) |
-| splat.wgsl | ブラシ入力。tool(描画 / リフト / 消去 / ぼかし筆 / 吸い取り)で分岐。描画は分離色(brush_mix)で brush_channel / brush_channel2 の2チャンネルへ按分注入。feed splat(§9)は目標水位への補充+少量の顔料 |
+| splat.wgsl | ブラシ入力。tool(描画 / リフト / 消去 / ぼかし筆 / 吸い取り)で分岐。描画は splat が運ぶ筆の中身(`water` × brush_water、`pigment` vec4 × brush_pigment)を4スロットへ同時に注ぐ。feed splat(§9)は目標水位への補充+少量の顔料 |
 | velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率を速度場・にじみ拡張に掛ける |
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
 | flowout.wgsl | FlowOutward(縁の水を抜く)。既定オフ(edge_eta 0 で dispatch ごと省略) |
@@ -263,13 +264,15 @@ paint:
 ペン → Windows Ink(WM_POINTER)→ winit(GetPointerPenInfo で筆圧)→ egui::Event::Touch{force}
   → input.rs PenSource → PointerEvent(論理ピクセル+筆圧 0..1)
   → paint_core::brush(ストローク補間。サンプル間隔は筆圧反映後の実効半径 SimParams::radius_at)
+  → 塗る筆なら paint_core::load::BrushLoad::load_splats(各 splat に筆の中身を載せ、なぞった長さで減らす)
   → Splat 列 → splat storage buffer → splat.wgsl
 ```
 
 - `PointerSource` trait で Mouse / Pen を抽象化する。ペン接地中はマウス入力を無視する(egui-winit が Touch からポインタをエミュレートするため二重ストロークになる)
 - 筆圧マッピングは `実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に適用(splat.wgsl と CPU 側で同式)
-- **筆の含み**: 塗る筆を置いたまま動かないフレームは、含み(`brush_charge` 秒。筆を下ろすたび満たす)が残る間、`PaintApp::feed_charge` が毎フレーム feed splat(`Splat.feed=1`)を1つ積む。その水を毛細管拡散が外へ運ぶので、置くだけで色水が広がる。ストローク記録は生ポインタ点のみなので feed は再生で再現されない
-- ストローク記録は補間前の生ポインタ入力を保存する。時刻は 1/60 秒の刻み番号(JSON のキー名は `frame`)
+- **筆の中身**: `PaintApp` が `brush_load`(いまの中身)と `brush_refill`(自動補充の戻り先 = 最後に色・水・洗うで作った中身)を持つ。ツールバーの色・水スウォッチは押した瞬間と押し続けている間の2段で中身を変える。自動補充 on なら筆を下ろすたびに `brush_refill` へ戻す。`brush_refill` と自動補充の on/off は eframe storage に保存する
+- **筆の含み**: 塗る筆を置いたまま動かないフレームは、筆の中身の水が残る間、`PaintApp::feed_charge` が `BrushLoad::feed` で毎フレーム feed splat(`Splat.feed=1`)を1つ積み、満タンの筆が `brush_charge` 秒で尽きる速さで水を使う。その水を毛細管拡散が外へ運ぶので、置くだけで色水が広がる。ストローク記録は生ポインタ点のみなので feed は再生で再現されない
+- ストローク記録は補間前の生ポインタ入力と、ストロークごとに筆を下ろした時点の筆の中身(`RecordedStroke.load`)を保存する。`load` の無い記録はそのストロークの顔料スロットを標準の1回分含んだ筆で再生する。時刻は 1/60 秒の刻み番号(JSON のキー名は `frame`)
 
 ## 10. 保存
 

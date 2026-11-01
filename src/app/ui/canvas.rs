@@ -223,7 +223,7 @@ impl PaintApp {
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "左で色を選び、ここにドラッグして描いてみましょう",
+                "色を押して筆に取り、ドラッグで描いてみましょう",
                 egui::FontId::proportional(20.0),
                 egui::Color32::from_rgba_unmultiplied(90, 90, 90, 150),
             );

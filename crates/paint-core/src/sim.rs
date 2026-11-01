@@ -69,7 +69,7 @@ pub struct SimParams {
     pub display_gain: f32,
     /// にじみ拡張率: 濡れた隣の水量に比例して乾いたセルのマスクが育つ速さ(0=固定マスク)
     pub wet_expand: f32,
-    /// 1 splat あたりに置く顔料量(0 = 水だけのブラシ)
+    /// 1 splat あたりに置く顔料量(標準の1回分を含んだ満タンの筆のとき。0 = 水だけのブラシ)
     pub brush_pigment: f32,
     /// 吸着率: 浮遊顔料が紙へ沈着する速さ(水が少ないほど強く効く)
     pub deposit_rate: f32,
@@ -82,7 +82,8 @@ pub struct SimParams {
     /// 顔料拡散の反復回数(1ステップあたり)。実効的なにじみ速度 = 拡散率 × 反復回数。
     /// ぼかし筆で描いた水路に顔料溜まりを接続したとき、色が水路へ広がる速さはここで稼ぐ
     pub diffuse_iters: u32,
-    /// ブラシで注入する顔料スロット(0..3 = パレットの4スロット)
+    /// 選択中の顔料スロット(0..3 = パレットの4スロット)。スポイト・色をつくるの対象。
+    /// 塗る筆が注ぐ色は筆の中身(load.rs の BrushLoad)が決める
     pub brush_channel: u32,
     /// 発色の濃さ: 顔料濃度 → 被覆率(1-exp(-density·濃度))の係数(display.wgsl)
     pub pigment_density: f32,
@@ -182,23 +183,20 @@ pub struct SimParams {
     /// (diffuse.wgsl の WATER_DIFFUSE / WATER_GAMMA 定数、note/05)が担う:
     /// 広がる距離は置く水の量(brush_water)と含み(brush_charge)で決まる
     pub paint_pickup: f32,
-    /// 筆の含み(秒): 塗るブラシを置いたまま動かさなくても、この秒数だけ色水が
+    /// 筆の含み(秒): 塗るブラシを置いたまま動かさなくても、満タンの筆ならこの秒数だけ色水が
     /// 流れ出続ける(毎フレーム feed splat = 目標水位への水補充(max)+少量の顔料
     /// (brush_pigment×CHARGE_PIGMENT、splat.wgsl の定数)。広げるのは毛細管拡散)。
-    /// 筆を下ろすたびに満たされ、置いている時間で減る。0=無効
+    /// 流れ出るぶん筆の中身の水を使う(load.rs の feed)。0=無効
     pub brush_charge: f32,
     /// 吸い取り(tool=4)の強さ: 1 splat で表面の自由水と浮遊顔料を取り除く割合
     /// (coverage×筆圧で変調)。浮遊顔料は水に乗っているだけなので水と同率で取れ、
     /// ω(染みつき)は関与しない。沈着顔料は紙に付いているので残る(剥がすのはリフト)
     pub absorb_rate: f32,
-    /// 分離色: 2色目の顔料スロット(0..3)。brush_mix > 0 のとき、塗る筆が brush_channel と
-    /// この2チャンネルへ顔料を按分して同時に注ぐ(splat.wgsl の描画・feed 両ブランチ)。
-    /// 紙の上で2色が分かれるのはブラシの仕事ではなく顔料個性の差
-    /// (粒の細かさ μ・密度 ρ・染みつき ω)が起こす物理
-    pub brush_channel2: u32,
-    /// 分離色の混合比: 0=単色(brush_channel のみ)/ 0.5=半々 / 1=2色目のみ。
-    /// 総顔料量(brush_pigment)は変えず比率で按分する
-    pub brush_mix: f32,
+    /// 含みの持ち(px): 塗る筆でこの長さをなぞると筆の中身(水と顔料)が半分になる。
+    /// 水と顔料は同じ割合で減るので濃さは変わらない(load.rs)。0=減らない
+    pub brush_hold: f32,
+    #[serde(skip)]
+    pub _pad_brush: f32,
 }
 
 impl SimParams {
@@ -284,13 +282,13 @@ impl Default for SimParams {
             paint_pickup: 0.2, // 筆が下の色を軽く溶かして混ぜる(ω が高い顔料は残る)
             brush_charge: 2.0, // 筆の含み: 置いたまま2秒は色水が流れ出続ける
             absorb_rate: 0.5,  // 吸い取り: ひとなでで水たまりの大半を回収できる強さ
-            brush_channel2: 3, // 分離色の2色目: 既定はバーントシェンナ(フタロと混ぜると分かれる対比)
-            brush_mix: 0.0,    // 既定は単色(分離色はスライダーで混合比を上げて使う)
+            brush_hold: 2000.0, // 長いストロークの終わりがやや淡くなる程度
+            _pad_brush: 0.0,
         }
     }
 }
 
-/// ストローク上の1点。WGSL 側の Splat と同レイアウト(32 バイト)。
+/// ストローク上の1点。WGSL 側の Splat と同レイアウト(48 バイト)。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Splat {
@@ -304,7 +302,11 @@ pub struct Splat {
     /// 水・初速・顔料の一括注入(+=)はせず、目標水位への水補充(max)+
     /// 少量の顔料(CHARGE_PIGMENT 比)だけを注ぐ(splat.wgsl の描画ブランチが分岐)
     pub feed: f32,
-    pub _pad: [f32; 2],
+    /// 塗る筆の中身の水(1 = 満タン。splat.wgsl が brush_water を掛ける)。塗る筆以外は使わない
+    pub water: f32,
+    pub _pad: f32,
+    /// 塗る筆の中身の顔料(スロットごと。1 = 標準の1回分。splat.wgsl が brush_pigment を掛ける)
+    pub pigment: [f32; 4],
 }
 
 impl Splat {
@@ -314,7 +316,9 @@ impl Splat {
             vel,
             pressure,
             feed: 0.0,
-            _pad: [0.0; 2],
+            water: 1.0,
+            _pad: 0.0,
+            pigment: [0.0; 4],
         }
     }
 
@@ -363,5 +367,12 @@ mod tests {
     #[test]
     fn params_size_aligned() {
         assert_eq!(std::mem::size_of::<SimParams>() % 16, 0);
+    }
+
+    /// Splat は WGSL の storage 配列要素(vec4 を含むので 16 バイト整列)と同じ 48 バイト
+    #[test]
+    fn splat_layout() {
+        assert_eq!(std::mem::size_of::<Splat>(), 48);
+        assert_eq!(std::mem::offset_of!(Splat, pigment), 32);
     }
 }

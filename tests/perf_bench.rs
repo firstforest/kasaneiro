@@ -44,6 +44,7 @@ fn fill_rect(x0: f32, x1: f32, y0: f32, y1: f32, r: f32, channel: u32) -> Record
         strokes.push(RecordedStroke {
             channel,
             tool: WetTool::Paint.gpu_id(),
+            load: None,
             points,
         });
         frame += 2;

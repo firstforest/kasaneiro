@@ -144,6 +144,29 @@ fn mouse_drag_paints_on_canvas() {
     );
 }
 
+/// 筆の中身で濃さを描き分けられる: 青を取った線 > 水に浸して薄めた線 > 洗った筆の線(ほぼ紙の白)。
+/// 自動補充(既定 on)は最後に作った中身へ戻すので、取り直した直後の線はその濃さで引ける
+#[test]
+fn brush_load_controls_density() {
+    let mut harness = app();
+    harness.get_by_label_contains("塗る色 2:").click();
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.2, 0.8, 0.2);
+    harness.get_by_label("水").click();
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.2, 0.8, 0.5);
+    harness.get_by_label("洗う").click();
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.2, 0.8, 0.8);
+    frames(&mut harness, 60);
+    let colors = canvas_color(&mut harness, "density", &[(0.5, 0.2), (0.5, 0.5), (0.5, 0.8)]);
+    let ink = |c: [f32; 3]| 1.0 - lightness(c);
+    let ctx = format!("濃 {:?} / 薄 {:?} / 水 {:?}", colors[0], colors[1], colors[2]);
+    assert!(ink(colors[0]) > ink(colors[1]) + 0.03, "水で薄まっていない: {ctx}");
+    assert!(ink(colors[1]) > ink(colors[2]) + 0.03, "薄めた線が水の線と変わらない: {ctx}");
+    assert!(hsv(colors[2]).1 < 0.1, "洗った筆で色が乗った: {ctx}");
+}
+
 /// ペンの筆圧が線の濃さ・太さに効く(弱い筆圧の線は強い筆圧の線より細く薄い)
 #[test]
 fn pen_pressure_changes_stroke() {
@@ -233,6 +256,8 @@ fn double_click_swatch_opens_color_modal() {
 #[test]
 fn dry_keeps_painted_color() {
     let mut harness = app();
+    harness.get_by_label_contains("塗る色 2:").click();
+    frames(&mut harness, 2);
     mouse_drag(&mut harness, 0.3, 0.7, 0.5);
     frames(&mut harness, 30);
     let before = canvas_color(&mut harness, "dry-before", &[(0.5, 0.5)])[0];

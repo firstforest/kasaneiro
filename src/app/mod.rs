@@ -20,6 +20,7 @@ use crate::palette_store;
 use crate::pigment_store;
 use crate::preset;
 use crate::replay::{self, Player, Recording};
+use paint_core::load::BrushLoad;
 use crate::work;
 use paint_core::brush::StrokeState;
 use paint_core::clock::SimClock;
@@ -137,9 +138,19 @@ pub struct PaintApp {
     /// 離したとき戻す元ツール(水彩=Wet(Erase) / 線画=Raster{eraser:true} / 乾燥=無反応)
     erase_hold: Option<Tool>,
     stroke: StrokeState,
-    /// 筆の含みの残り(秒)。筆を下ろすと params.brush_charge で満たされ、
-    /// 置いたまま動かないフレームの feed splat 発行で減る(feed_charge)
-    charge_left: f32,
+    /// 塗る筆の中身(水と4色の顔料)。ツールバーの色・水・洗うで変え、描くと減る
+    brush_load: BrushLoad,
+    /// 自動補充で戻す中身 = 最後に色・水・洗うで作った時点の中身。eframe storage に永続化
+    brush_refill: BrushLoad,
+    /// 自動補充: 筆を下ろすたびに brush_refill へ戻す。off なら前のストロークの残りから続く。
+    /// eframe storage に永続化
+    auto_refill: bool,
+    /// 直前の塗る splat の位置。なぞった長さで筆の中身を減らすのに使う。Down でクリア
+    brush_last: Option<[f32; 2]>,
+    /// 色スウォッチのダブルクリック(色をつくる)で取った色を取り消すための、1回目を押す前の中身
+    swatch_undo: Option<(usize, f64, BrushLoad)>,
+    /// 押している最中のスウォッチ(0〜3 = 色、4 = 水)。押し始めの判定と押し続けの取り込みに使う
+    swatch_held: Option<usize>,
     /// 直近のストローク位置と筆圧(テクセル座標)。置いたまま動かないフレームの
     /// feed splat をここに積む。Up でクリア
     feed_pos: Option<([f32; 2], f32)>,
@@ -256,6 +267,17 @@ impl PaintApp {
             .storage
             .and_then(|s| s.get_string("palette_name"))
             .unwrap_or_default();
+        let auto_refill = cc
+            .storage
+            .and_then(|s| s.get_string("auto_refill"))
+            .map(|v| v == "true")
+            .unwrap_or(true);
+        // 筆の中身(自動補充の戻り先)を前回終了時のまま復元する。初回は洗った筆
+        let brush_refill = cc
+            .storage
+            .and_then(|s| s.get_string("brush_load"))
+            .and_then(|json| serde_json::from_str::<BrushLoad>(&json).ok())
+            .unwrap_or_default();
         // GpuCanvas::new は既定パレットで初期化するので、復元したパレットを書き込んでから挿す
         canvas.set_palette(&render_state.queue, &palette);
         render_state
@@ -273,7 +295,12 @@ impl PaintApp {
             eyedropper_hold: false,
             erase_hold: None,
             stroke: StrokeState::default(),
-            charge_left: 0.0,
+            brush_load: brush_refill,
+            brush_refill,
+            auto_refill,
+            brush_last: None,
+            swatch_undo: None,
+            swatch_held: None,
             feed_pos: None,
             pen: PenSource::default(),
             mouse: MouseSource,
@@ -767,13 +794,20 @@ impl PaintApp {
                     self.painting = true;
                     self.has_painted = true; // F15: 最初の一筆で初回ガイドを消す
                     self.stroke.begin();
-                    // 筆の含み: 筆を下ろすたびに満たす(色水をたっぷり含み直すイメージ)
-                    self.charge_left = self.params.brush_charge;
-                    // H5: 記録はストローク単位。そのとき選ばれていた顔料スロットとツールも残す
+                    // 自動補充: 最後に作った筆の中身へ戻してから描き始める
+                    if self.auto_refill {
+                        self.brush_load = self.brush_refill;
+                    }
+                    self.brush_last = None;
+                    // H5: 記録はストローク単位。そのとき選ばれていた顔料スロット・ツール・筆の中身も残す
                     if let Some(recorder) = &mut self.replay_ui.recorder
                         && recordable
                     {
-                        recorder.begin_stroke(self.params.brush_channel, self.params.tool);
+                        recorder.begin_stroke(
+                            self.params.brush_channel,
+                            self.params.tool,
+                            Some(self.brush_load),
+                        );
                     }
                     // M4.5d: ラスタ線画は履歴へストロークを開始(実効パラメータをスナップショット)
                     if let Some(target) = line_target {
@@ -820,8 +854,16 @@ impl PaintApp {
             // ラスタ線画は鉛筆/ペン/ハイライトの独立半径を使う(brush_radius と切り離す)
             let base = self.active_base_radius();
             let spacing = (self.params.radius_at_base(base, ev.pressure) * 0.25).max(1.0);
+            let start = splats.len();
             self.stroke
                 .add_motion([px.x, px.y], ev.pressure, spacing, splats);
+            if self.tool == Tool::Wet(WetTool::Paint) {
+                self.brush_load.load_splats(
+                    &mut splats[start..],
+                    &mut self.brush_last,
+                    self.params.brush_hold,
+                );
+            }
             // 筆の含み: 置いたまま動かないフレームの feed splat をここに積む(feed_charge)
             self.feed_pos = Some(([px.x, px.y], ev.pressure));
             // H5: 補間前の生ポインタ位置+筆圧を記録する(再生時に補間し直すため
@@ -838,23 +880,23 @@ impl PaintApp {
         }
     }
 
-    /// 筆の含み: 塗る筆(Wet::Paint)を置いたまま動かさないフレームでは、含みが残って
-    /// いる間 feed splat を1つ積んで色水を流し出し続ける(置き馴染みの水補充+広がる勢い+
-    /// 少量の顔料。splat.wgsl の feed 分岐)。含みは置いている時間で減り、動いている
-    /// (通常 splat が出た)フレームは通常注入があるので消費しない。dt はフレーム時間(秒)
+    /// 筆の含み: 塗る筆(Wet::Paint)を置いたまま動かさないフレームでは、筆の中身の水が
+    /// 残っている間 feed splat を1つ積んで色水を流し出し続ける(置き馴染みの水補充+広がる勢い+
+    /// 少量の顔料。splat.wgsl の feed 分岐)。満タンの筆は brush_charge 秒で尽きる。
+    /// 動いている(通常 splat が出た)フレームは積まない。dt はフレーム時間(秒)
     pub(in crate::app) fn feed_charge(&mut self, dt: f32, splats: &mut Vec<Splat>) {
-        if !self.painting
-            || self.tool != Tool::Wet(WetTool::Paint)
-            || !splats.is_empty()
-            || self.charge_left <= 0.0
-        {
+        if !self.painting || self.tool != Tool::Wet(WetTool::Paint) || !splats.is_empty() {
             return;
         }
         let Some((pos, pressure)) = self.feed_pos else {
             return;
         };
-        splats.push(Splat::feed_at(pos, pressure));
-        self.charge_left -= dt;
+        if let Some(s) = self
+            .brush_load
+            .feed(pos, pressure, dt, self.params.brush_charge)
+        {
+            splats.push(s);
+        }
     }
 
     /// 現在のツールが使うブラシ半径の基準値(筆圧前)。ラスタ線画は鉛筆/ペンの
@@ -1170,6 +1212,10 @@ impl eframe::App for PaintApp {
             storage.set_string("palette", json);
         }
         storage.set_string("palette_name", self.palette_ui.store.name.clone());
+        storage.set_string("auto_refill", self.auto_refill.to_string());
+        if let Ok(json) = serde_json::to_string(&self.brush_refill) {
+            storage.set_string("brush_load", json);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

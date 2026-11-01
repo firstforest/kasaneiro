@@ -66,6 +66,7 @@ pub fn stroke(
     RecordedStroke {
         channel,
         tool: tool.gpu_id(),
+        load: None,
         points,
     }
 }

@@ -6,6 +6,7 @@
 
 use crate::app::{ActiveLayer, PaintApp};
 use crate::gpu::{DriedLayer, GpuCanvas};
+use paint_core::load::{self, BrushLoad};
 use paint_core::tool::{RasterTool, Tool, ToolInfo, WetTool};
 use eframe::egui;
 
@@ -96,14 +97,12 @@ impl PaintApp {
         ui.add_space(4.0);
     }
 
-    /// 水彩レイヤーのツール(M1〜M4): ツール選択・顔料スロット・ブラシスライダー
+    /// 水彩レイヤーのツール(M1〜M4): ツール選択・筆の中身・ブラシスライダー
     pub(in crate::app) fn brush_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("水彩ブラシ");
-        // 8ツールを1列(並列)に並べる: 「塗る」4色(色スウォッチ)+ 削り/消す/ぼかし筆/吸い取り
-        // (文字ボタン)。**色選び = その色で「塗る」ツールを選ぶ**に統合したので、旧「ツール選択行 +
-        // 別行の顔料スウォッチ」の2段はやめて全ボタンを一列にした(色スウォッチを押すと Paint ツール +
-        // その顔料スロットへ切り替わる)。選択状態: 塗るは tool==Paint かつ brush_channel==i、
-        // 他の4ツールは tool==Wet(wt)(GPU 値・ラベル・文言は enum の impl に一元化。TOOLS 定数表は廃止)。
+        // 1列(折り返しあり)に「塗る」の色4つ+水+洗う、続けて削り/消す/ぼかし筆/吸い取り。
+        // 色・水・洗うは筆の中身を作る操作で、押すと塗るツールにもなる。
+        // 選択状態: 色は塗るツールのとき筆に入っている色、他の4ツールは tool==Wet(wt)。
         // F2: ホバーは平易な日本語(数式記号は顔料の詳細設定側に残す)
         let swatches: Vec<(egui::Color32, String)> = self
             .palette
@@ -113,19 +112,22 @@ impl PaintApp {
                 (
                     egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]),
                     format!(
-                        "{}で塗る\n沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2} / 粒の細かさ {:.2}\nダブルクリック: 色をつくる / 右クリック: ライブラリ保存・2色目指定",
+                        "{}を筆に取る(押している間、取り続けて濃くなる。筆の中で今の色と混ざる)\n\
+                         沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2} / 粒の細かさ {:.2}\n\
+                         ダブルクリック: 色をつくる / 右クリック: ライブラリ保存",
                         p.name, p.density, p.staining, p.granulation, p.mobility
                     ),
                 )
             })
             .collect();
-        // 左パネルは幅が狭いので横一列に収まらないぶんは折り返す(8 ボタン=色4+文字4)
+        let dt = ui.input(|i| i.stable_dt);
+        let now = ui.input(|i| i.time);
+        let painting_tool = self.tool == Tool::Wet(WetTool::Paint);
         ui.horizontal_wrapped(|ui| {
-            // 「塗る」4色: 色スウォッチ。押すと Paint ツール + その顔料スロットへ。
-            // F17: 選択中のスウォッチはアクセント色の太枠で明示(角丸のスウォッチ)
+            // 色スウォッチ: 押した瞬間に1回分、押している間も取り続ける。
+            // F17: 筆に入っている色はアクセント色の太枠で明示(角丸のスウォッチ)
             for (i, (color, hover)) in swatches.iter().enumerate() {
-                let selected = self.tool == Tool::Wet(WetTool::Paint)
-                    && self.params.brush_channel == i as u32;
+                let selected = painting_tool && self.brush_load.pigment[i] > 0.0;
                 let mut button = egui::Button::new("")
                     .fill(*color)
                     .corner_radius(4.0)
@@ -138,18 +140,35 @@ impl PaintApp {
                 // (e2e テストもこの名前でスウォッチを引く)
                 let name = format!("塗る色 {}: {}", i + 1, self.palette.pigments[i].name);
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
-                if resp.clicked() {
-                    self.tool = Tool::Wet(WetTool::Paint);
-                    self.params.brush_channel = i as u32;
-                    // レイヤーを離れて戻ったときの復元用(select_layer が読む)
-                    self.last_wet_tool = WetTool::Paint;
+                match self.swatch_press(i, resp.is_pointer_button_down_on()) {
+                    Some(true) => {
+                        // ダブルクリックの1回目より前の中身を覚えておく(2回目の押下では上書きしない)
+                        let fresh = !matches!(self.swatch_undo, Some((k, t, _)) if k == i && now - t < 0.5);
+                        if fresh {
+                            self.swatch_undo = Some((i, now, self.brush_load));
+                        }
+                        self.brush_load.take_pigment(i as u32, load::TAKE_DOSE);
+                        self.after_brush_take();
+                        self.params.brush_channel = i as u32;
+                    }
+                    Some(false) => {
+                        self.brush_load.take_pigment(i as u32, load::TAKE_RATE * dt);
+                        self.after_brush_take();
+                    }
+                    None => {}
                 }
-                // ダブルクリック: この色の「色をつくる」をモーダルで開く(1回目のクリックで
-                // 上の clicked() が走りスロット選択済みなので、開くだけでその色が編集対象になる)
+                // ダブルクリック: この色の「色をつくる」をモーダルで開く。開くための2回の押下で
+                // 筆に取った色は取り消す(1回目の押下でスロットは選択済みなので、その色が編集対象になる)
                 if resp.double_clicked() {
+                    if let Some((k, _, before)) = self.swatch_undo.take()
+                        && k == i
+                    {
+                        self.brush_load = before;
+                        self.brush_refill = before;
+                    }
                     self.palette_ui.color_modal = true;
                 }
-                // 右クリック: ライブラリ保存と分離色の2色目指定(色の管理の近道)
+                // 右クリック: ライブラリ保存(色の管理の近道)
                 resp.context_menu(|ui| {
                     let pname = self.palette.pigments[i].name.trim().to_owned();
                     ui.label(egui::RichText::new(self.palette.pigments[i].name.as_str()).strong());
@@ -163,25 +182,37 @@ impl PaintApp {
                     {
                         self.save_pigment_to_library(i);
                     }
-                    if ui
-                        .button("2色目にする(分離色)")
-                        .on_hover_text(
-                            "塗るツールの2色目をこの色にします。比率が 0 なら 0.3 に上げて分離色を有効化",
-                        )
-                        .clicked()
-                    {
-                        self.params.brush_channel2 = i as u32;
-                        if self.params.brush_mix == 0.0 {
-                            self.params.brush_mix = 0.3;
-                        }
-                        self.status_msg = Some(format!(
-                            "2色目を{}にしました(比率は「2色目を混ぜる」で調整)",
-                            self.palette.pigments[i].name
-                        ));
-                    }
                 });
             }
-            // 「塗る4色」と「削り以降の4ツール」の意味グループを小さいギャップで区切る
+            // 水: 押した瞬間に顔料が半分、押している間も水と入れ替わって抜けていく(長く押せば洗える)
+            let water = egui::Button::new(egui::RichText::new("水").color(egui::Color32::from_rgb(40, 80, 140)))
+                .fill(egui::Color32::from_rgb(200, 225, 245))
+                .corner_radius(4.0)
+                .min_size(egui::vec2(28.0, 28.0));
+            let resp = ui.add(water).on_hover_text(
+                "筆を水に浸す: 色が薄まる。押している間、色が水と入れ替わって抜けていき、\
+                 長く押すと透明な水だけの筆になる",
+            );
+            match self.swatch_press(4, resp.is_pointer_button_down_on()) {
+                Some(true) => {
+                    self.brush_load.dip_water(load::DIP_KEEP);
+                    self.after_brush_take();
+                }
+                Some(false) => {
+                    self.brush_load.dip_water(BrushLoad::dip_keep(dt));
+                    self.after_brush_take();
+                }
+                None => {}
+            }
+            if ui
+                .add(egui::Button::new("洗う").min_size(egui::vec2(0.0, 28.0)))
+                .on_hover_text("筆を洗う: 色をすべて落とし、きれいな水を満たす")
+                .clicked()
+            {
+                self.brush_load.wash();
+                self.after_brush_take();
+            }
+            // 「筆の中身を作る操作」と「削り以降の4ツール」の意味グループを小さいギャップで区切る
             // (horizontal_wrapped の折返し挙動を壊さないよう要素の追加はしない)
             ui.add_space(8.0);
             // 削り/消す/ぼかし筆/吸い取り: 枠付きの文字ボタン(Paint はスウォッチ側で出すので飛ばす)。
@@ -225,21 +256,9 @@ impl PaintApp {
             ui.label(egui::RichText::new(wt.short_hint()).weak().small())
                 .on_hover_text(wt.hint());
         }
-        // 塗るときは選択中の顔料名を出す(削り等では顔料は無関係なので出さない)。
-        // 分離色(2色目を混ぜている)なら組み合わせと比率も見えるように
+        // 塗るときは筆の中身(混ざった色・濃さ・残りの水)を出す
         if self.tool == Tool::Wet(WetTool::Paint) {
-            let pg = &self.palette.pigments[self.params.brush_channel.min(3) as usize];
-            if self.params.brush_mix > 0.0 {
-                let pg2 = &self.palette.pigments[self.params.brush_channel2.min(3) as usize];
-                ui.label(format!(
-                    "塗る色: {} + {}({:.0}%)",
-                    pg.name,
-                    pg2.name,
-                    self.params.brush_mix * 100.0
-                ));
-            } else {
-                ui.label(format!("塗る色: {}", pg.name));
-            }
+            self.brush_load_view(ui);
         }
         // 共通スライダー(どのツールでも使う)
         ui.add(
@@ -254,14 +273,27 @@ impl PaintApp {
         // F5: ツール固有スライダーは、そのツールを選んでいるときだけ出す(通常時の壁を減らす)
         match self.tool.wet() {
             Some(WetTool::Paint) => {
+                ui.checkbox(&mut self.auto_refill, "筆を下ろすたびに含み直す")
+                    .on_hover_text(
+                        "on: 最後に色・水・洗うで作った中身へ戻してから描き始める。\
+                         off: 前のストロークの残りから続き、描くほど減っていく",
+                    );
+                ui.add(
+                    egui::Slider::new(&mut self.params.brush_hold, 0.0..=5000.0)
+                        .text("含みの持ち")
+                        .suffix(" px"),
+                )
+                .on_hover_text(
+                    "この長さをなぞると筆の中身(水と色)が半分になる。濃さは変わらず量が減る。0=減らない",
+                );
                 ui.add(
                     egui::Slider::new(&mut self.params.brush_charge, 0.0..=5.0)
                         .text("筆の含み")
                         .suffix(" 秒"),
                 )
                 .on_hover_text(
-                    "筆を置いたまま動かさなくても、この秒数だけ色水が流れ出続ける\
-                     (なぞり直さなくても水を伝って広がっていく)。筆を上げて下ろし直すと含み直す。\
+                    "筆を置いたまま動かさなくても色水が流れ出続ける。満タンの筆ならこの秒数で\
+                     中身の水が尽きる(なぞり直さなくても水を伝って広がっていく)。\
                      広がる距離は「水量」と含みの長さで決まる。0=置いた瞬間だけ",
                 );
                 ui.add(egui::Slider::new(&mut self.params.paint_pickup, 0.0..=1.0).text("下の色を溶かす"))
@@ -269,46 +301,6 @@ impl PaintApp {
                         "筆が触れた沈着顔料を浮かせて筆の色と混ぜる割合。\
                          染みつき(ω)が強い色は剥がれず残る",
                     );
-                // 分離色: 2色目の混合比と、混ぜる相手のスロット選択。
-                // 分かれ方は色の性質(粒の細かさ・沈みやすさ・染みつき)の差で決まるので、
-                // 細かい色(フタロ等)×粗い色(シェンナ等)の組み合わせがよく分かれる
-                ui.add(egui::Slider::new(&mut self.params.brush_mix, 0.0..=1.0).text("2色目を混ぜる"))
-                    .on_hover_text(
-                        "分離色: 筆に2色目を混ぜて同時に置く割合(0=単色)。\
-                         濡れた紙の上で、粒の細かい色は水に乗って縁へ伸び、粗い色はその場に残って\
-                         2色に分かれる。分かれ方は「色をつくる」の粒の細かさ・沈みやすさの差で決まる",
-                    );
-                if self.params.brush_mix > 0.0 {
-                    let colors: Vec<egui::Color32> = self
-                        .palette
-                        .pigments
-                        .iter()
-                        .map(|p| egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]))
-                        .collect();
-                    let names: Vec<String> =
-                        self.palette.pigments.iter().map(|p| p.name.clone()).collect();
-                    ui.horizontal(|ui| {
-                        ui.label("2色目:");
-                        for (i, color) in colors.iter().enumerate() {
-                            let selected = self.params.brush_channel2 == i as u32;
-                            let mut button = egui::Button::new("")
-                                .fill(*color)
-                                .corner_radius(4.0)
-                                .min_size(egui::vec2(20.0, 20.0));
-                            if selected {
-                                button =
-                                    button.stroke((3.0, ui.visuals().selection.stroke.color));
-                            }
-                            if ui
-                                .add(button)
-                                .on_hover_text(format!("2色目を{}にする", names[i]))
-                                .clicked()
-                            {
-                                self.params.brush_channel2 = i as u32;
-                            }
-                        }
-                    });
-                }
             }
             Some(WetTool::Lift) => {
                 ui.add(egui::Slider::new(&mut self.params.lift_strength, 0.0..=1.0).text("削りの強さ"));
@@ -524,5 +516,84 @@ impl PaintApp {
             self.line_history.done.len(),
             self.line_history.redo.len()
         ));
+    }
+
+    /// スウォッチ idx(0〜3 = 色、4 = 水)の押下状態を進める。
+    /// Some(true) = 押した瞬間、Some(false) = 押し続けている、None = 押していない
+    fn swatch_press(&mut self, idx: usize, down: bool) -> Option<bool> {
+        if !down {
+            if self.swatch_held == Some(idx) {
+                self.swatch_held = None;
+            }
+            return None;
+        }
+        let first = self.swatch_held != Some(idx);
+        self.swatch_held = Some(idx);
+        Some(first)
+    }
+
+    /// 色・水・洗うで筆の中身を作った後: 塗るツールにし、自動補充の戻り先を今の中身にする
+    fn after_brush_take(&mut self) {
+        self.tool = Tool::Wet(WetTool::Paint);
+        // レイヤーを離れて戻ったときの復元用(select_layer が読む)
+        self.last_wet_tool = WetTool::Paint;
+        self.brush_refill = self.brush_load;
+    }
+
+    /// 筆の中身: 混ざった色(濃さに応じて紙色へ薄めた見本)・色の内訳・濃さ・残りの水
+    fn brush_load_view(&self, ui: &mut egui::Ui) {
+        let load = self.brush_load;
+        let paper = pigment::PAPER_RGB.map(|c| c * 255.0);
+        let shown = match self.palette.mix_rgb(&load.pigment) {
+            Some(rgb) => {
+                // 見本の色の乗り方: 濃さ 1 で 7 割、2 で 9 割ほど
+                let t = 1.0 - (-1.2 * load.concentration()).exp();
+                let ch = |k: usize| (paper[k] + (rgb[k] as f32 - paper[k]) * t).round() as u8;
+                egui::Color32::from_rgb(ch(0), ch(1), ch(2))
+            }
+            None => egui::Color32::from_rgb(paper[0] as u8, paper[1] as u8, paper[2] as u8),
+        };
+        let total = load.pigment_total();
+        let colors = if total <= 0.0 {
+            "水だけ".to_owned()
+        } else {
+            self.palette
+                .pigments
+                .iter()
+                .zip(load.pigment)
+                .filter(|(_, a)| *a / total >= 0.05)
+                .map(|(p, a)| {
+                    if a >= total * 0.995 {
+                        p.name.clone()
+                    } else {
+                        format!("{} {:.0}%", p.name, a / total * 100.0)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" + ")
+        };
+        ui.horizontal(|ui| {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 14.0, shown);
+            ui.painter().rect_stroke(
+                rect,
+                14.0,
+                (1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+                egui::StrokeKind::Inside,
+            );
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "筆の中身"));
+            ui.vertical(|ui| {
+                ui.label(format!("筆: {colors}"));
+                ui.label(
+                    egui::RichText::new(format!(
+                        "濃さ ×{:.1} / 水 {:.0}%",
+                        load.concentration(),
+                        load.water * 100.0
+                    ))
+                    .weak()
+                    .small(),
+                );
+            });
+        });
     }
 }
