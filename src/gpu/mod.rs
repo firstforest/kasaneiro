@@ -153,6 +153,22 @@ pub struct DriedLayer {
     /// dried_texture のスライス番号(使用中は 0..layers.len()。重ね順とは独立)
     pub slot: u32,
     pub visible: bool,
+    /// 合成時に顔料濃度へ掛ける倍率(1 = 乾かしたときのまま)。テクスチャは書き換えないので戻せる
+    pub density: f32,
+}
+
+impl DriedLayer {
+    /// 濃度倍率の UI 範囲
+    pub const DENSITY_RANGE: std::ops::RangeInclusive<f32> = 0.0..=2.0;
+
+    /// 乾かした直後の層(表示・倍率 1)
+    pub fn new(slot: u32) -> Self {
+        Self {
+            slot,
+            visible: true,
+            density: 1.0,
+        }
+    }
 }
 
 /// display.wgsl の ViewUniform と同レイアウト(32 バイト)。パン/ズーム/回転(M6)。
@@ -185,7 +201,7 @@ impl Default for ViewUniform {
     }
 }
 
-/// display.wgsl の LayerUniform と同レイアウト(48 バイト)
+/// display.wgsl の LayerUniform と同レイアウト(16 + MAX_LAYERS×8 バイト)
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct LayerUniform {
@@ -198,6 +214,8 @@ struct LayerUniform {
     force_mode: u32,
     /// order[k] = 下から k 番目のレイヤーのスロット番号
     order: [u32; MAX_LAYERS],
+    /// density[k] = 下から k 番目のレイヤーの濃度倍率
+    density: [f32; MAX_LAYERS],
 }
 
 /// リリース配布用(embed-assets): assets/shaders/ 全体をコンパイル時に埋め込む。
@@ -504,9 +522,11 @@ impl GpuCanvas {
             has_base: self.has_base as u32,
             force_mode,
             order: [0; MAX_LAYERS],
+            density: [1.0; MAX_LAYERS],
         };
         for (k, layer) in layers.iter().take(MAX_LAYERS).enumerate() {
             uniform.order[k] = layer.slot;
+            uniform.density[k] = layer.density;
             if layer.visible {
                 uniform.visible_mask |= 1 << k;
             }
@@ -517,7 +537,7 @@ impl GpuCanvas {
     /// 下から `count` 枚の乾燥レイヤーを下地に焼き固めて、そのスロットを空ける。
     /// 乗算・KM の両方式について「今の下地(なければ紙)+下の count 枚」の合成結果を焼くので
     /// 見た目は変わらない。代わりに焼いた層の並べ替え・表示切替・記録パレットは失われ、
-    /// 非表示だった層は合成されずに消える。焼いた時点の紙色・顔料濃度も下地に固まる。
+    /// 非表示だった層は合成されずに消える。焼いた時点の紙色・顔料濃度・層の濃度倍率も下地に固まる。
     /// 残った層は重ね順のままスロット 0.. へ詰め直す(layer_palettes の添字 = slot を保つ)
     pub fn merge_into_base(
         &mut self,
@@ -570,7 +590,7 @@ impl GpuCanvas {
             .enumerate()
             .map(|(j, l)| DriedLayer {
                 slot: j as u32,
-                visible: l.visible,
+                ..*l
             })
             .collect();
         self.layer_palettes = remaining
@@ -725,10 +745,7 @@ impl GpuCanvas {
         self.current = dst;
         self.mark_tiles_dirty(queue);
 
-        self.layers.push(DriedLayer {
-            slot: slot as u32,
-            visible: true,
-        });
+        self.layers.push(DriedLayer::new(slot as u32));
         // M5h: 記録時パレットの CPU 正典(index = slot = 今 push した layers の末尾と対)
         self.layer_palettes.push(palette.clone());
         self.sync_layers(queue);

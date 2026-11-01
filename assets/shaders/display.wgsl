@@ -22,7 +22,7 @@
 //       「内側から光る」グレーズ挙動になる。計算はリニア色空間で行い最後に sRGB へ戻す(note 03 §3)。
 // どちらも層「内」の混色は mixbox の latent 混合(render_conc)を通す(黄+青が濁らない M1c の芯)。
 //
-// 乾燥レイヤーの合成は湿レイヤーと無関係で、乾かす・レイヤーの並びや可視性を変える・
+// 乾燥レイヤーの合成は湿レイヤーと無関係で、乾かす・レイヤーの並びや可視性・濃度倍率を変える・
 // compose_mode / pigment_density を変えるときにしか変わらない。そこで compute の入口
 // dried_cache_main がキャンバス解像度の合成結果(multiply = 透過率の積 / KM = 紙+乾燥層のリニア反射率)を
 // dried_cache へ焼き、fs_main はそれを読むだけにする(作り直す時機は gpu/callback.rs の encode_frame)。
@@ -62,6 +62,7 @@ fn pal_base(pal: u32) -> u32 { return GLOBAL_LATENTS + pal * PIGMENT_LATENTS; }
 // src/gpu/mod.rs の LayerUniform と同レイアウト。
 // order[k] = 下から k 番目のレイヤーのスロット番号 / visible_mask の bit k = 下から k 番目の可視性
 // (multiply は可換なので順序は見た目に効かず、KM 合成でだけ効く)。
+// density[k] = 下から k 番目のレイヤーの濃度倍率(顔料濃度に掛ける。1 = 乾かしたときのまま)。
 // has_base = 1 なら合成を紙ではなく下地(base_tex)から始める。
 // force_mode = 0 は params.compose_mode に従い、1 / 2 は乗算 / KM で焼く(下地の統合が両方式を焼くため)
 struct LayerUniform {
@@ -70,6 +71,7 @@ struct LayerUniform {
     has_base: u32,
     force_mode: u32,
     order: array<vec4u, LAYER_ORDER_VEC4S>,
+    density: array<vec4f, LAYER_ORDER_VEC4S>,
 };
 @group(0) @binding(7) var<uniform> layers: LayerUniform;
 // 下地(rgba16float の2スライス): 下の乾燥レイヤーを焼き固めた合成結果。
@@ -288,7 +290,7 @@ fn dried_cache_main(@builtin(global_invocation_id) gid: vec3u) {
             continue;
         }
         let slot = layers.order[k >> 2u][k & 3u];
-        let conc = textureLoad(dried_tex, ip, slot, 0);
+        let conc = textureLoad(dried_tex, ip, slot, 0) * layers.density[k >> 2u][k & 3u];
         if (km) {
             acc = km_over_conc(conc, acc, slot);
         } else {

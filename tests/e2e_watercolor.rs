@@ -9,7 +9,7 @@
 mod common;
 
 use common::*;
-use kasaneiro::headless::HeadlessCanvas;
+use kasaneiro::headless::{HeadlessCanvas, Image};
 use paint_core::tool::WetTool;
 
 const YELLOW: u32 = 0;
@@ -126,6 +126,41 @@ fn merge_into_base_keeps_look() {
     c.idle(120);
     c.bake_dry().unwrap();
     assert_eq!(c.layer_count(), 2);
+}
+
+/// 乾いた層の濃度倍率: 倍率を下げると薄く、上げると濃くなり、0 で紙に戻り、1 に戻せば元の見た目になる
+#[test]
+fn dried_layer_density_scales_look() {
+    let mut c = canvas();
+    c.play(recording(vec![hstroke(WetTool::Paint, BLUE, 100.0, 400.0, 250.0, 0)]));
+    c.idle(120);
+    c.bake_dry().unwrap();
+    let look = |c: &mut HeadlessCanvas, density: f32| {
+        c.set_layer_density(0, density);
+        c.idle(1); // 合成キャッシュを焼き直すフレーム
+        c.snapshot().unwrap()
+    };
+    let base = look(&mut c, 1.0);
+    let light = look(&mut c, 0.4);
+    let dark = look(&mut c, 2.0);
+    let none = look(&mut c, 0.0);
+    let back = look(&mut c, 1.0);
+    let png = save(&light, "dried_layer_density");
+
+    let sum = |rgb: [f32; 3]| rgb.iter().sum::<f32>();
+    let at = |img: &Image| sum(img.mean_rgb(200, 245, 300, 255));
+    let paper = sum(base.mean_rgb(200, 400, 300, 410));
+    let ctx = format!(
+        "{}\n倍率1={} 0.4={} 2={} 0={} 紙={paper}",
+        png.display(),
+        at(&base),
+        at(&light),
+        at(&dark),
+        at(&none)
+    );
+    assert!(at(&dark) < at(&base) && at(&base) < at(&light) && at(&light) < paper, "濃さが倍率の順に並ばない\n{ctx}");
+    assert!((at(&none) - paper).abs() < 0.02, "倍率 0 で紙に戻らない\n{ctx}");
+    assert!(base.rgba == back.rgba, "倍率を 1 に戻しても元の見た目にならない\n{ctx}");
 }
 
 /// グレージング: 乾かした黄の上に青を重ねると、交差部だけ緑に濃くなり、下の層は変わらない

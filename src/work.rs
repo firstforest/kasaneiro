@@ -30,6 +30,13 @@ const EXT: &str = "kasane";
 pub struct StoredLayer {
     pub slot: u32,
     pub visible: bool,
+    /// 濃度倍率。省略時 1(倍率を持たない作品は乾かしたときのままで読む)
+    #[serde(default = "unit_density")]
+    pub density: f32,
+}
+
+fn unit_density() -> f32 {
+    1.0
 }
 
 /// ファイル先頭のメタ情報(JSON)。生 f32 ブロブの並びを解釈するための寸法も持つ
@@ -173,6 +180,9 @@ fn decode(bytes: &[u8]) -> Result<WorkFile, String> {
             bad.slot, meta.layer_count
         ));
     }
+    if let Some(bad) = meta.layers.iter().find(|l| !(l.density.is_finite() && l.density >= 0.0)) {
+        return Err(format!("レイヤーの濃度倍率が不正です({})", bad.density));
+    }
     // M5h: 記録時パレットは層数と 1:1(GpuCanvas::layer_palettes の不変条件の入口検査)
     if meta.layer_palettes.len() != meta.layer_count as usize {
         return Err(format!(
@@ -290,8 +300,8 @@ mod tests {
                 },
                 palette: Palette::default_palette(),
                 layers: vec![
-                    StoredLayer { slot: 0, visible: true },
-                    StoredLayer { slot: 1, visible: false },
+                    StoredLayer { slot: 0, visible: true, density: 1.0 },
+                    StoredLayer { slot: 1, visible: false, density: 0.4 },
                 ],
                 layer_palettes: vec![recorded, Palette::default_palette()],
                 textures: textures.clone(),
@@ -319,8 +329,8 @@ mod tests {
             params: SimParams::default(),
             palette: Palette::default_palette(),
             layers: vec![
-                StoredLayer { slot: 0, visible: true },
-                StoredLayer { slot: 1, visible: true },
+                StoredLayer { slot: 0, visible: true, density: 1.0 },
+                StoredLayer { slot: 1, visible: true, density: 1.0 },
             ],
             layer_palettes: vec![Palette::default_palette()], // 2層なのに1個
             has_base: false,
@@ -363,7 +373,7 @@ mod tests {
             palette: Palette::default_palette(),
             layers: slots
                 .iter()
-                .map(|&slot| StoredLayer { slot, visible: true })
+                .map(|&slot| StoredLayer { slot, visible: true, density: 1.0 })
                 .collect(),
             layer_palettes: vec![Palette::default_palette(); layer_count as usize],
             has_base: false,

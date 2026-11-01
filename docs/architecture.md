@@ -132,7 +132,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 | splat storage | ヘッダ+splat 列。上限 `MAX_SPLATS=8192` |
 | 顔料個性 uniform | ρ/ω/γ/μ(全レイヤー共通) |
 | 顔料 latent uniform | `array<vec4f, LATENT_TOTAL>`(§3.5) |
-| LayerUniform | 乾燥レイヤーの重ね順 + visible_mask + has_base(下地から合成するか)+ force_mode(0 = compose_mode に従う / 1 = 乗算 / 2 = KM。下地への統合用) |
+| LayerUniform | 乾燥レイヤーの重ね順 + visible_mask + 層ごとの濃度倍率(density。重ね順で並べる)+ has_base(下地から合成するか)+ force_mode(0 = compose_mode に従う / 1 = 乗算 / 2 = KM。下地への統合用) |
 | ViewUniform | パン / ズーム / 回転(§3.6) |
 | アクティブタイル | `raw_active` / `active` / `tile_dirty`(いずれも `array<u32>`、要素数 = (size/16)²)。§8 |
 
@@ -225,12 +225,12 @@ paint:
 - **CPU 側**([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs)): グローバル光学(紙+白+黒)と `Palette` の顔料 latent を計算して uniform で渡す。パレットは起動時に eframe storage から復元し(無い・壊れていれば既定パレット)、UI で編集するたびに再計算する
 - **層内**(display.wgsl): 画素ごとに4顔料の濃度比で latent を線形混合 → latent→RGB 多項式(mixbox eval_polynomial の WGSL 移植)。紙とは被覆率 `1−exp(−pigment_density·総濃度)` で混合
 - **層間**: 紙(下地があれば下地)→ 乾燥レイヤー(LayerUniform の order 順)→ 湿レイヤーを、白地・黒地の発色から出した R, T でリニア色空間で下から合成(`compose_mode=1`)。`compose_mode=0` は multiply
-- **キャッシュ**: 乾燥レイヤーまでの合成は `dried_cache_main` が rgba16float に焼き、fs_main は湿レイヤーだけを毎フレーム発色して重ねる。焼き直すのは乾燥レイヤーの中身・並び・可視性・記録パレット・シェーダー(`dried_cache_dirty`)か `pigment_density` / `compose_mode` が変わったフレームだけ。フレームを挟まない snapshot は dirty なら自分で焼く
+- **キャッシュ**: 乾燥レイヤーまでの合成は `dried_cache_main` が rgba16float に焼き、fs_main は湿レイヤーだけを毎フレーム発色して重ねる。焼き直すのは乾燥レイヤーの中身・並び・可視性・濃度倍率・記録パレット・シェーダー(`dried_cache_dirty`)か `pigment_density` / `compose_mode` が変わったフレームだけ。フレームを挟まない snapshot は dirty なら自分で焼く
 
 ## 6. 乾燥とレイヤー
 
 - 乾かす = bake パスが `(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を texture array の新スライスへ書き、湿レイヤーを全ゼロにする
-- レイヤーの重ね順・可視性は `LayerUniform`(order + visible_mask)で `dried_cache_main` へ渡す。UI の並べ替えがそのまま合成順になる。`sync_layers` が合成キャッシュの焼き直しを予約する
+- レイヤーの重ね順・可視性・濃度倍率は `LayerUniform`(order + visible_mask + density)で `dried_cache_main` へ渡す。倍率は読んだ顔料濃度に掛けてから発色・合成する。UI の並べ替えがそのまま合成順になる。`sync_layers` が合成キャッシュの焼き直しを予約する
 - **下地への統合**(`merge_into_base`): 下から N 枚だけを並べた LayerUniform を `force_mode` 1 / 2 で2回 `dried_cache_main` に通し、それぞれの合成キャッシュを下地のスライス 0 / 1 へコピーして `has_base` を立てる。続けて残りの層を重ね順のままスロット 0.. へ詰め直す(同じテクスチャ内のスライス間コピー。行き先にまだ動かしていない層がいれば空きスロットへ逃がす `compaction_moves`)。`clear` で `has_base` を下ろす
 - 水彩の undo: ストローク開始時に `current` の3枚を退避テクスチャへコピーし、Ctrl+Z で書き戻す
 
@@ -274,7 +274,7 @@ paint:
 ## 10. 保存
 
 - **JSON ストア**(プリセット・パレット・色・ストローク): `assets.rs` の `json_save` / `json_load` / `json_delete` / `json_list` を共通に使う。保存名は `sanitize_name` で正規化し、書き込みは `.tmp` → rename でアトミックにする
-- **作品ファイル**(`works/*.kasane`、[src/work.rs](../src/work.rs)): 先頭に `MAGIC "KSN1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成 `[slot, visible]`・レイヤーごとパレット・canvas_size・layer_count・has_base)、続けて生ブロブを固定順(f32 の湿レイヤー3 → 乾燥レイヤー → 線画3 → 顔料 latent → `has_base` のときだけ下地2スライスの f16 生ビット)で並べる。`has_base` は省略時 false
+- **作品ファイル**(`works/*.kasane`、[src/work.rs](../src/work.rs)): 先頭に `MAGIC "KSN1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成 `[slot, visible, density]`・レイヤーごとパレット・canvas_size・layer_count・has_base)、続けて生ブロブを固定順(f32 の湿レイヤー3 → 乾燥レイヤー → 線画3 → 顔料 latent → `has_base` のときだけ下地2スライスの f16 生ビット)で並べる。`has_base` は省略時 false、`density` は省略時 1
   - decode はメタの layer_palettes と層数の一致・レイヤー構成・末尾の余分なバイトを検査する(`layer_palettes` の不変条件の入口)。現行形式だけを読む
   - 読込時に canvas_size(`CANVAS_SIZES` で検証)が現在と違えば、そのサイズでキャンバスを作り直してから復元する
   - GPU ⇄ f32 配列は `export_state` / `import_state`([src/gpu/persist.rs](../src/gpu/persist.rs))。読み戻しは全テクスチャのコピーを1回の submit にまとめる。parity は保存せず、読込時に `current=0` へ正規化する

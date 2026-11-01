@@ -1049,6 +1049,7 @@ impl PaintApp {
                 .map(|l| work::StoredLayer {
                     slot: l.slot,
                     visible: l.visible,
+                    density: l.density,
                 })
                 .collect();
             work::WorkFile {
@@ -1094,6 +1095,7 @@ impl PaintApp {
                                 .map(|l| DriedLayer {
                                     slot: l.slot,
                                     visible: l.visible,
+                                    density: l.density,
                                 })
                                 .collect();
                             // M5h: 記録時パレット(decode が層数一致を検査済み=不変条件を引き継ぐ)

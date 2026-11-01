@@ -5,7 +5,7 @@
 //! 水彩 → 水ブラシ+パレット / 鉛筆・ペン・ハイライト → 各線画ツール / 乾燥 → 編集不可の案内。
 
 use crate::app::{ActiveLayer, PaintApp};
-use crate::gpu::GpuCanvas;
+use crate::gpu::{DriedLayer, GpuCanvas};
 use paint_core::tool::{RasterTool, Tool, ToolInfo, WetTool};
 use eframe::egui;
 
@@ -430,7 +430,8 @@ impl PaintApp {
             Some(slot) => ui.heading(format!("乾いた層 {}", slot + 1)),
             None => ui.heading("乾いた層"),
         };
-        ui.label("乾いて固定されたため編集できません(表示・順序は右のレイヤーパネルで)。");
+        ui.label("乾いて固定されたため描き足せません(表示・順序は右のレイヤーパネル、濃さは下のスライダーで)。");
+        self.dried_density_slider(ui, index);
         ui.label(
             egui::RichText::new(
                 "乾いた層の再編集は設計上ありません(乾燥=一方通行)。いじり続けたい層は「乾かす(固定)」の代わりに「にじみを止める」で止めて、固定しない運用にしてください",
@@ -487,6 +488,31 @@ impl PaintApp {
             self.palette = rec.clone();
             self.apply_palette();
             self.status_msg = Some(format!("層{layer_no}のパレットを取り込みました"));
+        }
+    }
+
+    /// 乾いた層の濃度倍率。合成時に顔料濃度へ掛けるだけなので、いつでも 1 に戻せる
+    fn dried_density_slider(&mut self, ui: &mut egui::Ui, index: usize) {
+        let mut renderer = self.render_state.renderer.write();
+        let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() else {
+            return;
+        };
+        let Some(layer) = canvas.layers.get_mut(index) else {
+            return;
+        };
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            changed |= ui
+                .add(egui::Slider::new(&mut layer.density, DriedLayer::DENSITY_RANGE).text("濃さ"))
+                .on_hover_text("この層の顔料の濃さを倍率で変える(1 = 乾かしたときのまま)。下地へ統合するとその値で固まる")
+                .changed();
+            if ui.add_enabled(layer.density != 1.0, egui::Button::new("1 に戻す")).clicked() {
+                layer.density = 1.0;
+                changed = true;
+            }
+        });
+        if changed {
+            canvas.sync_layers(&self.render_state.queue);
         }
     }
 
