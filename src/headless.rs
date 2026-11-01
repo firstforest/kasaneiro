@@ -26,7 +26,8 @@ pub struct HeadlessCanvas {
     palette: Palette,
     /// 毎フレーム GPU へ渡すパラメータ。再生中は Player が顔料スロットとツールを上書きする
     pub params: SimParams,
-    /// 1フレームあたりのシミュレーションステップ数(アプリの既定と同じ 1)
+    /// 1フレームあたりのシミュレーションステップ数。headless は1フレーム=1刻み(1/60 秒)で、
+    /// アプリの既定(速度倍率 1)と同じ進み方になる
     pub steps_per_frame: u32,
 }
 
@@ -103,6 +104,11 @@ impl HeadlessCanvas {
     pub fn bake_dry(&mut self) -> Result<(), String> {
         self.canvas
             .bake_dry(&self.device, &self.queue, &self.palette)
+    }
+
+    /// 下から `count` 枚の乾燥レイヤーを下地に焼き固める
+    pub fn merge_into_base(&mut self, count: usize) -> Result<(), String> {
+        self.canvas.merge_into_base(&self.device, &self.queue, count)
     }
 
     /// Fast Dry: 水だけ除き、浮遊顔料をその場で沈着させる

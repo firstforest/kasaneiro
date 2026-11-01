@@ -121,7 +121,7 @@ impl PaintApp {
         let settings = VideoSettings {
             size: self.canvas_size,
             params: self.params,
-            steps_per_frame: self.steps_per_frame,
+            steps_per_frame: self.steps_per_tick,
             fps: video::VIDEO_FPS,
             tail_frames: video::TAIL_FRAMES,
         };

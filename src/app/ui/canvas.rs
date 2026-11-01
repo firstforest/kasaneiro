@@ -137,23 +137,37 @@ impl PaintApp {
             self.feed_charge(dt, &mut splats);
         }
 
-        // H5: 記録はフレーム基準(ストローク間の待ちも再現される)
+        // 時間は固定刻み(1/60 秒)で数える。リフレッシュレートに依らず同じ実時間で同じだけ乾き、
+        // 記録再生も刻み単位なので別のモニタで再生しても同じテンポになる
+        let dt = ui.input(|i| i.stable_dt);
+        let ticks = self.sim_clock.advance(dt);
+
+        // H5: 記録は刻み基準(ストローク間の待ちも再現される)
         if let Some(recorder) = &mut self.replay_ui.recorder {
-            recorder.tick();
+            for _ in 0..ticks {
+                recorder.tick();
+            }
         }
 
         // H5: 再生中は記録済みポインタ入力を同じテンポで流し込む(手描きと合流可)
-        if let Some(player) = &mut self.replay_ui.player
-            && !player.advance(&mut self.params, &mut splats)
-        {
-            self.stop_replay();
+        if let Some(player) = &mut self.replay_ui.player {
+            let mut more = true;
+            for _ in 0..ticks {
+                more = player.advance(&mut self.params, &mut splats);
+                if !more {
+                    break;
+                }
+            }
+            if !more {
+                self.stop_replay();
+            }
         }
 
         // H6: 一時停止中は 0 ステップ(1ステップボタンが押されていれば 1)
         let sim_steps = if self.paused {
             if std::mem::take(&mut self.step_once) { 1 } else { 0 }
         } else {
-            self.steps_per_frame
+            ticks * self.steps_per_tick
         };
 
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(

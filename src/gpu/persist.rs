@@ -8,7 +8,7 @@
 //! ping-pong の parity は保存しない。復元時は常に parity 0 側へ書き込み `current = 0` に正規化する
 //! (次フレームの sim が 0 を読んで 1 へ書くので ping-pong の一貫性は保たれる)。
 
-use super::{GpuCanvas, LATENT_TOTAL, MAX_LAYERS, TEX_KINDS};
+use super::{BASE_SLICES, GpuCanvas, LATENT_TOTAL, MAX_LAYERS, TEX_KINDS};
 use eframe::egui_wgpu::wgpu;
 use std::sync::atomic::Ordering;
 
@@ -24,10 +24,15 @@ pub struct WorkTextures {
     pub lines: [Vec<f32>; 3],
     /// 顔料 + 光学 latent(M1c/M5c)。LATENT_TOTAL·4 f32
     pub latents: Vec<f32>,
+    /// 下地(焼き固めた乾燥レイヤーの合成結果)。BASE_SLICES·CANVAS²·4 個の f16 の生ビット
+    /// (rgba16float をそのまま)。下地がなければ None
+    pub base: Option<Vec<u16>>,
 }
 
-/// rgba32float(4成分)テクスチャ1テクセルあたりの f32 数
-const RGBA: u32 = 4;
+/// テクセルあたりのバイト数: rgba32float / r32float / rgba16float(下地)
+const RGBA32: u32 = 16;
+const R32: u32 = 4;
+const RGBA16: u32 = 8;
 
 impl GpuCanvas {
     /// 現在のキャンバス状態を [`WorkTextures`] へ読み戻す(M7 保存)。
@@ -43,18 +48,25 @@ impl GpuCanvas {
         });
         let cur = self.current;
         let wet: Vec<wgpu::Buffer> = (0..TEX_KINDS)
-            .map(|kind| self.copy_texture(device, &mut encoder, &self.textures[kind][cur], 0, RGBA))
+            .map(|kind| self.copy_texture(device, &mut encoder, &self.textures[kind][cur], 0, RGBA32))
             .collect();
         // 乾燥レイヤーはスロット 0..len を焼き込み順(= slot 昇順)に読む。
         // bake は slot = layers.len() で採番し解放しないので使用スロットは常に連続 0..len
         let dried: Vec<wgpu::Buffer> = (0..self.layers.len() as u32)
-            .map(|slot| self.copy_texture(device, &mut encoder, &self.dried_texture, slot, RGBA))
+            .map(|slot| self.copy_texture(device, &mut encoder, &self.dried_texture, slot, RGBA32))
             .collect();
         let lines: Vec<wgpu::Buffer> = self
             .line_textures
             .iter()
-            .map(|t| self.copy_texture(device, &mut encoder, t, 0, 1))
+            .map(|t| self.copy_texture(device, &mut encoder, t, 0, R32))
             .collect();
+        let base: Vec<wgpu::Buffer> = if self.has_base {
+            (0..BASE_SLICES as u32)
+                .map(|slice| self.copy_texture(device, &mut encoder, &self.base_texture, slice, RGBA16))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let latents = copy_buffer(
             device,
             &mut encoder,
@@ -65,17 +77,32 @@ impl GpuCanvas {
 
         let mut all: Vec<&wgpu::Buffer> = wet.iter().chain(&dried).chain(&lines).collect();
         all.push(&latents);
-        let mut floats = map_read_all(device, &all)?.into_iter();
-        let mut take = |n: usize| -> Vec<Vec<f32>> { floats.by_ref().take(n).collect() };
-        let wet: [Vec<f32>; TEX_KINDS] = take(TEX_KINDS).try_into().expect("湿レイヤー3枚");
-        let dried = take(dried.len());
-        let lines: [Vec<f32>; 3] = take(3).try_into().expect("線画3枚");
-        let latents = take(1).pop().expect("latent");
+        all.extend(&base);
+        let mut blobs = map_read_all(device, &all)?.into_iter();
+        let mut take = |n: usize| -> Vec<Vec<u8>> { blobs.by_ref().take(n).collect() };
+        let f32s = |v: Vec<u8>| -> Vec<f32> { bytemuck::pod_collect_to_vec(&v) };
+        let wet: [Vec<f32>; TEX_KINDS] = take(TEX_KINDS)
+            .into_iter()
+            .map(f32s)
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("湿レイヤー3枚");
+        let dried = take(dried.len()).into_iter().map(f32s).collect();
+        let lines: [Vec<f32>; 3] = take(3)
+            .into_iter()
+            .map(f32s)
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("線画3枚");
+        let latents = f32s(take(1).pop().expect("latent"));
+        let base = (!base.is_empty())
+            .then(|| take(BASE_SLICES).iter().flat_map(|v| bytemuck::pod_collect_to_vec::<u8, u16>(v)).collect());
         Ok(WorkTextures {
             wet,
             dried,
             lines,
             latents,
+            base,
         })
     }
 
@@ -93,16 +120,16 @@ impl GpuCanvas {
         let stagings: Vec<wgpu::Buffer> = (0..TEX_KINDS)
             .flat_map(|kind| [0, 1].map(|parity| (kind, parity)))
             .map(|(kind, parity)| {
-                self.copy_texture(device, &mut encoder, &self.textures[kind][parity], 0, RGBA)
+                self.copy_texture(device, &mut encoder, &self.textures[kind][parity], 0, RGBA32)
             })
             .collect();
         queue.submit([encoder.finish()]);
         let all: Vec<&wgpu::Buffer> = stagings.iter().collect();
-        let floats = map_read_all(device, &all)?;
+        let blobs = map_read_all(device, &all)?;
         Ok(std::array::from_fn(|kind| {
-            floats[kind * 2]
-                .chunks(RGBA as usize)
-                .zip(floats[kind * 2 + 1].chunks(RGBA as usize))
+            blobs[kind * 2]
+                .chunks(RGBA32 as usize)
+                .zip(blobs[kind * 2 + 1].chunks(RGBA32 as usize))
                 .filter(|(a, b)| a != b)
                 .count()
         }))
@@ -125,20 +152,20 @@ impl GpuCanvas {
         let texels = (self.size * self.size) as usize;
         // 湿レイヤー(rgba32float)を parity 0 へ
         for kind in 0..TEX_KINDS {
-            if work.wet[kind].len() != texels * RGBA as usize {
+            if work.wet[kind].len() != texels * 4 {
                 return Err("作品データの湿レイヤーのサイズが不正です".to_owned());
             }
-            self.write_texture(queue, &self.textures[kind][0], 0, RGBA, &work.wet[kind]);
+            self.write_texture(queue, &self.textures[kind][0], 0, RGBA32, bytemuck::cast_slice(&work.wet[kind]));
         }
         self.current = 0;
         self.mark_tiles_dirty(queue);
 
         // 乾燥レイヤー: slot 昇順に書き戻す(export と同順)
         for (slot, data) in work.dried.iter().enumerate() {
-            if data.len() != texels * RGBA as usize {
+            if data.len() != texels * 4 {
                 return Err("作品データの乾燥レイヤーのサイズが不正です".to_owned());
             }
-            self.write_texture(queue, &self.dried_texture, slot as u32, RGBA, data);
+            self.write_texture(queue, &self.dried_texture, slot as u32, RGBA32, bytemuck::cast_slice(data));
         }
 
         // 線画(r32float)
@@ -146,8 +173,19 @@ impl GpuCanvas {
             if work.lines[i].len() != texels {
                 return Err("作品データの線画のサイズが不正です".to_owned());
             }
-            self.write_texture(queue, &self.line_textures[i], 0, 1, &work.lines[i]);
+            self.write_texture(queue, &self.line_textures[i], 0, R32, bytemuck::cast_slice(&work.lines[i]));
         }
+
+        // 下地(rgba16float の生ビット)。なければ合成は紙から始まる
+        if let Some(base) = &work.base {
+            if base.len() != BASE_SLICES * texels * 4 {
+                return Err("作品データの下地のサイズが不正です".to_owned());
+            }
+            for (slice, data) in base.chunks_exact(texels * 4).enumerate() {
+                self.write_texture(queue, &self.base_texture, slice as u32, RGBA16, bytemuck::cast_slice(data));
+            }
+        }
+        self.has_base = work.base.is_some();
 
         // 顔料 + 光学 latent(グローバル + レイヤーごとパレット + live)を丸ごと復元
         if work.latents.len() != LATENT_TOTAL * 4 {
@@ -159,7 +197,7 @@ impl GpuCanvas {
     }
 
     /// 2D テクスチャ(または array の1スライス)を staging バッファへコピーするコマンドを積む。
-    /// `components` = テクセルあたりの f32 数(rgba32float=4 / r32float=1)。
+    /// `texel_bytes` = テクセルあたりのバイト数(RGBA32 / R32 / RGBA16)。
     /// CANVAS_SIZES(64 の倍数)では行バイト数が 256 の倍数なのでパディングは生じない
     fn copy_texture(
         &self,
@@ -167,9 +205,9 @@ impl GpuCanvas {
         encoder: &mut wgpu::CommandEncoder,
         texture: &wgpu::Texture,
         base_layer: u32,
-        components: u32,
+        texel_bytes: u32,
     ) -> wgpu::Buffer {
-        let bytes_per_row = self.size * components * 4;
+        let bytes_per_row = self.size * texel_bytes;
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("work_texture_readback"),
             size: (bytes_per_row * self.size) as u64,
@@ -204,16 +242,16 @@ impl GpuCanvas {
         staging
     }
 
-    /// f32 配列を 2D テクスチャ(または array の1スライス)へ書き込む。copy_texture(読み戻し)の逆
+    /// バイト列を 2D テクスチャ(または array の1スライス)へ書き込む。copy_texture(読み戻し)の逆
     fn write_texture(
         &self,
         queue: &wgpu::Queue,
         texture: &wgpu::Texture,
         base_layer: u32,
-        components: u32,
-        data: &[f32],
+        texel_bytes: u32,
+        data: &[u8],
     ) {
-        let bytes_per_row = self.size * components * 4;
+        let bytes_per_row = self.size * texel_bytes;
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture,
@@ -225,7 +263,7 @@ impl GpuCanvas {
                 },
                 aspect: wgpu::TextureAspect::All,
             },
-            bytemuck::cast_slice(data),
+            data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(bytes_per_row),
@@ -258,8 +296,8 @@ fn copy_buffer(
 }
 
 /// submit 済みのコピー先 staging バッファ群をまとめて map し、GPU 完了を1回だけ同期待ちしてから
-/// 順に f32 の Vec へ読み出す(戻り値は `stagings` と同順)
-fn map_read_all(device: &wgpu::Device, stagings: &[&wgpu::Buffer]) -> Result<Vec<Vec<f32>>, String> {
+/// 順にバイト列へ読み出す(戻り値は `stagings` と同順)
+fn map_read_all(device: &wgpu::Device, stagings: &[&wgpu::Buffer]) -> Result<Vec<Vec<u8>>, String> {
     let receivers: Vec<_> = stagings
         .iter()
         .map(|staging| {
@@ -282,7 +320,7 @@ fn map_read_all(device: &wgpu::Device, stagings: &[&wgpu::Buffer]) -> Result<Vec
             .map_err(|e| format!("map コールバックが届きません: {e}"))?
             .map_err(|e| format!("読み戻しバッファの map に失敗: {e:?}"))?;
         let data = staging.slice(..).get_mapped_range();
-        out.push(bytemuck::cast_slice::<u8, f32>(&data).to_vec());
+        out.push(data.to_vec());
         drop(data);
         staging.unmap();
     }

@@ -80,6 +80,54 @@ fn wet_on_wet_blends_into_green_gradient() {
     );
 }
 
+/// 下地への統合: 下の乾燥レイヤーを焼き固めても見た目(乗算・KM の両方式)は変わらず、
+/// 空いた枠にまた乾かせる
+#[test]
+fn merge_into_base_keeps_look() {
+    let mut c = canvas();
+    // 横・縦・斜めに交差させて、重ね順が効く KM 合成の交差部も比べる
+    let strokes = [
+        (YELLOW, [100.0, 250.0], [400.0, 250.0]),
+        (BLUE, [250.0, 100.0], [250.0, 400.0]),
+        (SIENNA, [120.0, 120.0], [380.0, 380.0]),
+    ];
+    for (channel, a, b) in strokes {
+        c.play(recording(vec![stroke(WetTool::Paint, channel, a, b, 0)]));
+        c.idle(120);
+        c.bake_dry().unwrap();
+    }
+    let look = |c: &mut HeadlessCanvas| {
+        [0, 1].map(|mode| {
+            c.params.compose_mode = mode;
+            c.idle(1); // 合成キャッシュを焼き直すフレーム
+            c.snapshot().unwrap()
+        })
+    };
+    let before = look(&mut c);
+    c.merge_into_base(2).unwrap();
+    assert_eq!(c.layer_count(), 1);
+    let after = look(&mut c);
+    let png = save(&after[1], "merge_into_base");
+
+    for mode in 0..2 {
+        let worst = before[mode]
+            .rgba
+            .iter()
+            .zip(&after[mode].rgba)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap();
+        // 下地は合成キャッシュと同じ半精度なので、丸めの差が 8bit で数段出る程度に収まる
+        assert!(worst <= 2, "統合で見た目が変わった(合成方式 {mode}、最大差 {worst})\n{}", png.display());
+    }
+
+    // 空いた枠にまた乾かせて、下地の上に重なる
+    c.play(recording(vec![hstroke(WetTool::Paint, BLUE, 100.0, 400.0, 450.0, 0)]));
+    c.idle(120);
+    c.bake_dry().unwrap();
+    assert_eq!(c.layer_count(), 2);
+}
+
 /// グレージング: 乾かした黄の上に青を重ねると、交差部だけ緑に濃くなり、下の層は変わらない
 #[test]
 fn glazing_layers_over_dried_paint() {
@@ -308,9 +356,43 @@ fn active_tiles_match_full_compute() {
     );
 }
 
+/// アクティブタイル: 蒸発で水が尽きた領域(濡れマスクは残る)は計算から外れるが、その隣に
+/// 新しく水を置いて湿った紙を伝って広がる場合も、全面計算と同じ絵になる
+#[test]
+fn active_tiles_match_full_compute_after_evaporation() {
+    let run = |active_tiles: u32| {
+        let mut c = canvas();
+        c.params.active_tiles = active_tiles;
+        // 蒸発を速めて、水が尽きるまでを短く回す
+        c.params.evap_rate = 0.02;
+        c.play(recording(vec![hstroke(WetTool::Paint, YELLOW, 80.0, 420.0, 200.0, 0)]));
+        c.idle(200);
+        c.params.evap_rate = 0.0003;
+        c.play(recording(vec![stroke(WetTool::Paint, BLUE, [250.0, 120.0], [250.0, 260.0], 0)]));
+        c.idle(60);
+        c.snapshot().unwrap()
+    };
+    let tiled = run(1);
+    let full = run(0);
+    let png = save(&tiled, "active_tiles_evaporated_tiled");
+    save(&full, "active_tiles_evaporated_full");
+    let max_diff = tiled
+        .rgba
+        .iter()
+        .zip(&full.rgba)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap();
+    assert!(
+        max_diff <= 2,
+        "蒸発後のアクティブタイルの有無で絵が変わる(最大差 {max_diff}/255)\n{}",
+        png.display()
+    );
+}
+
 /// アクティブタイル: 計算から外れたタイル(書き込みを省くタイル)では ping-pong の2枚が一致している。
-/// 濡れマスクは蒸発では消えないので、タイルが計算から外れるのは Fast Dry・乾かす(bake)の後。
-/// これらは current 側だけを書き替えるので、片方が古いまま残ると後でそのタイルを読むパスに混ざる
+/// Fast Dry・乾かす(bake)は current 側だけを書き替えるので、片方が古いまま残ると
+/// 後でそのタイルを読むパスに混ざる
 #[test]
 fn inactive_tiles_keep_pingpong_in_sync() {
     let mut c = canvas();

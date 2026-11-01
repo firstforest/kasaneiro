@@ -22,6 +22,7 @@ use crate::preset;
 use crate::replay::{self, Player, Recording};
 use crate::work;
 use paint_core::brush::StrokeState;
+use paint_core::clock::SimClock;
 use paint_core::sim::{DEFAULT_CANVAS_SIZE, SimParams, Splat};
 use paint_core::tool::{RasterTool, Tool, WetTool};
 use ui::{NamedStore, PaletteUi, PresetUi, ReplayUi, WorkUi};
@@ -154,8 +155,10 @@ pub struct PaintApp {
     paused: bool,
     /// H6: 一時停止中の「1ステップ」ボタンが押された(次フレームで消費)
     step_once: bool,
-    /// H6: 速度倍率(1フレームあたりのシミュレーションステップ数)
-    steps_per_frame: u32,
+    /// H6: 速度倍率(1刻み=1/60 秒あたりのシミュレーションステップ数)
+    steps_per_tick: u32,
+    /// シミュレーションの固定刻み時計(フレームの経過時間を刻み数に変える)
+    sim_clock: SimClock,
     /// H3: プリセットの UI 状態(名前入力+一覧)
     preset_ui: PresetUi,
     /// M7: 作品保存の UI 状態(名前入力+一覧)
@@ -279,7 +282,8 @@ impl PaintApp {
             shader_error,
             paused: false,
             step_once: false,
-            steps_per_frame: 1,
+            steps_per_tick: 1,
+            sim_clock: SimClock::default(),
             preset_ui: PresetUi {
                 store: NamedStore::new(preset::list()),
             },
