@@ -1,5 +1,5 @@
 //! SimParams のプリセット保存/読込(H3)。
-//! assets/presets/*.json は git にコミットする(plan.md §1: 「昨日の良かった設定」を失わない)。
+//! assets/presets/*.json は git にコミットする(docs/design.md §2: 「昨日の良かった設定」を失わない)。
 //! SimParams 側に #[serde(default)] があるため、パラメータが増えても古いプリセットは
 //! 不足分を既定値で埋めて読める。
 

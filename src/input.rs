@@ -1,4 +1,4 @@
-//! 入力抽象(plan.md §2 の input.rs)。ポインタ入力を PointerEvent に正規化する。
+//! 入力抽象。ポインタ入力を PointerEvent に正規化する。
 //!
 //! ソースは2つ(M1.5): egui ドラッグのマウス(MouseSource)と、egui の Touch
 //! イベントを読むペン(PenSource)。筆圧の経路は
@@ -9,7 +9,7 @@
 //!
 //! egui-winit は Touch から通常のポインタ(カーソル移動+左ボタン)もエミュレート
 //! するため、ペン接地中は PenSource を優先し MouseSource を無視する(二重ストローク
-//! 防止)。将来の入力(wasm Pointer 等)は PointerSource の実装を足す(plan.md §3)。
+//! 防止)。将来の入力(wasm Pointer 等)は PointerSource の実装を足す(docs/design.md §3.8)。
 
 use eframe::egui;
 

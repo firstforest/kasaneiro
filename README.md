@@ -44,12 +44,12 @@ workspace は `km`(Kubelka-Munk 純関数)・`pigment`(mixbox 混色)・`paint-c
 | [docs/status.md](docs/status.md) | 現在の実装状況(正典) |
 | [docs/changelog.md](docs/changelog.md) | 実装の経緯(時系列の変更ログ) |
 | [docs/requirements.md](docs/requirements.md) | 要件仕様 |
+| [docs/design.md](docs/design.md) | 設計原則・主要な設計判断とその理由・先送り判断 |
 | [docs/architecture.md](docs/architecture.md) | 実装構造(モジュール・テクスチャ・パス順序・シェーダー) |
 | [docs/parameters.md](docs/parameters.md) | 全パラメータと顔料個性 ρ/ω/γ/μ のリファレンス |
-| [docs/plan.md](docs/plan.md) | 設計方針と先送り判断 |
 | [docs/note/00-overview.md](docs/note/00-overview.md) | 技術ノートの起点(再利用できる知見と最新の情報) |
 | [docs/memo/](docs/memo/) | 日付つきの検討メモ(その時点の比較・試行錯誤の経緯) |
 
 ## ライセンスについて
 
-混色に [mixbox](https://github.com/scrtwpns/mixbox)(CC BY-NC)を使用しているため、**非商用**。個人の道具として開発しており、配布・商用化は当面しない(商用化する場合は自作スペクトラル WGM へ差し替える計画 — docs/plan.md §3)。
+混色に [mixbox](https://github.com/scrtwpns/mixbox)(CC BY-NC)を使用しているため、**非商用**。個人の道具として開発しており、配布・商用化は当面しない(商用化する場合は自作スペクトラル WGM へ差し替える計画 — docs/design.md §4)。

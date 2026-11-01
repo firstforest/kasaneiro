@@ -2,7 +2,7 @@
 
 水彩シミュレーションに関わる要素技術の調査と、実装で確かめた仕組みのノート。**再利用できる知見と最新の情報だけ**を置き、書かれた内容が古くなったら本文を書き換える。
 
-時系列が意味を持つ記録(当時の検討・比較・試行錯誤の経緯)は [../memo/](../memo/) に `YYYY-MM-DD-` を頭につけて置く。実装の現在地は [status.md](../status.md)、構造は [architecture.md](../architecture.md)、パラメータの既定値は [parameters.md](../parameters.md) が正典。
+時系列が意味を持つ記録(当時の検討・比較・試行錯誤の経緯)は [../memo/](../memo/) に `YYYY-MM-DD-` を頭につけて置く。実装の現在地は [status.md](../status.md)、設計判断は [design.md](../design.md)、構造は [architecture.md](../architecture.md)、パラメータの既定値は [parameters.md](../parameters.md) が正典。
 
 ## 欲しい機能と対応する要素技術
 

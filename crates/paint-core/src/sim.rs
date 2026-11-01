@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 /// 実行時の値は GpuCanvas が持ち、ここは選択肢と既定値だけを定義する
 pub const CANVAS_SIZES: [u32; 3] = [512, 1024, 2048];
 
-/// 起動時のキャンバス1辺。試行錯誤は軽い 512² で回す(2048² は「広い紙」用。反復速度の原則 = plan.md 冒頭)
+/// 起動時のキャンバス1辺。試行錯誤は軽い 512² で回す(2048² は「広い紙」用。反復速度の原則 = docs/design.md §1)
 pub const DEFAULT_CANVAS_SIZE: u32 = 512;
 
 /// 1フレームで GPU に送る splat の上限(storage buffer の固定長。32B × 8192 = 256KB)。

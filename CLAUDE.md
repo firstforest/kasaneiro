@@ -13,9 +13,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | [docs/status.md](docs/status.md) | **現在の実装状況の正典**(現在地の要約・マイルストーン表・装備表・既知の課題/要目視確認)。作業開始時にまず読む |
 | [docs/changelog.md](docs/changelog.md) | 実装の経緯を時系列で残す変更ログ。現状の説明は status.md に書き、ここには混ぜない |
 | [docs/requirements.md](docs/requirements.md) | 要件仕様(3要件の判定基準・ツール構成・UI/入力要件・非機能要件) |
-| [docs/architecture.md](docs/architecture.md) | 実装構造(スタック・モジュール構成・テクスチャ・パス順序・シェーダー一覧・混色の2段構え) |
+| [docs/design.md](docs/design.md) | **「なぜそうしたか」の正典**(設計原則・試行錯誤ループ H1〜H6 の狙い・サブシステムごとの設計判断と理由・先送り判断 §4) |
+| [docs/architecture.md](docs/architecture.md) | **「どうなっているか」の正典**(スタック・モジュール構成・GPU リソースと binding・パス順序・シェーダー一覧・保存形式)。理由は書かず design.md へリンクする |
 | [docs/parameters.md](docs/parameters.md) | 全パラメータ(`SimParams`)と顔料個性 ρ/ω/γ/μ のリファレンス(既定値・UI 範囲・意味・実効式) |
-| [docs/plan.md](docs/plan.md) | 設計方針(試行錯誤ループと装備 H1〜H6 の狙い・プロジェクト構成)と先送り判断 §3 |
 | [docs/note/00-overview.md](docs/note/00-overview.md) | 技術ノートの起点。再利用できる知見と最新の情報だけを置く(要素技術の調査・実装で確かめた仕組み)。設計判断に迷ったら参照 |
 | [docs/memo/](docs/memo/) | 時系列が意味を持つ記録(その時点の検討・比較・試行錯誤の経緯)。ファイル名は `YYYY-MM-DD-<内容>.md` |
 
@@ -31,6 +31,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 経緯として残したいこと(何を・なぜ変えたか、その時点の要目視確認)は **changelog.md** の先頭にエントリを足す
 - `SimParams` のパラメータや顔料を追加・変更したら **parameters.md** を更新する
 - パス順序・テクスチャ構成・モジュール構成・シェーダーが変わったら **architecture.md** を更新する
+- 設計判断(方式の選択とその理由)を新しく決めた/変えたとき、先送り判断を採った/片付けたときは **design.md** を更新する。architecture.md には M番号などの経緯タグを付けない
 
 ## コマンド
 
@@ -56,4 +57,4 @@ Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は `mise
 
 ## 先送り済みの判断(再検討トリガーが来るまで蒸し返さない)
 
-plan.md §3 の表が正典。要点: 混色は mixbox クレート(CC BY-NC、商用化時に自作スペクトラル WGM へ — **mixbox 依存は `crates/pigment` に隔離**(依存グラフとして強制))/ 流体は Curtis 簡略版(不安定なら Stam、表情不足なら LBM)/ 同時顔料数は 4ch のまま(多色化はレイヤーごとパレット記録 M5c で)/ ペン入力は Windows Ink のみ(WinTab 非対応)/ Web 版はやらないが input・保存の trait 抽象だけ維持。
+design.md §4 の表が正典。要点: 混色は mixbox クレート(CC BY-NC、商用化時に自作スペクトラル WGM へ — **mixbox 依存は `crates/pigment` に隔離**(依存グラフとして強制))/ 流体は Curtis 簡略版(不安定なら Stam、表情不足なら LBM)/ 同時顔料数は 4ch のまま(多色化はレイヤーごとパレット記録で)/ ペン入力は Windows Ink のみ(WinTab 非対応)/ Web 版はやらないが input・保存の trait 抽象だけ維持。

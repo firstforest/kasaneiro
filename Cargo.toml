@@ -40,7 +40,7 @@ naga = { version = "29.0", features = ["wgsl-in"] }
 # egui / eframe と同じバージョンに揃えること
 egui_kittest = { version = "0.35.0", features = ["eframe", "wgpu"] }
 
-# コンパイル時間対策(plan.md §2): 依存クレートだけ最適化し、自前コードは軽い最適化に留める。
+# コンパイル時間対策(docs/design.md §3.1): 依存クレートだけ最適化し、自前コードは軽い最適化に留める。
 # workspace 全体に効く(profile はワークスペースルートでのみ有効)
 [profile.dev]
 opt-level = 1

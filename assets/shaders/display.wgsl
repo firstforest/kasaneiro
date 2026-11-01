@@ -244,7 +244,7 @@ fn compose(water: f32, susp: vec4f, dep: vec4f, p: vec2f) -> vec3f {
     return render_paper(water, susp, dep) * dried_factor(p);
 }
 
-// 線画(M4.5a)を色の上に重ねる。plan の合成順(紙→乾燥→湿→線画→ハイライト)に従い、
+// 線画(M4.5a)を色の上に重ねる。docs/design.md §3.5 の合成順(紙→乾燥→湿→線画→ハイライト)に従い、
 // 下書き(鉛筆=グレー)→ 清書(ペン=濃色)の順にアルファ合成する。インク濃度 r がアルファ。
 // 表示切替(show_pencil / show_pen)で各レイヤーを消せる
 fn apply_lines(color_in: vec3f, p: vec2f) -> vec3f {
