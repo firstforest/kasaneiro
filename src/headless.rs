@@ -160,6 +160,15 @@ impl HeadlessCanvas {
     }
 }
 
+/// frame() は submit するだけで完了を待たないので、読み戻しで終わらない使い方では
+/// 未完了の処理が積み残る。wgpu は Queue の破棄時に完了を最大 6.3 秒しか待たず、
+/// 超えると panic するため、破棄の前に待ち切る
+impl Drop for HeadlessCanvas {
+    fn drop(&mut self) {
+        self.wait_idle();
+    }
+}
+
 /// キャンバスの見た目(sRGB の RGBA8、行連続、size × size)
 #[derive(Clone)]
 pub struct Image {
