@@ -546,7 +546,8 @@ impl PaintApp {
         self.brush_refill = self.brush_load;
     }
 
-    /// 筆の中身: 混ざった色(濃さに応じて紙色へ薄めた見本)・色の内訳・濃さ・残りの水
+    /// 筆の状態パネル: 混ざった色の見本・濃さ・水のゲージ・顔料の色別積み上げゲージ。
+    /// 描いて減る・取って増える様子を毎フレーム追従して見せる
     fn brush_load_view(&self, ui: &mut egui::Ui) {
         let load = self.brush_load;
         let paper = pigment::PAPER_RGB.map(|c| c * 255.0);
@@ -560,48 +561,116 @@ impl PaintApp {
             None => egui::Color32::from_rgb(paper[0] as u8, paper[1] as u8, paper[2] as u8),
         };
         let total = load.pigment_total();
-        let colors = if total <= 0.0 {
-            "水だけ".to_owned()
-        } else {
-            self.palette
-                .pigments
-                .iter()
-                .zip(load.pigment)
-                .filter(|(_, a)| *a / total >= 0.05)
-                .map(|(p, a)| {
-                    if a >= total * 0.995 {
-                        p.name.clone()
-                    } else {
-                        format!("{} {:.0}%", p.name, a / total * 100.0)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" + ")
-        };
-        ui.horizontal(|ui| {
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 14.0, shown);
-            ui.painter().rect_stroke(
-                rect,
-                14.0,
-                (1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
-                egui::StrokeKind::Inside,
+        let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
+        let track = ui.visuals().extreme_bg_color;
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 14.0, shown);
+                ui.painter()
+                    .rect_stroke(rect, 14.0, stroke, egui::StrokeKind::Inside);
+                resp.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "筆の中身")
+                });
+                ui.vertical(|ui| {
+                    ui.label("筆の状態");
+                    ui.label(
+                        egui::RichText::new(format!("濃さ ×{:.1}", load.concentration()))
+                            .weak()
+                            .small(),
+                    );
+                });
+            });
+
+            // 水: 0〜100%(満タン = 1)
+            let water = load.water.clamp(0.0, 1.0);
+            gauge_row(
+                ui,
+                "含む水",
+                format!("{:.0}%", water * 100.0),
+                stroke,
+                track,
+                |painter, r| {
+                    let w = r.width() * water;
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(r.min, egui::vec2(w, r.height())),
+                        3.0,
+                        egui::Color32::from_rgb(90, 150, 220),
+                    );
+                },
             );
-            resp.widget_info(|| {
-                egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "筆の中身")
-            });
-            ui.vertical(|ui| {
-                ui.label(format!("筆: {colors}"));
-                ui.label(
-                    egui::RichText::new(format!(
-                        "濃さ ×{:.1} / 水 {:.0}%",
-                        load.concentration(),
-                        load.water * 100.0
-                    ))
-                    .weak()
-                    .small(),
-                );
-            });
+
+            // 顔料: 色ごとの量を色つきで左から積み上げる(上限 PIGMENT_MAX 回分)
+            gauge_row(
+                ui,
+                "含む顔料",
+                if total <= 0.0 {
+                    "なし".to_owned()
+                } else {
+                    format!("{total:.1}")
+                },
+                stroke,
+                track,
+                |painter, r| {
+                    let mut x = r.min.x;
+                    for (p, a) in self.palette.pigments.iter().zip(load.pigment) {
+                        let w = r.width() * (a / load::PIGMENT_MAX).clamp(0.0, 1.0);
+                        if w <= 0.0 {
+                            continue;
+                        }
+                        let seg = egui::Rect::from_min_size(
+                            egui::pos2(x, r.min.y),
+                            egui::vec2(w.min(r.max.x - x), r.height()),
+                        );
+                        painter.rect_filled(
+                            seg,
+                            0.0,
+                            egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]),
+                        );
+                        x += w;
+                    }
+                },
+            );
+
+            // 内訳(5% 以上の色だけ)
+            if total > 0.0 {
+                let parts = self
+                    .palette
+                    .pigments
+                    .iter()
+                    .zip(load.pigment)
+                    .filter(|(_, a)| *a / total >= 0.05)
+                    .map(|(p, a)| format!("{} {:.0}%", p.name, a / total * 100.0))
+                    .collect::<Vec<_>>()
+                    .join(" + ");
+                ui.label(egui::RichText::new(parts).weak().small());
+            }
         });
     }
+}
+
+/// ラベル + 横ゲージ + 数値の1行。draw は枠内(トラック上)に中身を描く
+fn gauge_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: String,
+    stroke: egui::Stroke,
+    track: egui::Color32,
+    draw: impl FnOnce(&egui::Painter, egui::Rect),
+) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [56.0, 14.0],
+            egui::Label::new(egui::RichText::new(label).small()),
+        );
+        let width = (ui.available_width() - 48.0).max(40.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 12.0), egui::Sense::hover());
+        let painter = ui.painter();
+        painter.rect_filled(rect, 3.0, track);
+        draw(painter, rect);
+        painter.rect_stroke(rect, 3.0, stroke, egui::StrokeKind::Inside);
+        ui.label(egui::RichText::new(value).small());
+    });
 }
