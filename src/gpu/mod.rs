@@ -39,6 +39,9 @@ mod snapshot;
 pub use callback::CanvasCallback;
 pub use persist::WorkTextures;
 pub use prelude::{LATENT_TOTAL, MAX_LAYERS};
+
+/// 下地テクスチャのスライス数(0 = 乗算 / 1 = KM)
+pub const BASE_SLICES: usize = 2;
 use prelude::{LIVE_PALETTE, PALETTE_SLOTS, TILE_SIZE, shader_prelude};
 
 use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
@@ -75,7 +78,7 @@ enum ComputeLayout {
     Bake,
     /// ラスタ線画(M4.5a): 対象の線画テクスチャ(read_write)+ params + splats + 紙ハイト
     Raster,
-    /// アクティブタイル走査(M6、tilescan): 水(read)+ params + splats + raw_active(write)
+    /// アクティブタイル走査(M6、tilescan): 水・浮遊顔料(read)+ params + splats + raw_active(write)
     TileScan,
     /// アクティブタイル膨張(M6、tiledilate): raw_active(read)→ active(write)
     TileDilate,
@@ -147,7 +150,7 @@ impl Pipelines {
 /// KM 合成(M3)で効くため UI の並べ替えをそのまま uniform へ流す
 #[derive(Clone, Copy)]
 pub struct DriedLayer {
-    /// dried_texture のスライス番号(焼き込み順に採番。全消去以外で解放しない)
+    /// dried_texture のスライス番号(使用中は 0..layers.len()。重ね順とは独立)
     pub slot: u32,
     pub visible: bool,
 }
@@ -189,7 +192,10 @@ struct LayerUniform {
     count: u32,
     /// bit k = 下から k 番目のレイヤーの可視性
     visible_mask: u32,
-    _pad: [u32; 2],
+    /// 1 = 合成を紙ではなく下地テクスチャから始める
+    has_base: u32,
+    /// 0 = params.compose_mode に従う / 1 = 乗算 / 2 = KM(下地の統合で両方式を焼き分ける)
+    force_mode: u32,
     /// order[k] = 下から k 番目のレイヤーのスロット番号
     order: [u32; MAX_LAYERS],
 }
@@ -248,6 +254,12 @@ pub struct GpuCanvas {
     /// 作品保存(M7)で全スライスを読み戻し/書き戻しするため実体テクスチャを保持する
     dried_texture: wgpu::Texture,
     dried_slice_views: Vec<wgpu::TextureView>,
+    /// 合成キャッシュの実体(下地への統合で下地テクスチャへ写す)
+    dried_cache_texture: wgpu::Texture,
+    /// 下地(2スライス: 0 = 乗算 / 1 = KM)。下の乾燥レイヤーを焼き固めた合成結果
+    base_texture: wgpu::Texture,
+    /// 下地が焼かれているか。false の間は合成が紙から始まり、下地テクスチャは読まれない
+    pub(crate) has_base: bool,
     layers_buffer: wgpu::Buffer,
     bake_bgl: wgpu::BindGroupLayout,
     bake_layout: wgpu::PipelineLayout,
@@ -276,10 +288,9 @@ pub struct GpuCanvas {
     /// 乾燥レイヤーの記録時パレット(M5h)。index = slot。GPU の latents 枠(M5c)が
     /// 色 latent しか持たないのに対し、こちらは名前・ρ/ω/γ 込みの**正典**
     /// (GPU 枠は表示用キャッシュ)。UI の「乾いた層からパレット抽出」が読む。
-    /// 不変条件: `layer_palettes.len() == layers.len()`(bake_dry で push / clear で全消去 /
-    /// 作品読込は work::decode が個数一致を検査した値を代入)。slot は layers.len() 連番で採番し
-    /// 解放は全消去のみなので添字=slot が常に成立する。将来レイヤー個別削除を入れる場合は
-    /// この前提が崩れる → HashMap 化等の再設計が必要
+    /// 不変条件: `layer_palettes.len() == layers.len()` で、使用中のスロットは 0..len(添字 = slot)。
+    /// bake_dry が末尾に push、clear が全消去、merge_into_base が残りを先頭へ詰め直し、
+    /// 作品読込は work::decode が個数一致を検査した値を代入する
     pub layer_palettes: Vec<pigment::Palette>,
     /// シェーダーが一度も通っていない/壊れている間は None(描画をスキップして継続)
     pipelines: Option<Pipelines>,
@@ -315,6 +326,7 @@ impl GpuCanvas {
         self.mark_tiles_dirty(queue);
         self.layers.clear();
         self.layer_palettes.clear();
+        self.has_base = false;
         self.sync_layers(queue);
     }
 
@@ -479,20 +491,117 @@ impl GpuCanvas {
     /// レイヤーの並び・可視性(self.layers)を display 用 uniform へ反映する(M2)。
     /// レイヤーパネル(src/app/ui/layers.rs)が layers を編集したあとに呼ぶ
     pub fn sync_layers(&self, queue: &wgpu::Queue) {
+        let uniform = self.layer_uniform(&self.layers, 0);
+        queue.write_buffer(&self.layers_buffer, 0, bytemuck::bytes_of(&uniform));
+        self.dried_cache_dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// `layers`(先頭が最下層)を合成する LayerUniform。`force_mode` は LayerUniform の同名欄
+    fn layer_uniform(&self, layers: &[DriedLayer], force_mode: u32) -> LayerUniform {
         let mut uniform = LayerUniform {
-            count: self.layers.len().min(MAX_LAYERS) as u32,
+            count: layers.len().min(MAX_LAYERS) as u32,
             visible_mask: 0,
-            _pad: [0; 2],
+            has_base: self.has_base as u32,
+            force_mode,
             order: [0; MAX_LAYERS],
         };
-        for (k, layer) in self.layers.iter().take(MAX_LAYERS).enumerate() {
+        for (k, layer) in layers.iter().take(MAX_LAYERS).enumerate() {
             uniform.order[k] = layer.slot;
             if layer.visible {
                 uniform.visible_mask |= 1 << k;
             }
         }
-        queue.write_buffer(&self.layers_buffer, 0, bytemuck::bytes_of(&uniform));
-        self.dried_cache_dirty.store(true, Ordering::Relaxed);
+        uniform
+    }
+
+    /// 下から `count` 枚の乾燥レイヤーを下地に焼き固めて、そのスロットを空ける。
+    /// 乗算・KM の両方式について「今の下地(なければ紙)+下の count 枚」の合成結果を焼くので
+    /// 見た目は変わらない。代わりに焼いた層の並べ替え・表示切替・記録パレットは失われ、
+    /// 非表示だった層は合成されずに消える。焼いた時点の紙色・顔料濃度も下地に固まる。
+    /// 残った層は重ね順のままスロット 0.. へ詰め直す(layer_palettes の添字 = slot を保つ)
+    pub fn merge_into_base(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        count: usize,
+    ) -> Result<(), String> {
+        let pipelines = self.pipelines.as_ref().ok_or("シェーダーが未ビルドです")?;
+        if count == 0 || count > self.layers.len() {
+            return Err(format!("下地へ統合する層の数が不正です({count})"));
+        }
+        // 方式ごとに合成キャッシュへ焼いて下地のスライスへ写す。uniform の書き換えは次の submit の
+        // 前に反映されるので、方式ごとに submit を分ける
+        for (slice, force_mode) in [(0u32, 1u32), (1, 2)] {
+            let uniform = self.layer_uniform(&self.layers[..count], force_mode);
+            queue.write_buffer(&self.layers_buffer, 0, bytemuck::bytes_of(&uniform));
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("merge_base_encoder"),
+            });
+            self.encode_dried_cache(&mut encoder, pipelines);
+            encoder.copy_texture_to_texture(
+                self.dried_cache_texture.as_image_copy(),
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.base_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: slice },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: self.size,
+                    height: self.size,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
+        }
+        self.has_base = true;
+
+        let remaining: Vec<DriedLayer> = self.layers[count..].to_vec();
+        let old_palettes = std::mem::take(&mut self.layer_palettes);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("compact_layers_encoder"),
+        });
+        for (from, to) in compaction_moves(remaining.iter().map(|l| l.slot as usize)) {
+            self.copy_dried_slice(&mut encoder, from, to);
+        }
+        queue.submit([encoder.finish()]);
+        self.layers = remaining
+            .iter()
+            .enumerate()
+            .map(|(j, l)| DriedLayer {
+                slot: j as u32,
+                visible: l.visible,
+            })
+            .collect();
+        self.layer_palettes = remaining
+            .iter()
+            .map(|l| old_palettes[l.slot as usize].clone())
+            .collect();
+        // 記録パレットの GPU 枠も新しいスロットへ書き直す(CPU の記録パレットが正典)
+        for (slot, palette) in self.layer_palettes.iter().enumerate() {
+            self.write_layer_latents(queue, slot, &palette.pigment_latents());
+        }
+        self.sync_layers(queue);
+        Ok(())
+    }
+
+    /// 乾燥テクスチャのスライス `from` を `to` へ写すコマンドを積む
+    fn copy_dried_slice(&self, encoder: &mut wgpu::CommandEncoder, from: usize, to: usize) {
+        let at = |z: usize| wgpu::TexelCopyTextureInfo {
+            texture: &self.dried_texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x: 0, y: 0, z: z as u32 },
+            aspect: wgpu::TextureAspect::All,
+        };
+        encoder.copy_texture_to_texture(
+            at(from),
+            at(to),
+            wgpu::Extent3d {
+                width: self.size,
+                height: self.size,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 
     /// 乾燥レイヤーの合成キャッシュを焼く compute パスを積む(display.wgsl の dried_cache_main)
@@ -529,11 +638,21 @@ impl GpuCanvas {
     /// 乾かすとき、現行(live)パレットの顔料 latent を dried スロット `slot` の枠へ焼き込む(M5c)。
     /// これ以降に顔料を編集しても、このレイヤーは記録時の色のまま表示される
     fn record_layer_palette(&self, queue: &wgpu::Queue, slot: usize) {
+        self.write_layer_latents(queue, slot, &self.live_pigment_latents);
+    }
+
+    /// dried スロット `slot` の顔料 latent 枠を書く
+    fn write_layer_latents(
+        &self,
+        queue: &wgpu::Queue,
+        slot: usize,
+        latents: &[[f32; 4]; pigment::PIGMENT_LATENTS],
+    ) {
         let base = pigment::GLOBAL_LATENTS + slot * pigment::PIGMENT_LATENTS;
         queue.write_buffer(
             &self.latents_buffer,
             (base * std::mem::size_of::<[f32; 4]>()) as u64,
-            bytemuck::cast_slice(&self.live_pigment_latents),
+            bytemuck::cast_slice(latents),
         );
     }
 
@@ -550,10 +669,10 @@ impl GpuCanvas {
         let pipelines = self.pipelines.as_ref().ok_or("シェーダーが未ビルドです")?;
         if self.layers.len() >= MAX_LAYERS {
             return Err(format!(
-                "乾燥レイヤーの上限({MAX_LAYERS}枚)に達しています。リセットしてください"
+                "乾燥レイヤーの上限({MAX_LAYERS}枚)に達しています。レイヤーパネルで下の層を下地に統合すると空きます"
             ));
         }
-        // スロットは焼き込み順に採番(解放は全消去のみなので len がそのまま次の空き)
+        // スロットは 0..len が使用中(下地への統合も残りを先頭へ詰め直す)なので len が次の空き
         let slot = self.layers.len();
         // M5c: 現行パレットの色をこのレイヤー専用スロットへ焼き込む(以降の顔料編集で不変)
         self.record_layer_palette(queue, slot);
@@ -778,5 +897,61 @@ impl GpuCanvas {
         });
         self.dried_cache_dirty.store(true, Ordering::Relaxed);
         Ok(())
+    }
+}
+
+/// スロット詰め直しのコピー手順。`slots[j]` = 残す層 j の今のスロットで、層 j をスロット j へ
+/// 動かす (from, to) の列を返す。同じテクスチャ内のコピーなので、行き先にまだ動かしていない層が
+/// いれば先に空きスロットへ逃がす(統合で1枚以上空くので空きは必ずある)
+fn compaction_moves(slots: impl Iterator<Item = usize>) -> Vec<(usize, usize)> {
+    let mut at: Vec<usize> = slots.collect();
+    let mut holder: [Option<usize>; MAX_LAYERS] = [None; MAX_LAYERS];
+    for (j, &s) in at.iter().enumerate() {
+        holder[s] = Some(j);
+    }
+    let mut moves = Vec::new();
+    for j in 0..at.len() {
+        if at[j] == j {
+            continue;
+        }
+        // スロット j にいるのは、まだ動かしていない層(i > j)か、誰もいないか
+        if let Some(i) = holder[j] {
+            let free = (j + 1..MAX_LAYERS)
+                .find(|&f| holder[f].is_none())
+                .expect("統合でスロットが空いている");
+            moves.push((j, free));
+            holder[free] = Some(i);
+            at[i] = free;
+        }
+        moves.push((at[j], j));
+        holder[at[j]] = None;
+        holder[j] = Some(j);
+        at[j] = j;
+    }
+    moves
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 手順どおりに写すと、どの並びでも層 j がスロット j に来る
+    #[test]
+    fn compaction_moves_place_each_layer() {
+        let cases: [&[usize]; 5] = [&[3, 4, 5], &[1, 0], &[7, 2, 0, 5], &[0, 1, 2], &[2, 0, 1, 6, 5, 4, 3]];
+        for slots in cases {
+            // 中身 = 層番号(None = 空き)
+            let mut tex: [Option<usize>; MAX_LAYERS] = [None; MAX_LAYERS];
+            for (j, &s) in slots.iter().enumerate() {
+                tex[s] = Some(j);
+            }
+            for (from, to) in compaction_moves(slots.iter().copied()) {
+                assert_ne!(from, to);
+                tex[to] = tex[from];
+            }
+            // 未移動の層を潰していれば、その層はどこにも残らず下の一致が崩れる
+            let want: Vec<Option<usize>> = (0..slots.len()).map(Some).collect();
+            assert_eq!(tex[..slots.len()], want[..], "{slots:?}");
+        }
     }
 }

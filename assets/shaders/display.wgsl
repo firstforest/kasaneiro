@@ -61,15 +61,20 @@ fn pal_base(pal: u32) -> u32 { return GLOBAL_LATENTS + pal * PIGMENT_LATENTS; }
 @group(0) @binding(6) var dried_tex: texture_2d_array<f32>;
 // src/gpu/mod.rs の LayerUniform と同レイアウト。
 // order[k] = 下から k 番目のレイヤーのスロット番号 / visible_mask の bit k = 下から k 番目の可視性
-// (multiply は可換なので順序は今は見た目に効かないが、KM 合成(M3)で効くため配管だけ通しておく)
+// (multiply は可換なので順序は見た目に効かず、KM 合成でだけ効く)。
+// has_base = 1 なら合成を紙ではなく下地(base_tex)から始める。
+// force_mode = 0 は params.compose_mode に従い、1 / 2 は乗算 / KM で焼く(下地の統合が両方式を焼くため)
 struct LayerUniform {
     count: u32,
     visible_mask: u32,
-    _pad0: u32,
-    _pad1: u32,
+    has_base: u32,
+    force_mode: u32,
     order: array<vec4u, LAYER_ORDER_VEC4S>,
 };
 @group(0) @binding(7) var<uniform> layers: LayerUniform;
+// 下地(rgba16float の2スライス): 下の乾燥レイヤーを焼き固めた合成結果。
+// スライス 0 = 乗算の透過率の積 / 1 = 紙+焼いた層の KM 反射率(リニア)。dried_cache_main だけが読む
+@group(0) @binding(15) var base_tex: texture_2d_array<f32>;
 // 乾燥レイヤーの合成キャッシュ(rgba16float、キャンバス解像度。rgb のみ使う)。
 // compose_mode=0 は可視な乾燥レイヤーの multiply 係数、1 は紙+乾燥層の KM 反射率(リニア)。
 // fs_main は 13 で読み、dried_cache_main は 14 へ書く(別の bind group)
@@ -269,10 +274,13 @@ fn dried_cache_main(@builtin(global_invocation_id) gid: vec3u) {
         return;
     }
     let ip = vec2i(gid.xy);
-    let km = params.compose_mode == 1u;
-    // KM の下地 = 紙の反射率。render_conc(0,紙) は紙色そのもの(pal は濃度0なので不問)
+    let km = select(params.compose_mode == 1u, layers.force_mode == 2u, layers.force_mode != 0u);
+    // 合成の出発点: 下地があればそれ、なければ紙(KM は紙の反射率。render_conc(0,紙) は紙色そのもの
+    // で pal は濃度0なので不問 / 乗算は白=1)
     var acc = vec3f(1.0);
-    if (km) {
+    if (layers.has_base != 0u) {
+        acc = textureLoad(base_tex, ip, select(0, 1, km), 0).rgb;
+    } else if (km) {
         acc = srgb_to_linear(render_conc(vec4f(0.0), latents[0], latents[1], LIVE_PALETTE));
     }
     for (var k = 0u; k < min(layers.count, MAX_LAYERS); k++) {

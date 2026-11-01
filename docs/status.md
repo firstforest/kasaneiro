@@ -32,7 +32,7 @@
 - **左パネル**: 上部固定 = 乾燥3ボタン+元に戻す/やり直し。スクロール域 = 選択中レイヤーのツールだけ([src/app/ui/tools.rs](../src/app/ui/tools.rs) `active_tools_panel`。水彩 = ツールバー+スポイト+パレットパネル / 線画 = 各ツールのスライダー / 乾いた層 = 描画不可の案内と、その層を描いたときの4色の取り込み)。開発モード時のみ末尾に味付け・診断・シミュ制御・ストローク記録再生・シェーダー状態。下端 = 操作結果のステータス、左下固定 = 開発モードトグル
 - **パレットパネル**([src/app/ui/palette.rs](../src/app/ui/palette.rs)): 色ライブラリ(色相順のスウォッチグリッド。使用中マーク、右クリックでスロット指定読込・削除)+ パレット(4色一式。保存状態の表示、一覧から読込、「…」から削除、既定に戻す)。削除はサブメニュー内の確認ボタン経由
 - **「色をつくる」モーダル**: ツールバーの色スウォッチをダブルクリックで開く(色・名前・ρ/ω/γ/μ・[この色をとっておく])。色スウォッチの右クリックで「ライブラリへ保存」「2色目にする(分離色)」
-- **右パネル**: 表示(ズーム・回転)+ レイヤースタック([src/app/ui/layers.rs](../src/app/ui/layers.rs)。上=手前: ハイライト → 清書ペン → 下書き鉛筆 → 水彩 → 乾いた層 → 紙。選択 = ツール系統の切替、表示切替、乾いた層の並べ替え、合成方式)
+- **右パネル**: 表示(ズーム・回転)+ レイヤースタック([src/app/ui/layers.rs](../src/app/ui/layers.rs)。上=手前: ハイライト → 清書ペン → 下書き鉛筆 → 水彩 → 乾いた層 → 紙。選択 = ツール系統の切替、表示切替、乾いた層の並べ替えと下地への統合(⤓ = その層から下を下地に焼き固める。下地があると紙の行が「下地」になる)、合成方式)
 - **キャンバス**([src/app/ui/canvas.rs](../src/app/ui/canvas.rs)): ホイール=カーソル中心に拡大、Shift+ホイール=15°回転、中ボタンまたはスペース+左ドラッグ=パン。空キャンバスに初回ガイド(最初の一筆・作品読込・再生開始で消える)。シェーダーエラーはオーバーレイ表示
 - **永続化**(eframe storage): 開発モードの on/off、現行パレット、使っているパレットの保存名
 - **フォント**: M PLUS 1p を埋め込み、欠けるグリフは Windows のシステム日本語フォントへフォールバック
@@ -41,7 +41,7 @@
 
 | 対象 | 場所 | 形式 |
 |---|---|---|
-| 作品 | `works/*.kasane`(git 管理外) | 独自バイナリ: `MAGIC "KSN1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成・レイヤーごとパレット・canvas_size・layer_count)+ 生 f32 ブロブ(湿3 → 乾燥 → 線画3 → 顔料 latent)。読込時に層数・構成・末尾の余分なバイトを検査し、サイズが違えばそのサイズでキャンバスを作り直す([src/work.rs](../src/work.rs)) |
+| 作品 | `works/*.kasane`(git 管理外) | 独自バイナリ: `MAGIC "KSN1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成・レイヤーごとパレット・canvas_size・layer_count・has_base)+ 生ブロブ(f32 の湿3 → 乾燥 → 線画3 → 顔料 latent、下地があれば続けて f16 の下地2スライス)。`has_base` は省略時 false なので下地のない作品は同じ並びのまま。読込時に層数・構成・末尾の余分なバイトを検査し、サイズが違えばそのサイズでキャンバスを作り直す([src/work.rs](../src/work.rs)) |
 | 設定プリセット | `assets/presets/*.json`(git 管理) | SimParams の JSON。`#[serde(default)]` で足したパラメータは既定値で埋まる |
 | パレット(4色一式) | `assets/palettes/*.json`(git 管理) | `pigment::Palette`。同梱 4件(`default` は `default_palette()` と同値=テストで検査) |
 | 色ライブラリ | `assets/pigments/*.json`(git 管理) | `pigment::Pigment` 1個 = 1ファイル、保存名 = 顔料名。同梱 24色 |
@@ -58,14 +58,15 @@
 - **水**: Curtis 1997 簡略版(速度更新 → 発散緩和 → 移流)+ 水量そのものの毛細管拡散([note/05](note/05-wet-spreading.md))。吸着は水膜が切れるまで沈まないしきい値型、薄い水膜は流れを止める(`FLOW_MIN`)
 - **顔料**: 4スロット(テクスチャ rgba = 4顔料)。顔料個性 ρ(沈みやすさ)・ω(染みつき)・γ(粒状感)・μ(粒の細かさ)。μ の差が分離色を生む
 - **混色・発色**: 層内は mixbox の latent 混合、層間は Kubelka-Munk の R/T 合成(`compose_mode` 既定 1、0 で multiply)。mixbox 依存は `crates/pigment` に隔離
-- **乾燥とレイヤー**: 湿レイヤー1枚 + 乾燥レイヤー最大8枚(顔料濃度のまま保持)。乾かす瞬間のパレットを GPU の latent 枠と CPU の `layer_palettes` に記録するので、後でパレットを変えても乾いた層の色は変わらない
+- **乾燥とレイヤー**: 湿レイヤー1枚 + 乾燥レイヤー最大8枚(顔料濃度のまま保持)。乾かす瞬間のパレットを GPU の latent 枠と CPU の `layer_palettes` に記録するので、後でパレットを変えても乾いた層の色は変わらない。8枚に達したら、下の層を**下地**(乗算・KM 両方式の合成結果を焼いた rgba16float 2スライス)へ統合して枠を空ける。見た目は変わらないが、統合した層の並べ替え・表示切替・色の取り込みはできなくなり、紙色・`pigment_density` もそのときの値で固まる
 - **紙**: 紙ハイト(値ノイズ4成分)はあるが、シミュ側の紙の質感(`paper_amp` / `paper_gran` / `paper_wet`)は既定 0。鉛筆の粒状感(`pencil_gran`)とリフトの紙凸部変調は紙ハイトを使う
-- **計算範囲**: アクティブタイル(16×16 テクセル単位)で、濡れたセルがあるタイルと流体 splat の近傍だけを計算する(`active_tiles`=0 で全面計算)。計算しないタイルは ping-pong の2枚が揃っていれば書き込みも省く(タイルの3状態 COLD / COPY / ACTIVE と dirty フラグ)。濡れマスクは蒸発では消えないので、一度濡れたタイルは Fast Dry・乾かすまで計算され続ける。キャンバスは 512 / 1024 / 2048 の正方形
+- **計算範囲**: アクティブタイル(16×16 テクセル単位)で、まだ動きうる濡れたセル(水・速度・浮遊顔料のどれかが残る)があるタイルと流体 splat の近傍だけを計算する(`active_tiles`=0 で全面計算)。蒸発で水が尽きたタイルは、浮遊顔料が沈み切った数秒後に計算から外れる(濡れマスクは残るが、そのセルは全パスで不動点なので結果は全面計算と同じ)。計算しないタイルは ping-pong の2枚が揃っていれば書き込みも省く(タイルの3状態 COLD / COPY / ACTIVE と dirty フラグ)。キャンバスは 512 / 1024 / 2048 の正方形
 - **表示**: 乾燥レイヤーの合成(multiply / KM)はキャッシュ(rgba16float 1枚)に焼いておき、毎フレームは湿レイヤーだけを発色して重ねる。焼き直すのは乾燥レイヤー・並び・可視性・`pigment_density`・`compose_mode` が変わったときだけ
-- **性能**(Apple Silicon / Metal、headless 計測 [tests/perf_bench.rs](../tests/perf_bench.rs)、1フレーム): 2048² で乾いた紙 2.4ms・一部濡れ(320²)2.6ms・全面計算 16.3ms、表示はキャンバス解像度で 0.45ms(乾燥レイヤーの枚数によらない)。残る乾いた紙のコストは、何もせずに戻るワークグループを全面に起動する分
-- **乾き方**: `evap_rate` 既定 0.0003 = 水量 0.5 の塗りが約1分濡れたまま(60fps 基準)
+- **性能**(Apple Silicon / Metal、headless 計測 [tests/perf_bench.rs](../tests/perf_bench.rs)、1フレーム): 2048² で乾いた紙 2.4ms・一部濡れ(320²)2.7ms・全面計算 16.7ms・全面を濡らして蒸発し切った後 2.8ms、表示はキャンバス解像度で 0.45ms(乾燥レイヤーの枚数によらない)。残る乾いた紙のコストは、何もせずに戻るワークグループを全面に起動する分
+- **時間**: シミュは 1/60 秒の固定刻みで進む(`paint_core::clock::SimClock` がフレームの経過時間を刻み数に変え、1フレーム最大4刻み)。1刻みのステップ数が速度倍率。ストローク記録の時刻も刻み単位なので、乾く速さ・再生のテンポはモニタのリフレッシュレートに依らない。headless は1フレーム=1刻み
+- **乾き方**: `evap_rate` 既定 0.0003 = 水量 0.5 の塗りが約1分濡れたまま
 - **パラメータ**: `SimParams` は 56 フィールド = 224B(パディングなし)。Rust と common.wgsl の struct の一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検査。Rust と WGSL で共有する定数(MAX_LAYERS・latent 枠・タイル)は [src/gpu/prelude.rs](../src/gpu/prelude.rs) がプレリュードとして生成する
-- **テスト**: `cargo test --workspace` 全62件(kasaneiro crate 25 / km 6 / pigment 6 / paint-core 9 / shader_compile 1 / sim_params_layout 1 / e2e_watercolor 8 / e2e_ui 6)+ `#[ignore]` の計測1件(perf_bench)。e2e は GPU 必須
+- **テスト**: `cargo test --workspace` 全69件(kasaneiro crate 27 / km 6 / pigment 6 / paint-core 12 / shader_compile 1 / sim_params_layout 1 / e2e_watercolor 10 / e2e_ui 6)+ `#[ignore]` の計測1件(perf_bench)。e2e は GPU 必須
 
 ### 1.5 既知の課題・制約
 
@@ -73,7 +74,6 @@
 - FlowOutward(`edge_eta`)は既定 0 でパスごと省略している(顔料が縁でなく中心へ寄る定式化のまま)
 - `paper_gran`=0 の既定では顔料個性 γ(粒状感)がほぼ効かない
 - 筆の含み(feed splat)は生ポインタ点を記録するストローク記録(H5)では再現されない
-- 蒸発・拡散はステップ毎に進むので、モニタのリフレッシュレートが高いほど速く乾く
 - 作品を開くと保存時の SimParams に戻る(保存時の `evap_rate` 等も含む)
 - プリセットに `tool` / `brush_channel` / `display_mode` / `display_gain` / `compose_mode` などの作業状態も入る(プリセット読込で選択中ツール・顔料・診断表示まで切り替わる)。外すなら `#[serde(skip)]`。「作業状態ごと復元したい」なら現状が正なので、気になったときに決める
 - 任意の技術的負債(単独でやる必要はない):
@@ -90,6 +90,13 @@
 - 作品読込・記録の再生開始で初回ガイドが消える
 - 線画レイヤーで描いて、左上の元に戻す/やり直しで戻る
 - アクティブタイル表示(診断モード7)で、Fast Dry 後に計算範囲が消える / 線画ツールで描いても水彩側のタイルが立たない / 筆を離したフレームでブラシ近傍のタイルが消える
+
+**固定刻み・乾いたタイルの停止・下地への統合(2026-11-01)で残っているもの**:
+
+- 144Hz など 60Hz 以外のモニタで、乾く速さ・にじむ速さが 60Hz と同じに見える。重い場面(2048² で全面が濡れている)でも描き味が極端に遅れない(1フレーム最大4刻みで打ち切るので、それ以上重いと実時間より遅れる)
+- 記録したストロークを別のリフレッシュレートで再生しても、記録時と同じテンポで描かれる
+- 診断モード7で、筆を置いて放っておくと、水が尽きて数秒後にそのタイルが暗く(何もしない)戻る。乾き切った跡の隣に新しく水を置くと、湿った跡を伝って広がる様子が以前と同じ
+- レイヤーパネルの ⤓ で下の層を統合しても見た目が変わらない(乗算・グレーズの両方で)。紙の行が「下地」になり、統合後にまた「乾かす」で焼ける。統合した作品を保存して開き直すと同じ見た目に戻る。選択中の乾いた層が統合されたら水彩へ、残った層なら同じ層の選択が保たれる
 
 **性能改善(2026-11-01)で残っているもの**:
 
@@ -124,7 +131,7 @@
 | M1c Mixbox 混色 | ✅ 完了 | rgba 4チャンネル = 4顔料スロット。CPU([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs))が顔料・紙の latent を計算して uniform で渡し、[display.wgsl](../assets/shaders/display.wgsl) が濃度比で latent を線形混合 → latent→RGB 多項式で発色する |
 | M1d 紙ハイト(+FlowOutward) | ✅ 完了(FlowOutward は先送り) | 紙ハイトは [crates/paint-core/src/paper.rs](../crates/paint-core/src/paper.rs) が起動時に生成する r32float(値ノイズ4成分)。速度勾配(`paper_amp`)・にじみ拡張(`paper_wet`)・吸着(`paper_gran`)の3箇所を変調するが、いずれも既定 0。FlowOutward([flowout.wgsl](../assets/shaders/flowout.wgsl))は `edge_eta`=0 で dispatch ごと省略 |
 | M1.5 筆圧 | ✅ 完了 | [src/input.rs](../src/input.rs) の `PointerSource`(マウス / ペン = egui Touch)。筆圧は Windows Ink → winit → egui Touch の標準経路で取り、`実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に掛ける。ペン接地中はマウス入力を無視する |
-| M2 乾燥とレイヤー | ✅ 完了 | 乾燥レイヤーは rgba32float texture array(最大8枚、顔料濃度のまま)。「乾かす」= [bake.wgsl](../assets/shaders/bake.wgsl) で `(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を新スライスへ焼き、湿レイヤーをゼロに。Fast Dry([fastdry.wgsl](../assets/shaders/fastdry.wgsl))・Wet the Layer([rewet.wgsl](../assets/shaders/rewet.wgsl))で焼かずに止める/濡らし直す。焼き込みは一方通行 |
+| M2 乾燥とレイヤー | ✅ 完了 | 乾燥レイヤーは rgba32float texture array(最大8枚、顔料濃度のまま)。下の層は下地(`GpuCanvas::merge_into_base`)へ統合して枠を空けられる。「乾かす」= [bake.wgsl](../assets/shaders/bake.wgsl) で `(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を新スライスへ焼き、湿レイヤーをゼロに。Fast Dry([fastdry.wgsl](../assets/shaders/fastdry.wgsl))・Wet the Layer([rewet.wgsl](../assets/shaders/rewet.wgsl))で焼かずに止める/濡らし直す。焼き込みは一方通行 |
 | M3 削り・顔料個性・KM 合成 | ✅ 完了 | 削り = リフト(`lift_strength` × (1−ω) × 紙凸ゲート)と消す(完全消去)の2ツール。顔料個性は physics uniform(binding 9)で吸着・脱着・拡散を per-channel に変調。合成は KM: 各層を白地/黒地に置いた発色から `R=R_b`、`T²=(R_w−R_b)(1−R_b)` を導いて下から光学合成(CPU 参照実装は [crates/km/src/lib.rs](../crates/km/src/lib.rs)) |
 | M4 仕上げ | ✅ 完了 | ぼかし筆(tool=3。水の補充+沈着顔料の溶かし戻し `water_lift`)と吸い取り(tool=4。`absorb_rate`) |
 | M4.5 線画とハイライト | ✅ 完了 | 鉛筆・ペン・ハイライトの r32float 3枚に [linesplat.wgsl](../assets/shaders/linesplat.wgsl) が read_write storage で直接蓄積(流体パスとは別の compute パス)。清書ペンの濃度から透水率 `1 − line_block×濃度` を velocity / diffuse に掛ける。display が色の上に鉛筆 → ペン → ハイライトを合成。多段 Undo/Redo は生ポインタ点+描画時の SimParams からの決定論的再ラスタライズ([src/app/linehist.rs](../src/app/linehist.rs)) |
@@ -141,8 +148,8 @@
 | H2 | パラメータパネル | ✅ 完了 | [crates/paint-core/src/sim.rs](../crates/paint-core/src/sim.rs) の `SimParams` → uniform buffer。スライダーは [src/app/ui/tools.rs](../src/app/ui/tools.rs)(ツール別)と [src/app/ui/tuning.rs](../src/app/ui/tuning.rs)(開発モードの味付け) |
 | H3 | プリセット保存/読込 | ✅ 完了 | [src/preset.rs](../src/preset.rs)(SimParams ⇄ JSON)+ [src/app/ui/file_menu.rs](../src/app/ui/file_menu.rs) の設定プリセットモーダル。同梱 [default.json](../assets/presets/default.json) ほかが全部読めることをテストで検査 |
 | H4 | デバッグ表示切替 | ✅ 完了 | [display.wgsl](../assets/shaders/display.wgsl) の `display_mode` 分岐で8モード(通常 / 水量 / 速度場 / 湿りオーバーレイ / 浮遊顔料 / 沈着顔料 / 紙ハイト / アクティブタイル)。選択は開発モードの「表示・診断」([src/app/ui/tuning.rs](../src/app/ui/tuning.rs)) |
-| H5 | ストローク記録・再生 | ✅ 完了 | モデルは [crates/paint-core/src/replay.rs](../crates/paint-core/src/replay.rs)、永続化は [src/replay.rs](../src/replay.rs)、UI は [src/app/ui/panels.rs](../src/app/ui/panels.rs) の `replay_panel`。補間前の生ポインタ入力(フレーム番号・テクセル座標・筆圧)をストローク単位のツール・顔料スロットと記録時パレットごと保存し、再生はキャンバスをリセットして記録時のテンポで流す。再生中は毎フレーム記録時のツール・スロットで splat を出し、水彩以外のレイヤーを選んでいれば水彩へ切り替える |
-| H6 | シミュレーション制御 | ✅ 完了 | 一時停止 / 1ステップ / 速度倍率 / UI スクショは開発モードの「シミュレーション制御」([src/app/ui/tuning.rs](../src/app/ui/tuning.rs))。PNG 書き出し・全部消すはファイルメニュー。PNG は display と同じシェーダーでオフスクリーンに焼いて読み戻す([src/gpu/snapshot.rs](../src/gpu/snapshot.rs))。UI スクショは egui の `ViewportCommand::Screenshot` で撮り、外部トリガーは `ScreenshotWatcher`([src/gpu/hot_reload.rs](../src/gpu/hot_reload.rs))が `screenshots/request-shot` を監視する |
+| H5 | ストローク記録・再生 | ✅ 完了 | モデルは [crates/paint-core/src/replay.rs](../crates/paint-core/src/replay.rs)、永続化は [src/replay.rs](../src/replay.rs)、UI は [src/app/ui/panels.rs](../src/app/ui/panels.rs) の `replay_panel`。補間前の生ポインタ入力(刻み番号・テクセル座標・筆圧。JSON のキー名は `frame`)をストローク単位のツール・顔料スロットと記録時パレットごと保存し、再生はキャンバスをリセットして記録時のテンポで流す。記録・再生は 1/60 秒の刻みごとに進み、再生中は毎刻み記録時のツール・スロットで splat を出し、水彩以外のレイヤーを選んでいれば水彩へ切り替える |
+| H6 | シミュレーション制御 | ✅ 完了 | 一時停止 / 1ステップ / 速度倍率(1刻みあたりのステップ数)/ UI スクショは開発モードの「シミュレーション制御」([src/app/ui/tuning.rs](../src/app/ui/tuning.rs))。PNG 書き出し・全部消すはファイルメニュー。PNG は display と同じシェーダーでオフスクリーンに焼いて読み戻す([src/gpu/snapshot.rs](../src/gpu/snapshot.rs))。UI スクショは egui の `ViewportCommand::Screenshot` で撮り、外部トリガーは `ScreenshotWatcher`([src/gpu/hot_reload.rs](../src/gpu/hot_reload.rs))が `screenshots/request-shot` を監視する |
 
 ## 4. 計画外でやったこと
 

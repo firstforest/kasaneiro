@@ -4,7 +4,8 @@
 //! 乾燥レイヤー → 紙、を1列に並べる。各行 = 表示チェック + 選択ラベル。
 //! **選択中のレイヤーがそのままツール系統の切替**([`PaintApp::select_layer`])で、
 //! 左パネルにはそのレイヤーのツールだけが出る(active_tools_panel)。
-//! 乾燥レイヤーは焼き込み済みで編集不可(選択はできるが描画はブロックし、並べ替えのみ)。
+//! 乾燥レイヤーは焼き込み済みで編集不可(選択はできるが描画はブロックし、並べ替えと
+//! 下地への統合のみ)。
 
 use crate::app::{ActiveLayer, PaintApp};
 use crate::gpu::{GpuCanvas, MAX_LAYERS};
@@ -126,6 +127,7 @@ impl PaintApp {
 
         // --- 乾燥レイヤー(M2): 可視性・並べ替え・選択(編集は不可)---
         let mut sanitize_to_wet = false;
+        let has_base;
         {
             let mut renderer = self.render_state.renderer.write();
             let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() else {
@@ -146,6 +148,7 @@ impl PaintApp {
             let active = self.active_layer;
             let mut changed = false;
             let mut swap: Option<(usize, usize)> = None;
+            let mut merge: Option<usize> = None;
             // 上から表示(Vec の末尾=最後に乾かしたもの=最上層)
             for k in (0..count).rev() {
                 let layer = &mut canvas.layers[k];
@@ -167,6 +170,16 @@ impl PaintApp {
                     if ui.add_enabled(k > 0, egui::Button::new("⬇")).clicked() {
                         swap = Some((k, k - 1));
                     }
+                    if ui
+                        .button("⤓")
+                        .on_hover_text(
+                            "この層から下を下地に焼き固めて枠を空ける(見た目は変わらない)。\
+                             焼いた層は並べ替え・表示切替・色の取り込みができなくなり、非表示の層は消える。元に戻せない",
+                        )
+                        .clicked()
+                    {
+                        merge = Some(k + 1);
+                    }
                 });
             }
             if let Some((a, b)) = swap {
@@ -182,6 +195,23 @@ impl PaintApp {
             if changed {
                 canvas.sync_layers(&self.render_state.queue);
             }
+            if let Some(n) = merge {
+                match canvas.merge_into_base(&self.render_state.device, &self.render_state.queue, n) {
+                    Ok(()) => {
+                        // 選択中の乾燥レイヤーが焼かれたら水彩へ、残った層なら詰めた位置へ追従
+                        if let ActiveLayer::Dried(i) = self.active_layer {
+                            if i < n {
+                                sanitize_to_wet = true;
+                            } else {
+                                self.active_layer = ActiveLayer::Dried(i - n);
+                            }
+                        }
+                        self.status_msg = Some(format!("乾いた層 {n} 枚を下地に統合しました"));
+                    }
+                    Err(e) => self.status_msg = Some(e),
+                }
+            }
+            has_base = canvas.has_base;
         }
         if sanitize_to_wet {
             self.select_layer(ActiveLayer::Wet);
@@ -190,11 +220,12 @@ impl PaintApp {
             self.select_layer(layer);
         }
 
-        // --- 紙(最下層。操作対象外)---
+        // --- 紙(最下層。操作対象外)。統合済みの層は紙と一体の下地になる ---
         ui.horizontal(|ui| {
             let mut always = true;
             ui.add_enabled(false, egui::Checkbox::new(&mut always, ""));
-            ui.label(egui::RichText::new("紙(最下層)").weak());
+            let label = if has_base { "下地(統合した層+紙)" } else { "紙(最下層)" };
+            ui.label(egui::RichText::new(label).weak());
         });
 
         ui.separator();

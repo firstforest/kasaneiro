@@ -1,6 +1,6 @@
 //! ストローク記録・再生モデル(H5)。
 //!
-//! 記録するのは「生のポインタ入力」(フレーム番号+テクセル座標+筆圧)であって
+//! 記録するのは「生のポインタ入力」(刻み番号+テクセル座標+筆圧)であって
 //! splat 列ではない。再生時に StrokeState の補間を通し直すため、ブラシ半径などの
 //! パラメータを変えて同一ストロークを再描画できる(= A/B 比較。docs/design.md §2 の狙い)。
 //! 顔料スロットだけはストロークの意味(何色で描いたか)なのでストロークごとに記録する。
@@ -12,7 +12,8 @@ use crate::brush::StrokeState;
 use crate::sim::{SimParams, Splat};
 use serde::{Deserialize, Serialize};
 
-/// 記録開始からのフレーム番号付きポインタ位置(テクセル座標)
+/// 記録開始からの刻み番号付きポインタ位置(テクセル座標)。
+/// 刻みは 1/60 秒([`crate::clock::SimClock`])。JSON のキー名は互換のため `frame` のまま
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TimedPoint {
     pub frame: u32,
@@ -40,7 +41,7 @@ impl Recording {
     }
 }
 
-/// 記録中の状態。アプリのフレームごとに tick() し、ポインタイベントを積む
+/// 記録中の状態。1刻みごとに tick() し、ポインタイベントを積む
 #[derive(Default)]
 pub struct Recorder {
     recording: Recording,
@@ -57,7 +58,7 @@ impl Recorder {
         }
     }
 
-    /// 毎フレーム1回呼ぶ(ストローク間の「待ち」も再現するため無入力でも進める)
+    /// 1刻みに1回呼ぶ(ストローク間の「待ち」も再現するため無入力でも進める)
     pub fn tick(&mut self) {
         self.frame += 1;
     }
@@ -94,7 +95,7 @@ impl Recorder {
     }
 }
 
-/// 再生中の状態。毎フレーム advance() を呼ぶと記録時と同じテンポで splat が出る
+/// 再生中の状態。1刻みごとに advance() を呼ぶと記録時と同じテンポで splat が出る
 pub struct Player {
     recording: Recording,
     frame: u32,
@@ -116,11 +117,11 @@ impl Player {
         }
     }
 
-    /// 1フレーム分のポインタ入力を再生して splat を out に積む。
+    /// 1刻み分のポインタ入力を再生して splat を out に積む。
     /// ライブ描画と同じ経路(StrokeState → splat.wgsl)を通すため、現在のブラシ
     /// パラメータがそのまま効く。顔料スロットとツールだけは記録値で params を上書きする。
     /// UI 側が毎フレーム params.tool を選択中ツールで書き直すため、ストローク中は
-    /// 毎フレーム記録値を書き直す。再生し終えたら false を返す。
+    /// 毎刻み記録値を書き直す。再生し終えたら false を返す。
     pub fn advance(&mut self, params: &mut SimParams, out: &mut Vec<Splat>) -> bool {
         if self.in_stroke
             && let Some(stroke) = self.recording.strokes.get(self.stroke_idx)
@@ -130,7 +131,7 @@ impl Player {
         }
         while self.stroke_idx < self.recording.strokes.len() {
             let stroke = &self.recording.strokes[self.stroke_idx];
-            // 空ストロークや、現フレームに達していない先頭点はここで判定
+            // 空ストロークや、現在の刻みに達していない先頭点はここで判定
             let Some(point) = stroke.points.get(self.point_idx) else {
                 // ストロークを消費し切った → 終了処理して次へ
                 if self.in_stroke {
@@ -142,7 +143,7 @@ impl Player {
                 continue;
             };
             if point.frame > self.frame {
-                break; // このフレームの分はおしまい(記録時のテンポを保つ)
+                break; // この刻みの分はおしまい(記録時のテンポを保つ)
             }
             if !self.in_stroke {
                 self.stroke_state.begin();
@@ -166,7 +167,7 @@ impl Player {
 mod tests {
     use super::*;
 
-    /// 記録 → 再生の往復: 記録時と同じフレームに同じ座標の splat が出ること
+    /// 記録 → 再生の往復: 記録時と同じ刻みに同じ座標の splat が出ること
     #[test]
     fn record_then_replay() {
         let mut recorder = Recorder::new();
@@ -181,14 +182,14 @@ mod tests {
         let mut params = SimParams::default();
         let mut out = Vec::new();
 
-        // フレーム0: 始点の splat + 顔料スロット・ツールの上書き
+        // 刻み0: 始点の splat + 顔料スロット・ツールの上書き
         assert!(player.advance(&mut params, &mut out));
         assert_eq!(params.brush_channel, 2);
         assert_eq!(params.tool, 1);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].pos, [10.0, 10.0]);
 
-        // フレーム1: 補間された splat 列。以降は入力が尽きて終了
+        // 刻み1: 補間された splat 列。以降は入力が尽きて終了
         out.clear();
         player.advance(&mut params, &mut out);
         assert!(!out.is_empty());
@@ -197,7 +198,7 @@ mod tests {
     }
 
     /// UI が毎フレーム params.tool / brush_channel を書き直しても、ストローク中は
-    /// 2フレーム目以降も記録値で splat が出ること
+    /// 2刻み目以降も記録値で splat が出ること
     #[test]
     fn replay_keeps_recorded_tool_every_frame() {
         let mut recorder = Recorder::new();

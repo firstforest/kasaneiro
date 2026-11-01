@@ -83,8 +83,8 @@ fn time_display(c: &HeadlessCanvas, frames: u32) -> f64 {
 #[test]
 #[ignore = "計測用。--ignored --nocapture で回す"]
 fn perf_bench() {
-    println!("| サイズ | 乾いた紙 | 一部濡れ(320²) | 全面計算 | 表示 層0 | 表示 層8 |");
-    println!("|---|---|---|---|---|---|");
+    println!("| サイズ | 乾いた紙 | 一部濡れ(320²) | 全面計算 | 全面濡れの蒸発後 | 表示 層0 | 表示 層8 |");
+    println!("|---|---|---|---|---|---|---|");
     for size in SIZES {
         let mut c = new_canvas(size);
         let dry = time_idle(&mut c, SIM_FRAMES);
@@ -100,9 +100,18 @@ fn perf_bench() {
 
         let display0 = time_display(&c, DISPLAY_FRAMES);
 
-        // 全面を塗っては乾かすのを 8 回(表示のコストは顔料が載ったテクセルで決まる)
+        // 全面を濡らして蒸発し切らせた後(濡れマスクは残る)。乾いた紙と同じ速さに戻るかを見る。
+        // 水が尽きてから浮遊顔料が沈み切る(1ステップ約5%ずつ)まで数百ステップ待つ
         let r = size as f32 / 8.0;
         c.params.brush_radius = r;
+        c.play(fill_rect(0.0, size as f32, 0.0, size as f32, r, 2));
+        let evap = c.params.evap_rate;
+        c.params.evap_rate = 0.05;
+        c.idle(600);
+        c.params.evap_rate = evap;
+        let evaporated = time_idle(&mut c, SIM_FRAMES);
+
+        // 全面を塗っては乾かすのを 8 回(表示のコストは顔料が載ったテクセルで決まる)
         for layer in 0..8 {
             c.play(fill_rect(0.0, size as f32, 0.0, size as f32, r, layer % 4));
             c.bake_dry().unwrap();
@@ -113,7 +122,7 @@ fn perf_bench() {
         let display8 = time_display(&c, DISPLAY_FRAMES);
 
         println!(
-            "| {size}² | {dry:.2} ms | {wet:.2} ms | {full:.2} ms | {display0:.2} ms | {display8:.2} ms |"
+            "| {size}² | {dry:.2} ms | {wet:.2} ms | {full:.2} ms | {evaporated:.2} ms | {display0:.2} ms | {display8:.2} ms |"
         );
     }
 }

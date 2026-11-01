@@ -168,9 +168,9 @@ impl PaintApp {
             }
         });
         ui.add(
-            egui::Slider::new(&mut self.steps_per_frame, 1..=8)
+            egui::Slider::new(&mut self.steps_per_tick, 1..=8)
                 .text("速度倍率")
-                .suffix(" ステップ/フレーム"),
+                .suffix(" ステップ/刻み"),
         );
         if ui
             .button("📷 UI スクショ (AI 用)")

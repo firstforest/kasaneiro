@@ -6,7 +6,7 @@
 //! WGSL の実行時ロード(H1)に委ねるため、ここでは `pipelines: None` で始める。
 
 use super::{
-    DRIED_CACHE_FORMAT, GpuCanvas, LayerUniform, MAX_LAYERS, PAPER_SEED, SIM_FORMAT, TEX_KINDS, TILE_SIZE,
+    BASE_SLICES, DRIED_CACHE_FORMAT, GpuCanvas, LayerUniform, MAX_LAYERS, PAPER_SEED, SIM_FORMAT, TEX_KINDS, TILE_SIZE,
     ViewUniform,
 };
 use paint_core::paper;
@@ -128,10 +128,36 @@ impl GpuCanvas {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: DRIED_CACHE_FORMAT,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            // COPY_SRC は下地への統合(merge_into_base)がキャッシュを下地へ写すため
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let dried_cache_view = dried_cache_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // 下地: 下の乾燥レイヤーを焼き固めた合成結果。キャッシュと同じ形式の2スライス
+        // (0 = 乗算 / 1 = KM)。has_base が立つまで読まれない
+        let base_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("dried_base"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: BASE_SLICES as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DRIED_CACHE_FORMAT,
+            // COPY_SRC/DST は統合時の書き込みと作品保存の読み戻し/書き戻し
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let base_view = base_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
         let layers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("dried_layer_uniform"),
             size: std::mem::size_of::<LayerUniform>() as u64,
@@ -440,7 +466,7 @@ impl GpuCanvas {
         });
 
         // 乾燥レイヤーの合成キャッシュを焼く compute(display.wgsl の dried_cache_main):
-        // params(3)・latents(4)・乾燥レイヤー(6)・レイヤー構成(7)を読み、キャッシュ(14)へ書く
+        // params(3)・latents(4)・乾燥レイヤー(6)・レイヤー構成(7)・下地(15)を読み、キャッシュ(14)へ書く
         let dried_cache_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("dried_cache_bgl"),
             entries: &[
@@ -469,6 +495,16 @@ impl GpuCanvas {
                     wgpu::ShaderStages::COMPUTE,
                     wgpu::BufferBindingType::Uniform,
                 ),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
                 wgpu::BindGroupLayoutEntry {
                     binding: 14,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -532,12 +568,13 @@ impl GpuCanvas {
             ],
         });
 
-        // アクティブタイル走査(M6、tilescan): 水(read)+ params + splats + raw_active(write)。
+        // アクティブタイル走査(M6、tilescan): 水・浮遊顔料(read)+ params + splats + raw_active(write)。
         // current テクスチャを src として読むので bind group は parity 別
         let tilescan_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tilescan_bgl"),
             entries: &[
                 sampled_entry(0, wgpu::ShaderStages::COMPUTE),
+                sampled_entry(2, wgpu::ShaderStages::COMPUTE),
                 buffer_entry(
                     3,
                     wgpu::ShaderStages::COMPUTE,
@@ -711,6 +748,10 @@ impl GpuCanvas {
                     binding: 14,
                     resource: wgpu::BindingResource::TextureView(&dried_cache_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 15,
+                    resource: wgpu::BindingResource::TextureView(&base_view),
+                },
             ],
         });
 
@@ -747,7 +788,7 @@ impl GpuCanvas {
         ];
 
         // アクティブタイル走査(M6): current テクスチャ(parity 別)を読んで raw_active を書く。
-        // 水の parity ビューを 0 に、params/splats/raw を 3/4/5 に
+        // 水・浮遊顔料の parity ビューを 0/2 に、params/splats/raw を 3/4/5 に
         let make_tilescan_bg = |i: usize| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("tilescan_bg"),
@@ -756,6 +797,10 @@ impl GpuCanvas {
                     wgpu::BindGroupEntry {
                         binding: 0,
                         resource: wgpu::BindingResource::TextureView(&sim_views[0][i]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&sim_views[1][i]),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
@@ -859,6 +904,9 @@ impl GpuCanvas {
             dried_cache_key: None,
             dried_texture,
             dried_slice_views,
+            dried_cache_texture,
+            base_texture,
+            has_base: false,
             layers_buffer,
             bake_bgl,
             bake_layout,

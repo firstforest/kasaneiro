@@ -11,7 +11,7 @@
 //! ファイル入出力を1モジュールに閉じ込めることで、将来 Web 版で保存先を差し替える余地を残す
 //! (docs/design.md §3.8 の「保存の境界を1モジュールに閉じる」)。
 
-use crate::gpu::{MAX_LAYERS, WorkTextures};
+use crate::gpu::{BASE_SLICES, MAX_LAYERS, WorkTextures};
 use paint_core::sim::CANVAS_SIZES;
 use pigment::Palette;
 use paint_core::sim::SimParams;
@@ -46,6 +46,10 @@ struct WorkMeta {
     /// M5h: 乾燥レイヤーの記録時パレット(index = slot、名前・ρ/ω/γ 込みの正典)。
     /// decode が layer_count との個数一致を検査する(以降の不変条件 len == layers.len() の入口)
     layer_palettes: Vec<Palette>,
+    /// 下の乾燥レイヤーを焼き固めた下地があるか。true のときだけ latent の後ろに下地のブロブが続く
+    /// (下地のない作品は従来どおりの並びで読み書きできる)
+    #[serde(default)]
+    has_base: bool,
 }
 
 /// 1作品分の全状態(メタ + GPU テクスチャの生データ)。
@@ -99,13 +103,15 @@ fn encode(work: &WorkFile) -> Result<Vec<u8>, String> {
         palette: work.palette.clone(),
         layers: work.layers.clone(),
         layer_palettes: work.layer_palettes.clone(),
+        has_base: work.textures.base.is_some(),
     };
     let meta_json = serde_json::to_vec(&meta).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&(meta_json.len() as u32).to_le_bytes());
     out.extend_from_slice(&meta_json);
-    // 生 f32 ブロブ: 湿レイヤー3 → 乾燥レイヤー → 線画3 → latent(persist.rs の export と同順)
+    // 生ブロブ: 湿レイヤー3 → 乾燥レイヤー → 線画3 → latent(以上 f32)→ 下地(f16、あるときだけ)。
+    // persist.rs の export と同順
     for v in &work.textures.wet {
         out.extend_from_slice(bytemuck::cast_slice(v));
     }
@@ -116,6 +122,9 @@ fn encode(work: &WorkFile) -> Result<Vec<u8>, String> {
         out.extend_from_slice(bytemuck::cast_slice(v));
     }
     out.extend_from_slice(bytemuck::cast_slice(&work.textures.latents));
+    if let Some(base) = &work.textures.base {
+        out.extend_from_slice(bytemuck::cast_slice(base));
+    }
     Ok(out)
 }
 
@@ -192,6 +201,11 @@ fn decode(bytes: &[u8]) -> Result<WorkFile, String> {
         take_f32(bytes, &mut cur, texels)?,
     ];
     let latents = take_f32(bytes, &mut cur, latent_len)?;
+    let base = if meta.has_base {
+        Some(take_u16(bytes, &mut cur, BASE_SLICES * rgba)?)
+    } else {
+        None
+    };
     if cur != bytes.len() {
         return Err(format!(
             "テクスチャデータの後ろに余分なデータがあります({} バイト)",
@@ -210,8 +224,23 @@ fn decode(bytes: &[u8]) -> Result<WorkFile, String> {
             dried,
             lines,
             latents,
+            base,
         },
     })
+}
+
+/// バイト列から `count` 個の u16(下地の f16 の生ビット)を読み進める
+fn take_u16(bytes: &[u8], cur: &mut usize, count: usize) -> Result<Vec<u16>, String> {
+    let end = *cur + count * 2;
+    if end > bytes.len() {
+        return Err("下地のデータが途中で切れています".to_owned());
+    }
+    let v: Vec<u16> = bytes[*cur..end]
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    *cur = end;
+    Ok(v)
 }
 
 /// バイト列から `count` 個の f32 を読み進める。ブロブ開始オフセットは 4 の倍数とは限らない
@@ -248,6 +277,7 @@ mod tests {
                 dried: vec![ramp(4.0, texels * 4), ramp(5.0, texels * 4)],
                 lines: [ramp(6.0, texels), ramp(7.0, texels), ramp(8.0, texels)],
                 latents: ramp(9.0, crate::gpu::LATENT_TOTAL * 4),
+                base: Some((0..BASE_SLICES * texels * 4).map(|i| i as u16).collect()),
             };
             // M5h: レイヤーごとパレット(index = slot)。1枚目だけ色を変えて取り違えも検出する
             let mut recorded = Palette::default_palette();
@@ -293,6 +323,7 @@ mod tests {
                 StoredLayer { slot: 1, visible: true },
             ],
             layer_palettes: vec![Palette::default_palette()], // 2層なのに1個
+            has_base: false,
         })
         .unwrap();
         let mut bytes = Vec::new();
@@ -335,6 +366,7 @@ mod tests {
                 .map(|&slot| StoredLayer { slot, visible: true })
                 .collect(),
             layer_palettes: vec![Palette::default_palette(); layer_count as usize],
+            has_base: false,
         };
         let too_many: Vec<u32> = (0..MAX_LAYERS as u32 + 1).collect();
         expect_err(
@@ -343,6 +375,38 @@ mod tests {
         );
         expect_err(&meta_only(&layered(2, &[0])), "レイヤー構成の個数");
         expect_err(&meta_only(&layered(2, &[0, 2])), "スロット番号");
+    }
+
+    /// 下地の欄がないメタ(下地を持たない作品)は下地なしとして読めること
+    #[test]
+    fn reads_meta_without_base_field() {
+        let texels = 512 * 512;
+        let work = WorkFile {
+            canvas_size: 512,
+            params: SimParams::default(),
+            palette: Palette::default_palette(),
+            layers: Vec::new(),
+            layer_palettes: Vec::new(),
+            textures: WorkTextures {
+                wet: [vec![0.0; texels * 4], vec![0.0; texels * 4], vec![0.0; texels * 4]],
+                dried: Vec::new(),
+                lines: [vec![0.0; texels], vec![0.0; texels], vec![0.0; texels]],
+                latents: vec![0.0; crate::gpu::LATENT_TOTAL * 4],
+                base: None,
+            },
+        };
+        let bytes = encode(&work).unwrap();
+        let meta_len = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let mut meta: serde_json::Value = serde_json::from_slice(&bytes[8..8 + meta_len]).unwrap();
+        meta.as_object_mut().unwrap().remove("has_base").expect("has_base 欄がある");
+        let meta = serde_json::to_vec(&meta).unwrap();
+        let mut old = Vec::new();
+        old.extend_from_slice(MAGIC);
+        old.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+        old.extend_from_slice(&meta);
+        old.extend_from_slice(&bytes[8 + meta_len..]);
+        let back = decode(&old).unwrap();
+        assert!(back.textures.base.is_none());
     }
 
     /// 正しい作品の後ろに余分なバイトが付いていたら拒否されること
@@ -360,6 +424,7 @@ mod tests {
                 dried: Vec::new(),
                 lines: [vec![0.0; texels], vec![0.0; texels], vec![0.0; texels]],
                 latents: vec![0.0; crate::gpu::LATENT_TOTAL * 4],
+                base: None,
             },
         };
         let mut bytes = encode(&work).unwrap();
@@ -381,6 +446,7 @@ mod tests {
             palette: Palette::default_palette(),
             layers: Vec::new(),
             layer_palettes: Vec::new(),
+            has_base: false,
         })
         .unwrap();
         let mut bytes = Vec::new();

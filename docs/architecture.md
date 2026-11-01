@@ -100,7 +100,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 - 選択肢は `CANVAS_SIZES = [512, 1024, 2048]`(正方形のみ)、既定 `DEFAULT_CANVAS_SIZE = 512`。実行時の値は `GpuCanvas.size` が正典で、全テクスチャ・dispatch・読み戻しの寸法がここから決まる
 - サイズ変更 = `PaintApp::recreate_canvas` で GpuCanvas を作り直す(旧インスタンスは callback_resources の差し替えで drop)。UI はファイルメニューの「新規キャンバス…」
 - 64 の倍数なので読み戻しの行バイト数は常に 256B 整列(パディング不要)
-- VRAM は 2048² で計 ~1.2GB(乾燥レイヤー8枚の 512MB が支配的。窮屈なら `MAX_LAYERS` を減らす)
+- VRAM は 2048² で計 ~1.3GB(乾燥レイヤー8枚の 512MB が支配的。下地は 64MB。窮屈なら `MAX_LAYERS` を減らす)
 - テクスチャ・バッファは作成時に wgpu がゼロ初期化する。「全部消す」(`clear`)と線画 Undo(`clear_line`)のゼロ化は、`Features::CLEAR_TEXTURE`(アダプタ対応時だけ要求)があれば `clear_texture`、なければゼロ埋めの `write_texture`
 
 ### 3.2 テクスチャ
@@ -113,11 +113,12 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 | 紙ハイト | r32float × 1(静的) | r = 高さ 0..1(0=谷 / 1=山)。起動時に CPU 生成 |
 | 乾燥レイヤー | rgba32float texture array(最大8スライス) | 1スライス = 1乾燥レイヤー、rgba = 4顔料濃度 |
 | 乾燥レイヤーの合成キャッシュ | rgba16float × 1 | 可視な乾燥レイヤーを合成した結果(compose_mode=0 は透過率の積、1 は紙+乾燥層の KM 反射率(リニア))。§5 |
+| 下地 | rgba16float texture array(2スライス) | 下の乾燥レイヤーを焼き固めた合成結果(0 = 乗算の透過率の積 / 1 = KM 反射率)。`has_base` の間だけ合成の出発点になる。§6 |
 | 線画 | r32float × 3(鉛筆・ペン・ハイライト) | r = インク濃度 / 不透明度 0..1。ping-pong せず read_write で自己更新。§7 |
 | 湿レイヤー退避 | rgba32float × 3(水・浮遊・沈着、COPY のみ) | 水彩ストローク開始時に `current` の3枚を GPU 間コピーで退避し、水彩の undo で書き戻す。最新1本ぶん |
 
 - **ping-pong は水・浮遊・沈着の3テクスチャまとめて単一の `current`**。各 compute パスは3枚の src を読み、3枚の dst を書いて(変更しない分は素通し)反転する。書くのは計算するタイルと2枚が食い違いうるタイルだけ(§8)。線画テクスチャは `current` に依存しない
-- 乾燥レイヤー array・線画3枚・顔料 latent uniform には作品保存のために `COPY_SRC` / `COPY_DST` を付ける。`copy_texture_to_buffer` に実体が要るので、乾燥レイヤーはスライスビューとは別に実体テクスチャを `dried_texture` として持つ
+- 乾燥レイヤー array・線画3枚・下地・顔料 latent uniform には作品保存のために `COPY_SRC` / `COPY_DST` を付ける(乾燥レイヤー array はスロットの詰め直し、合成キャッシュは下地への書き写しにも使う)。`copy_texture_to_buffer` に実体が要るので、乾燥レイヤーはスライスビューとは別に実体テクスチャを `dried_texture` として持つ
 
 ### 3.3 バッファ
 
@@ -127,7 +128,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 | splat storage | ヘッダ+splat 列。上限 `MAX_SPLATS=8192` |
 | 顔料個性 uniform | ρ/ω/γ/μ(全レイヤー共通) |
 | 顔料 latent uniform | `array<vec4f, LATENT_TOTAL>`(§3.5) |
-| LayerUniform | 乾燥レイヤーの重ね順 + visible_mask |
+| LayerUniform | 乾燥レイヤーの重ね順 + visible_mask + has_base(下地から合成するか)+ force_mode(0 = compose_mode に従う / 1 = 乗算 / 2 = KM。下地への統合用) |
 | ViewUniform | パン / ズーム / 回転(§3.6) |
 | アクティブタイル | `raw_active` / `active` / `tile_dirty`(いずれも `array<u32>`、要素数 = (size/16)²)。§8 |
 
@@ -138,9 +139,9 @@ compute は種別ごとに5レイアウト(`ComputeLayout`)+ dried_cache:
 - **共通**(splat と流体パス。[common.wgsl](../assets/shaders/common.wgsl)): `0/1` 水 src/dst、`2/3` 浮遊 src/dst、`4/5` 沈着 src/dst、`6` SimParams、`7` splat storage、`8` 紙ハイト、`9` 顔料個性、`10` 清書ペンの線画(透水率。読むのは velocity / diffuse だけ)、`11` アクティブタイルの状態(splat / velocity / relax / flowout / advect / diffuse / transfer が読む。fastdry / rewet は宣言せず全面計算)
 - **bake**: 共通の `0..6, 8` + `9` = 乾燥レイヤーの書き込みスライス(splat なし)
 - **raster**(linesplat.wgsl): `0` 対象の線画テクスチャ(read_write r32float)、`1` SimParams、`2` splat storage、`3` 紙ハイト。描画先は bind group の差し替えで選ぶ(パイプラインは1本)
-- **tilescan**: `0` 水(read。parity 別 bind group)、`3` SimParams、`4` splat storage、`5` raw_active(write)
+- **tilescan**: `0` 水・`2` 浮遊顔料(read。parity 別 bind group)、`3` SimParams、`4` splat storage、`5` raw_active(write)
 - **tiledilate**: `0` raw_active(read)、`1` active(write)、`2` SimParams(common.wgsl が参照するため束ねるだけ)、`3` tile_dirty(read_write)
-- **dried_cache**(display.wgsl の `dried_cache_main`): `3` SimParams、`4` 顔料 latent、`6` 乾燥レイヤー array、`7` LayerUniform、`14` 合成キャッシュ(write-only storage、rgba16float)
+- **dried_cache**(display.wgsl の `dried_cache_main`): `3` SimParams、`4` 顔料 latent、`6` 乾燥レイヤー array、`7` LayerUniform、`14` 合成キャッシュ(write-only storage、rgba16float)、`15` 下地(2d array)
 
 display: `0/1/2` 水 / 浮遊 / 沈着、`3` SimParams、`4` 顔料 latent、`5` 紙ハイト、`8/9` 線画(鉛筆 / ペン)、`10` ハイライト、`11` ViewUniform、`12` アクティブタイルの状態(デバッグ表示モード7)、`13` 乾燥レイヤーの合成キャッシュ。
 
@@ -150,7 +151,7 @@ display: `0/1/2` 水 / 浮遊 / 沈着、`3` SimParams、`4` 顔料 latent、`5`
 
 - 先頭 `GLOBAL_LATENTS=6` vec4 = パレット非依存のグローバル光学(`[0,1]` 紙 / `[2,3]` 白 R_w / `[4,5]` 黒 R_b)
 - 続いて**パレット枠**を `PALETTE_SLOTS = MAX_LAYERS+1 = 9` 個。各枠 `PIGMENT_LATENTS=8` vec4(顔料4種 × c0..c3 / RGB 残差)。枠 `0..MAX_LAYERS-1` は乾燥レイヤーのスロット別、枠 `LIVE_PALETTE=MAX_LAYERS` は湿レイヤーの現行パレット
-- 乾かすと現行パレットの色を対応スロットの枠へ焼き込む(`GpuCanvas::record_layer_palette`)。同時に `bake_dry(…, palette)` が `GpuCanvas::layer_palettes`(index = slot)へ Palette を丸ごと clone する。名前・物性込みの正典はこちらで(不変条件 `len == layers.len()`)、乾燥層パネルの「パレット抽出」が読む
+- 乾かすと現行パレットの色を対応スロットの枠へ焼き込む(`GpuCanvas::record_layer_palette`)。同時に `bake_dry(…, palette)` が `GpuCanvas::layer_palettes`(index = slot)へ Palette を丸ごと clone する。名前・物性込みの正典はこちらで(不変条件 `len == layers.len()`、使用中のスロットは常に 0..len)、乾燥層パネルの「パレット抽出」が読む。下地への統合で残った層を詰め直すときは、この正典から各スロットの枠を書き直す
 - 顔料の編集時は `set_palette` が顔料個性 uniform と live 枠だけを `write_buffer`(パイプライン再構築不要)
 - 定数は [crates/pigment](../crates/pigment/src/lib.rs) と [src/gpu/prelude.rs](../src/gpu/prelude.rs) が正典で、WGSL へは `shader_prelude` が const として渡す。WGSL 側の索引は `pal_base()`
 
@@ -168,6 +169,8 @@ display: `0/1/2` 水 / 浮遊 / 沈着、`3` SimParams、`4` 顔料 latent、`5`
 egui-wgpu の `CallbackTrait`(`gpu/callback.rs` の `CanvasCallback`)で駆動する。compute は `GpuCanvas::encode_frame` に集約してあり、prepare と headless 駆動(e2e)が同じ経路を通る:
 
 ```
+app(毎フレーム): SimClock がフレームの経過時間を 1/60 秒の刻み数(最大4)に変える。
+  記録・再生は刻みごとに進め、sim_steps = 刻み数 × 速度倍率(一時停止中は 0、1ステップなら 1)
 prepare(毎フレーム)= encode_frame:
   SimParams を uniform に write_buffer(スライダー即時反映)
   splat storage へヘッダ+splat 列を書く(0 個でもヘッダは書く。一時停止中でもブラシは反映。
@@ -217,13 +220,14 @@ paint:
 
 - **CPU 側**([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs)): グローバル光学(紙+白+黒)と `Palette` の顔料 latent を計算して uniform で渡す。パレットは起動時に eframe storage から復元し(無い・壊れていれば既定パレット)、UI で編集するたびに再計算する
 - **層内**(display.wgsl): 画素ごとに4顔料の濃度比で latent を線形混合 → latent→RGB 多項式(mixbox eval_polynomial の WGSL 移植)。紙とは被覆率 `1−exp(−pigment_density·総濃度)` で混合
-- **層間**: 紙 → 乾燥レイヤー(LayerUniform の order 順)→ 湿レイヤーを、白地・黒地の発色から出した R, T でリニア色空間で下から合成(`compose_mode=1`)。`compose_mode=0` は multiply
+- **層間**: 紙(下地があれば下地)→ 乾燥レイヤー(LayerUniform の order 順)→ 湿レイヤーを、白地・黒地の発色から出した R, T でリニア色空間で下から合成(`compose_mode=1`)。`compose_mode=0` は multiply
 - **キャッシュ**: 乾燥レイヤーまでの合成は `dried_cache_main` が rgba16float に焼き、fs_main は湿レイヤーだけを毎フレーム発色して重ねる。焼き直すのは乾燥レイヤーの中身・並び・可視性・記録パレット・シェーダー(`dried_cache_dirty`)か `pigment_density` / `compose_mode` が変わったフレームだけ。フレームを挟まない snapshot は dirty なら自分で焼く
 
 ## 6. 乾燥とレイヤー
 
 - 乾かす = bake パスが `(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を texture array の新スライスへ書き、湿レイヤーを全ゼロにする
 - レイヤーの重ね順・可視性は `LayerUniform`(order + visible_mask)で `dried_cache_main` へ渡す。UI の並べ替えがそのまま合成順になる。`sync_layers` が合成キャッシュの焼き直しを予約する
+- **下地への統合**(`merge_into_base`): 下から N 枚だけを並べた LayerUniform を `force_mode` 1 / 2 で2回 `dried_cache_main` に通し、それぞれの合成キャッシュを下地のスライス 0 / 1 へコピーして `has_base` を立てる。続けて残りの層を重ね順のままスロット 0.. へ詰め直す(同じテクスチャ内のスライス間コピー。行き先にまだ動かしていない層がいれば空きスロットへ逃がす `compaction_moves`)。`clear` で `has_base` を下ろす
 - 水彩の undo: ストローク開始時に `current` の3枚を退避テクスチャへコピーし、Ctrl+Z で書き戻す
 
 ## 7. 線画
@@ -241,13 +245,13 @@ paint:
 
 計算範囲を濡れ面積に絞る仕組み。方式の理由は [design.md](design.md) §3.7。
 
-- **判定**: tilescan がタイル(`TILE_SIZE`=16×16)ごとに、濡れたセル(濡れマスク a > 0.5)があるかと、このフレームの流体 splat の近傍かを見て `raw_active` を作る。顔料が載っているだけで乾いたタイルは立てない。濡れマスクは蒸発では消えないので、一度濡れたタイルは Fast Dry・乾かす・全部消すまで計算され続ける
+- **判定**: tilescan がタイル(`TILE_SIZE`=16×16)ごとに、動きうる濡れたセル(濡れマスク a > 0.5 で、水・速度・浮遊顔料(> `SUSP_EPS`=1e-6)のどれかが残る)があるかと、このフレームの流体 splat の近傍かを見て `raw_active` を作る。顔料が載っているだけで乾いたタイルや、蒸発で水が尽き浮遊顔料も沈み切ったタイルは立てない(濡れマスクは残るが、水・速度・浮遊が 0 のセルは全パスで不動点。隣から水が入るセルは水の残るセルのタイル+膨張に含まれる)
 - **膨張**: tiledilate が 3×3 で膨張して `active` を確定する。1タイル分の余裕は「濡れ前線が1フレームに進む距離 < TILE_SIZE」のための halo(既定 vel_max×sim_steps ≪ 16px)
 - **3状態**: `TILE_ACTIVE`(計算)/ `TILE_COPY`(計算しないが dirty → 3テクスチャを src→dst に素通しコピー)/ `TILE_COLD`(何も書かずに return)。定数は gpu/prelude.rs が正典
 - **dirty**: tiledilate が `dirty = 今フレーム有効か` を残し、次にシミュが進むフレームで有効でなければ COPY として2枚を揃える。この更新は「そのフレームに少なくとも1パス進む」前提なので、ping-pong するパスが1つもないフレームは tilescan / tiledilate ごと積まない。`current` 側だけを書き替えるフレーム外の操作の後は `mark_tiles_dirty` で全タイルを dirty にする
 - **ハザード**: tiledilate が書いた `active` を後続パスが読む storage RAW は wgpu の自動バリアで解決する
 - **退避と可視化**: `active_tiles=0` で全タイル有効(全面計算)。デバッグ表示モード7が状態を可視化(計算中 = 緑 / コピーだけ = 青 / 何もしない = 暗く + タイル格子)
-- **検査**: e2e の `active_tiles_match_full_compute`(全面計算と同じ絵)と `inactive_tiles_keep_pingpong_in_sync`(2枚を読み戻して比較)
+- **検査**: e2e の `active_tiles_match_full_compute`(全面計算と同じ絵)、`active_tiles_match_full_compute_after_evaporation`(水が尽きた跡の隣に水を置いても同じ絵)と `inactive_tiles_keep_pingpong_in_sync`(2枚を読み戻して比較)
 
 ## 9. 入力の経路
 
@@ -261,12 +265,12 @@ paint:
 - `PointerSource` trait で Mouse / Pen を抽象化する。ペン接地中はマウス入力を無視する(egui-winit が Touch からポインタをエミュレートするため二重ストロークになる)
 - 筆圧マッピングは `実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に適用(splat.wgsl と CPU 側で同式)
 - **筆の含み**: 塗る筆を置いたまま動かないフレームは、含み(`brush_charge` 秒。筆を下ろすたび満たす)が残る間、`PaintApp::feed_charge` が毎フレーム feed splat(`Splat.feed=1`)を1つ積む。その水を毛細管拡散が外へ運ぶので、置くだけで色水が広がる。ストローク記録は生ポインタ点のみなので feed は再生で再現されない
-- ストローク記録は補間前の生ポインタ入力を保存する
+- ストローク記録は補間前の生ポインタ入力を保存する。時刻は 1/60 秒の刻み番号(JSON のキー名は `frame`)
 
 ## 10. 保存
 
 - **JSON ストア**(プリセット・パレット・色・ストローク): `assets.rs` の `json_save` / `json_load` / `json_delete` / `json_list` を共通に使う。保存名は `sanitize_name` で正規化し、書き込みは `.tmp` → rename でアトミックにする
-- **作品ファイル**(`works/*.kasane`、[src/work.rs](../src/work.rs)): 先頭に `MAGIC "KSN1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成 `[slot, visible]`・レイヤーごとパレット・canvas_size・layer_count)、続けて生 f32 ブロブを固定順(湿レイヤー3 → 乾燥レイヤー → 線画3 → 顔料 latent)で並べる
+- **作品ファイル**(`works/*.kasane`、[src/work.rs](../src/work.rs)): 先頭に `MAGIC "KSN1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成 `[slot, visible]`・レイヤーごとパレット・canvas_size・layer_count・has_base)、続けて生ブロブを固定順(f32 の湿レイヤー3 → 乾燥レイヤー → 線画3 → 顔料 latent → `has_base` のときだけ下地2スライスの f16 生ビット)で並べる。`has_base` は省略時 false
   - decode はメタの layer_palettes と層数の一致・レイヤー構成・末尾の余分なバイトを検査する(`layer_palettes` の不変条件の入口)。現行形式だけを読む
   - 読込時に canvas_size(`CANVAS_SIZES` で検証)が現在と違えば、そのサイズでキャンバスを作り直してから復元する
   - GPU ⇄ f32 配列は `export_state` / `import_state`([src/gpu/persist.rs](../src/gpu/persist.rs))。読み戻しは全テクスチャのコピーを1回の submit にまとめる。parity は保存せず、読込時に `current=0` へ正規化する
