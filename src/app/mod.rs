@@ -25,7 +25,7 @@ use eframe::egui_wgpu;
 use linehist::{LineHistory, stroke_splats};
 use paint_core::brush::StrokeState;
 use paint_core::clock::SimClock;
-use paint_core::load::{self as brush_load, BrushFrame, BrushLoad};
+use paint_core::load::{BrushClock, BrushFrame, BrushLoad};
 use paint_core::sim::{DEFAULT_CANVAS_SIZE, SPLAT_SPACING, SimParams, Splat};
 use paint_core::tool::{RasterTool, Tool, WetTool};
 use std::path::PathBuf;
@@ -142,24 +142,24 @@ pub struct PaintApp {
     /// (描いている間は数フレーム遅れる)。ツールバーの色・水・洗うは edit_brush で
     /// 最新の値を待ってから変え、GPU へその場で書き戻す
     brush_load: BrushLoad,
-    /// このフレームに GPU の筆へ渡す指示(なぞった減り・置いたままの含み。再生中は記録した中身への
+    /// このフレームに GPU の筆へ渡す指示(穂先の残りの予測・補充の時間。再生中は記録した中身への
     /// 置き換えも)。キャンバスのコールバックを組むときに取り出す
     brush_frame: BrushFrame,
     /// 記録の再生前の筆の中身(再生は記録した中身で塗るので、止めたら戻す)
     replay_saved_brush: Option<BrushLoad>,
+    /// 腹から穂先へ補充する時間(刻み)を、塗るフレームまで溜めておく
+    brush_clock: BrushClock,
     /// 自動補充で戻す中身 = 最後に色・水・洗うで作った時点の中身。eframe storage に永続化
     brush_refill: BrushLoad,
-    /// 自動補充: 筆を下ろすたびに brush_refill へ戻す。off なら前のストロークの残りから続く。
-    /// eframe storage に永続化
+    /// 自動補充: 筆を下ろすたびに brush_refill へ戻す。off(既定)なら前のストロークの残りから続き、
+    /// 乾きかけの筆で濡れた色を吸える。eframe storage に永続化
     auto_refill: bool,
-    /// 直前の塗る splat の位置。なぞった長さで筆の中身を減らすのに使う。Down でクリア
-    brush_last: Option<[f32; 2]>,
     /// 色スウォッチのダブルクリック(色をつくる)で取った色を取り消すための、1回目を押す前の中身
     swatch_undo: Option<(usize, f64, BrushLoad)>,
     /// 押している最中のスウォッチ(0〜3 = 色、4 = 水)。押し始めの判定と押し続けの取り込みに使う
     swatch_held: Option<usize>,
     /// 直近のストローク位置と筆圧(テクセル座標)。置いたまま動かないフレームの
-    /// feed splat をここに積む。Up でクリア
+    /// splat をここに積む(hold_still)。Up でクリア
     feed_pos: Option<([f32; 2], f32)>,
     /// M1.5: ペン入力(egui Touch 経由、筆圧付き)。接地中はマウスより優先される
     pen: PenSource,
@@ -278,7 +278,7 @@ impl PaintApp {
             .storage
             .and_then(|s| s.get_string("auto_refill"))
             .map(|v| v == "true")
-            .unwrap_or(true);
+            .unwrap_or(false);
         // 筆の中身(自動補充の戻り先)を前回終了時のまま復元する。初回は空の筆
         let brush_refill = cc
             .storage
@@ -307,9 +307,9 @@ impl PaintApp {
             brush_load: brush_refill,
             brush_frame: BrushFrame::default(),
             replay_saved_brush: None,
+            brush_clock: BrushClock::default(),
             brush_refill,
             auto_refill,
-            brush_last: None,
             swatch_undo: None,
             swatch_held: None,
             feed_pos: None,
@@ -863,7 +863,6 @@ impl PaintApp {
                     if self.auto_refill {
                         self.set_brush(self.brush_refill);
                     }
-                    self.brush_last = None;
                     // H5: 記録はストローク単位。そのとき選ばれていた顔料スロット・ツール・筆の中身も残す
                     // (自動補充しないときは前のストロークの残りから始まるので、GPU の最新の値を待つ)
                     if self.replay_ui.recorder.is_some() && recordable {
@@ -928,13 +927,9 @@ impl PaintApp {
             self.stroke
                 .add_motion([px.x, px.y], ev.pressure, spacing, splats);
             if self.tool == Tool::Wet(WetTool::Paint) {
-                self.brush_frame.drag(
-                    &mut splats[start..],
-                    &mut self.brush_last,
-                    self.params.brush_hold,
-                );
+                self.brush_frame.drag(&mut splats[start..], &self.params);
             }
-            // 筆の含み: 置いたまま動かないフレームの feed splat をここに積む(feed_charge)
+            // 置いたまま動かないフレームの splat をここに積む(hold_still)
             self.feed_pos = Some(([px.x, px.y], ev.pressure));
             // H5: 補間前の生ポインタ位置+筆圧を記録する(再生時に補間し直すため
             // ブラシ半径や筆圧マッピングを変えても同じストロークを引ける)
@@ -950,27 +945,20 @@ impl PaintApp {
         }
     }
 
-    /// 筆の含み: 塗る筆(Wet::Paint)を置いたまま動かさないフレームでは、筆の中身の水が
-    /// 残っている間 feed splat を1つ積んで色水を流し出し続ける(置き馴染みの水補充+広がる勢い+
-    /// 少量の顔料。splat.wgsl の feed 分岐)。満タンの筆は brush_charge 秒で尽きる(水を使うのは
-    /// brush.wgsl。ここでの残量の判定は読み戻した値なので数フレーム遅れ、尽きた後の分は GPU が捨てる)。
-    /// 動いている(通常 splat が出た)フレームは積まない。dt はフレーム時間(秒)
-    pub(in crate::app) fn feed_charge(&mut self, dt: f32, splats: &mut Vec<Splat>) {
+    /// 塗る筆(Wet::Paint)を置いたまま動かさないフレームでも splat を1つ積む(`Splat.feed` = 1。初速なし)。
+    /// 筆と紙の受け渡しは動いているときと同じ式なので、紙と釣り合うまで色水が出続け、毛細管拡散が
+    /// 外へ運ぶ(置いたまま広がる)。洗った空の筆なら、置いている間ずっと濡れた所の色水を吸う。
+    /// 動いている(splat が出た)フレームは積まない
+    pub(in crate::app) fn hold_still(&mut self, splats: &mut Vec<Splat>) {
         if !self.painting || self.tool != Tool::Wet(WetTool::Paint) || !splats.is_empty() {
             return;
         }
         let Some((pos, pressure)) = self.feed_pos else {
             return;
         };
-        if self.brush_load.water <= brush_load::FEED_MIN_WATER {
-            return;
-        }
-        if let Some(s) = self
-            .brush_frame
-            .feed(pos, pressure, dt, self.params.brush_charge)
-        {
-            splats.push(s);
-        }
+        let start = splats.len();
+        splats.push(Splat::feed_at(pos, pressure));
+        self.brush_frame.drag(&mut splats[start..], &self.params);
     }
 
     /// 現在のツールが使うブラシ半径の基準値(筆圧前)。ラスタ線画は鉛筆/ペンの

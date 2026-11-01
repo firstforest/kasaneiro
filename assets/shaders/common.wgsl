@@ -15,8 +15,9 @@
 //   10 = 清書ペンの線画テクスチャ(M4.5b、r32float、read only)。ペン濃度から透水率を出して
 //        velocity(速度場・にじみ拡張)/ diffuse(拡散流束)が水の境界として使う。線画パスが書く
 //   11 = アクティブタイルの状態(M6)
-//   12 = 塗る筆の中身(Brush、read_write)。splat が読んで注ぎ、brush.wgsl がフレームの最後に更新する
-//   13 = 筆が紙から吸った量の集計(BrushIntake、atomic)。splat が足し、brush.wgsl が中身へ移して 0 に戻す
+//   12 = 塗る筆の中身(Brush、穂先と腹の2室、read_write)。splat が穂先を読んで受け渡しを決め、
+//        brush.wgsl がフレームの最後に更新する
+//   13 = 穂先と紙が受け渡した量の集計(BrushFlow、atomic)。splat が足し、brush.wgsl が穂先へ移して 0 に戻す
 // dst は計算するタイル(TILE_ACTIVE)とコピーするタイル(TILE_COPY)の全テクセルを書くこと
 // (変更しないテクスチャも素通しで write する。ping-pong のため)。TILE_COLD のタイルは2枚が一致しているので書かない
 // 乾燥レイヤー(M2): rgba32float の texture array(1 スライス = 1 乾燥レイヤー、rgba = 4顔料濃度)。
@@ -75,11 +76,12 @@ struct SimParams {
     show_highlight: u32,   // M4.5c: ハイライトレイヤーの表示 0/1
     active_tiles: u32,     // M6: アクティブタイル最適化 0=全面計算 / 1=濡れ+ブラシのタイルだけ計算
     paint_pickup: f32,      // 色の溶かし戻し: 筆が触れた沈着顔料を浮遊層へ戻す割合(0=無効)
-    brush_charge: f32,      // 筆の含み(秒): 置いたまま色水が流れ出続ける時間(brush.wgsl が筆の水を減らす。0=無効)
+    brush_exchange: f32,    // 筆と紙の受け渡しの速さ: 1 splat で濡れ具合の差 × 満タン水位のこの割合だけ水が動く
     absorb_rate: f32,       // 吸い取り(tool=3): 1 splat で自由水+浮遊顔料を取り除く割合(沈着は残る)
-    brush_hold: f32,        // 含みの持ち(px): なぞると筆の中身が半分になる長さ(CPU 側で消費。0=減らない)
+    brush_hold: f32,        // 筆の腹の大きさ(px): 満タンの腹だけで乾いた紙をこの長さ塗ると半分になる(0=減らない筆)
     lift_blot: f32,         // 削り(tool=1)の吸い取り: 浮かせた色ごと水を取り去る割合(0=浮かせるだけ)
-    brush_absorb: f32,      // 塗る筆の吸い込み: 紙の水位が筆の水位を超えた分を筆へ吸う割合(0=吸わない)
+    brush_tip: f32,         // 筆の穂先の大きさ(px): 満タンの穂先だけで乾いた紙をこの長さ塗ると半分になる
+    brush_refill_time: f32, // 腹から穂先へ送る時定数(秒)。一方向
 };
 
 // アクティブタイル(M6): シミュレーションを「濡れているタイル+ブラシ近傍」だけに絞る土台。
@@ -107,54 +109,43 @@ struct Splat {
     pos: vec2f,      // テクセル座標
     vel: vec2f,      // ストローク方向の単位ベクトル(初速の向き)
     pressure: f32,   // 筆圧(マウスは 1.0)
-    feed: f32,       // 筆の含み(feed)フラグ: 1 = 置いたまま毎フレーム注がれる色水(splat.wgsl 参照)
-    scale: f32,      // 塗る筆の中身のうち、この splat を置く時点で残っている割合(フレーム頭の中身に対する比)
+    feed: f32,       // 置いたまま(feed)フラグ: 1 = 塗る筆を置いたまま動かない間に毎フレーム積む splat(splat.wgsl 参照)
+    scale: f32,      // 穂先の中身のうち、この splat を置く時点で残っている割合の予測(フレーム頭の中身に対する比。乾いた紙に置き補充も無い場合 = 最も減った場合)
     _pad: f32,
 };
 
 struct SplatBuffer {
     count: u32,        // splat 数(splat / linesplat が読む)
     fluid_count: u32,  // 流体へ流す splat 数(tilescan が読む。線画ツールのフレームは 0)
-    brush_scale: f32,  // このフレームのなぞりで筆の中身が残る割合(brush.wgsl が掛ける)
-    feed_dt: f32,      // このフレームに置いたまま流れ出た色水の時間(秒。brush.wgsl が筆の水を減らす)
+    brush_dt: f32,     // brush.wgsl が腹から穂先へ補充する時間(秒。前回の brush パスからの経過)
+    _pad: u32,
     splats: array<Splat>,
 };
 
-// 塗る筆の中身(crates/paint-core/src/load.rs の BrushState と同レイアウト、32 バイト)。
-// 水 1 = 満タン、顔料 1 = 標準の1回分。splat が × brush_water / × brush_pigment で注ぐ
+// 塗る筆の中身(crates/paint-core/src/load.rs の BrushState と同レイアウト、64 バイト)。
+// 穂先(紙と受け渡す)と腹(穂先へ水を送る)の2室で、どちらも水 1 = その室が満タン、顔料 1 = 標準の1回分
 struct Brush {
-    water: f32,
+    tip_water: f32,
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
-    pigment: vec4f,
+    tip_pigment: vec4f,
+    belly_water: f32,
+    _pad3: f32,
+    _pad4: f32,
+    _pad5: f32,
+    belly_pigment: vec4f,
 };
 
-// 筆が紙から吸った量の集計(1フレーム分)。WGSL に float の atomic が無いので固定小数点
-// (× INTAKE_SCALE)の u32 で足す。[0] = 水、[1..4] = 4スロットの浮遊顔料(どれもセルの量の合計)
-struct BrushIntake {
-    amount: array<atomic<u32>, 5>,
+// 穂先と紙が受け渡した量の集計(1フレーム分、穂先へ入った向きが正)。WGSL に float の atomic が無いので
+// 固定小数点(× FLOW_SCALE)の i32 で足す。[0] = 水、[1..4] = 4スロットの顔料(どれもセルの量の合計)
+struct BrushFlow {
+    amount: array<atomic<i32>, 5>,
 };
 
-// 筆跡1つの被覆(coverage = 1 − smoothstep(0.6r, r, d)、splat.wgsl)の形から決まる比。
-// FOOTPRINT_RATIO = 円で積分した面積 ÷ πr²、CROSS_RATIO = 中心を通る直線に沿って積分した長さ ÷ r
-const FOOTPRINT_RATIO: f32 = 0.648;
-const CROSS_RATIO: f32 = 1.6;
-
-// 塗る筆の基準半径での splat の間隔(CPU と同じ式。筆圧は見ない)
-fn splat_spacing() -> f32 {
-    return max(SPLAT_SPACING * max(params.brush_radius, 0.5), 1.0);
-}
-
-// 1回なぞったとき、ストロークの中心線上のセルに重なる筆跡の数(Σ coverage)。
-// 1回なぞった紙の水位は、筆跡1つが置く水位のこの倍になる
-fn stroke_overlap() -> f32 {
-    return CROSS_RATIO * max(params.brush_radius, 0.5) / splat_spacing();
-}
-
-// 吸った量の固定小数点の刻み。1セル1フレームの吸い込みは水位の差(1 前後)までなので、
-// 64px の筆でキャンバスを横切っても u32 に収まる
-const INTAKE_SCALE: f32 = 4096.0;
+// 受け渡した量の固定小数点の刻み。1セル1フレームの受け渡しは満タン水位(2 前後)までなので、
+// 64px の筆で 1024² のキャンバスを1フレームで横切っても i32 に収まる
+const FLOW_SCALE: f32 = 4096.0;
 
 // 濡れ判定(a チャンネル = Curtis 1997 の wet-area mask)。
 // 水が動くのは濡れたセルだけ。乾いた紙との境界はキャンバス端と同じ「壁」として扱う。

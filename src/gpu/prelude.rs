@@ -52,14 +52,16 @@ pub fn shader_prelude(size: u32) -> String {
          const LIVE_PALETTE: u32 = {LIVE_PALETTE}u;\n\
          const LATENT_TOTAL: u32 = {LATENT_TOTAL}u;\n\
          const PIGMENT_MAX: f32 = {pigment_max:?};\n\
-         const FEED_MIN_WATER: f32 = {feed_min:?};\n\
-         const SPLAT_SPACING: f32 = {spacing:?};\n",
+         const FOOTPRINT_RATIO: f32 = {footprint:?};\n\
+         const CROSS_RATIO: f32 = {cross:?};\n\
+         const SAT_RATIO: f32 = {sat:?};\n",
         tiles = size / TILE_SIZE,
         order = MAX_LAYERS / 4,
         global = pigment::GLOBAL_LATENTS,
         pigment = pigment::PIGMENT_LATENTS,
         pigment_max = paint_core::load::PIGMENT_MAX,
-        feed_min = paint_core::load::FEED_MIN_WATER,
-        spacing = paint_core::sim::SPLAT_SPACING,
+        footprint = paint_core::sim::FOOTPRINT_RATIO,
+        cross = paint_core::sim::CROSS_RATIO,
+        sat = paint_core::sim::SAT_RATIO,
     )
 }

@@ -7,6 +7,7 @@ use crate::input::{PointerEvent, PointerPhase, PointerSource};
 use eframe::egui;
 use eframe::egui_wgpu;
 use paint_core::sim::Splat;
+use paint_core::tool::WetTool;
 
 impl PaintApp {
     pub(in crate::app) fn canvas_ui(&mut self, ui: &mut egui::Ui) {
@@ -106,7 +107,7 @@ impl PaintApp {
         let mut splats: Vec<Splat> = Vec::new();
         // スポイト待機・乾燥レイヤー・パン・半径調整の間はポインタ入力をストロークへ流さない。
         // ストローク中にこれらへ入ったらその場で Up 扱いにして確定する(Up を取りこぼすと
-        // painting が立ちっぱなしになり、含みの色水が出続け、線画は履歴に載らない)
+        // painting が立ちっぱなしになり、置いたままの色水が出続け、線画は履歴に載らない)
         let drawing =
             !self.palette_ui.eyedropper && !self.drawing_locked() && !panning && !resizing;
         if !drawing && self.painting {
@@ -140,9 +141,8 @@ impl PaintApp {
             // M6: パン中(中ボタンドラッグ)は描画イベントを流さない(ビュー操作専念)。
             // F18: Ctrl+Alt+ドラッグでの半径調整中も同様に描かない
             self.apply_pointer_events(&events, rect, &mut splats);
-            // 筆の含み: 塗る筆を置いたまま動かないフレームでも色水が流れ出続ける
-            let dt = ui.input(|i| i.stable_dt);
-            self.feed_charge(dt, &mut splats);
+            // 塗る筆を置いたまま動かないフレームでも、筆と紙の受け渡しを続ける(色水が流れ出続ける)
+            self.hold_still(&mut splats);
         }
 
         // 時間は固定刻み(1/60 秒)で数える。リフレッシュレートに依らず同じ実時間で同じだけ乾き、
@@ -169,6 +169,16 @@ impl PaintApp {
             if !more {
                 self.stop_replay();
             }
+        }
+
+        // 腹から穂先へ補充する時間: brush パスが走る(塗るツールで流体へ splat を流す)フレームで
+        // 前回からの経過をまとめて渡す
+        self.brush_clock.tick(ticks);
+        if self.params.tool == WetTool::Paint.gpu_id()
+            && self.line_target().is_none()
+            && !splats.is_empty()
+        {
+            self.brush_frame.dt = self.brush_clock.take();
         }
 
         // H6: 一時停止中は 0 ステップ(1ステップボタンが押されていれば 1)

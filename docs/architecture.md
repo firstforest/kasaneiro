@@ -35,8 +35,8 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │     └─ src/
 │        ├─ sim.rs        SimParams(全パラメータの唯一の置き場)・Splat・CANVAS_SIZES
 │        ├─ brush.rs      ストローク → splat 列(位置補間、筆圧の線形補間)
-│        ├─ load.rs       筆の中身 BrushLoad(水と4色の顔料。取る・浸す・洗う)・GPU 筆バッファのレイアウト BrushState・
-│        │                フレームごとの筆への指示 BrushFrame(置き換え・なぞった減り・置いたままの含み)
+│        ├─ load.rs       筆の中身 BrushLoad(穂先と腹の2室。取る・浸す・洗う)・GPU 筆バッファのレイアウト BrushState・
+│        │                フレームごとの筆への指示 BrushFrame(置き換え・穂先の残りの予測・補充の時間)・BrushClock
 │        ├─ paper.rs      紙ハイトテクスチャの CPU 生成(値ノイズ4成分)
 │        ├─ replay.rs     ストローク記録・再生モデル(Recorder / Player)
 │        └─ tool.rs       ツールの階層 enum(Tool = Wet / Raster、gpu_id、ToolInfo)
@@ -61,7 +61,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │  │  │                   clear / sync_layers / bake_dry / fast_dry / rewet / rebuild_pipelines
 │  │  ├─ init.rs          GpuCanvas::new(テクスチャ・バッファ・bind group の生成)
 │  │  ├─ callback.rs      CanvasCallback(egui の prepare / paint)と encode_frame(パス実行順の正典)
-│  │  ├─ brush.rs         GpuBrush(塗る筆の中身の GPU バッファ・吸い込みの集計・CPU への非同期読み戻しと完了待ち)
+│  │  ├─ brush.rs         GpuBrush(塗る筆の中身の GPU バッファ・受け渡しの集計・CPU への非同期読み戻しと完了待ち)
 │  │  ├─ snapshot.rs      snapshot(PNG・スポイト用の読み戻し)/ render_offscreen(表示の計測用)
 │  │  ├─ persist.rs       export_state / import_state(作品保存の GPU 読み戻し / 書き戻し)/
 │  │  │                   pingpong_mismatch(ping-pong の2枚の食い違いを数える検査用)
@@ -132,9 +132,9 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 | バッファ | 内容 |
 |---|---|
 | SimParams uniform | 毎フレーム書く(§11) |
-| splat storage | ヘッダ(splat 数・流体へ流す数・このフレームのなぞりで筆が残る割合 `brush_scale`・置いたままの含みの時間 `feed_dt`)+ splat 列。上限 `MAX_SPLATS=8192` |
-| 筆の中身 storage | 塗る筆の中身 `Brush`(水 + 4色の顔料、32B。read_write)。正典は GPU。CPU は `set` で置き換え、中身が変わったフレームに MAP_READ のバッファへコピーして非同期で読み戻す(§9) |
-| 吸い込みの集計 storage | `array<atomic<u32>, 5>`(水 + 4色の浮遊顔料、固定小数点 × `INTAKE_SCALE`)。splat が足し、brush が筆の中身へ移して 0 に戻す |
+| splat storage | ヘッダ(splat 数・流体へ流す数・腹から穂先へ補充する時間 `brush_dt`)+ splat 列。上限 `MAX_SPLATS=8192` |
+| 筆の中身 storage | 塗る筆の中身 `Brush`(穂先と腹それぞれ水 + 4色の顔料、64B。read_write)。正典は GPU。CPU は `set` で置き換え、中身が変わったフレームに MAP_READ のバッファへコピーして非同期で読み戻す(§9) |
+| 受け渡しの集計 storage | `array<atomic<i32>, 5>`(水 + 4色の顔料、穂先へ入った向きが正、固定小数点 × `FLOW_SCALE`)。splat が足し、brush が穂先へ移して 0 に戻す |
 | 顔料個性 uniform | ρ/ω/γ/μ(全レイヤー共通) |
 | 顔料 latent uniform | `array<vec4f, LATENT_TOTAL>`(§3.5) |
 | LayerUniform | 乾燥レイヤーの重ね順 + visible_mask + 層ごとの濃度倍率(density。重ね順で並べる)+ has_base(下地から合成するか)+ force_mode(0 = compose_mode に従う / 1 = 乗算 / 2 = KM。下地への統合用) |
@@ -184,6 +184,7 @@ prepare(毎フレーム)= encode_frame:
   (prepare の頭で、前のフレームまでに積んだ筆の中身の読み戻しを進める)
   SimParams を uniform に write_buffer(スライダー即時反映)
   筆の中身の置き換え(再生のストローク開始)があれば筆バッファへ write_buffer
+    (アプリの色・水・洗う・自動補充はフレーム外でその場で write_buffer)
   splat storage へヘッダ+splat 列を書く(0 個でもヘッダは書く。一時停止中でもブラシは反映。
     MAX_SPLATS 超過分は警告ログを出して切り捨て。fluid_count は線画ツールのフレームで 0)
   ラスタツール(line_target=Some)→ 専用 line_pass で linesplat.wgsl(線画テクスチャへ直描き)
@@ -191,8 +192,8 @@ prepare(毎フレーム)= encode_frame:
   (ping-pong するパスが1つもないフレーム = 一時停止中で流体へ筆を流さない、はここで終わり)
   sim_pass:
     tilescan → tiledilate(アクティブタイルの決定。§8)
-    splat.wgsl(流体ツール: 水+初速+顔料の注入。tool で分岐。塗る筆は紙から吸った量を集計へ足す)
-    brush.wgsl(塗るツールのフレームだけ。1スレッドで、なぞった減り → 含みで使った水 → 吸い込みを筆の中身へ)
+    splat.wgsl(流体ツール: 水+初速+顔料の注入。tool で分岐。塗る筆は穂先と紙の受け渡しを集計へ足す)
+    brush.wgsl(塗るツールで splat があるフレームだけ。1スレッドで、受け渡しを穂先へ → 腹から穂先へ補充)
     sim_steps 回:
       velocity → relax × relax_iters
       → flowout(edge_eta > 0 のときだけ) → advect(水+浮遊顔料)
@@ -212,8 +213,8 @@ paint:
 | ファイル | 役割 |
 |---|---|
 | common.wgsl | 共通定義(SimParams / Splat / Brush / BrushIntake 構造体、濡れ判定、バイリニア補間、`tile_index_of`)。各シェーダーの先頭に連結する(§11) |
-| splat.wgsl | ブラシ入力。tool(描画 / リフト / 消去 / 吸い取り)で分岐。描画は筆バッファの中身 × `Splat.scale`(置く時点の残り)を水は × brush_water、顔料 vec4 は × brush_pigment で4スロットへ同時に注ぐ。その前に、紙の水位が筆の水位より高いセルから水と浮遊顔料を吸い、集計へ atomic で足す。feed splat(§9)は目標水位への補充+少量の顔料 |
-| brush.wgsl | 塗る筆の中身の更新(1スレッド)。なぞった減り(`brush_scale`)→ 置いたままの含みで使った水(`feed_dt` / brush_charge)→ 吸い込みの集計を筆跡1つの面積で割って筆の単位へ直して足す(水は満タン、顔料は `PIGMENT_MAX` で頭打ち)。集計は 0 に戻す |
+| splat.wgsl | ブラシ入力。tool(描画 / リフト / 消去 / 吸い取り)で分岐。描画は穂先と紙が濡れ具合の差で水を受け渡す(穂先の濡れ具合 = 穂先の水 × `Splat.scale`(置く時点の残りの予測)、紙の濡れ具合 = 水位 ÷ (`brush_water` × `SAT_RATIO`))。出るときは穂先の濃さ、入るときは紙の浮遊顔料の濃さで顔料も動き、受け渡した量を集計へ atomic で足す。置いたままの splat(`feed`)は初速なし・溶かし戻し弱め |
+| brush.wgsl | 塗る筆の中身の更新(1スレッド)。受け渡しの集計を穂先の容量で割って穂先に足し引き → 腹が穂先より濡れていれば `brush_dt` / `brush_refill_time` で腹から穂先へ補充(一方向、顔料は腹の濃さ)。室の容量は「満タンの室だけで乾いた紙をこの長さ塗ると半分」の長さ(`brush_tip` / `brush_hold`)から。集計は 0 に戻す |
 | velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率を速度場・にじみ拡張に掛ける |
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
 | flowout.wgsl | FlowOutward(縁の水を抜く)。既定オフ(edge_eta 0 で dispatch ごと省略) |
@@ -273,15 +274,15 @@ paint:
 ペン → Windows Ink(WM_POINTER)→ winit(GetPointerPenInfo で筆圧)→ egui::Event::Touch{force}
   → input.rs PenSource → PointerEvent(論理ピクセル+筆圧 0..1)
   → paint_core::brush(ストローク補間。サンプル間隔は筆圧反映後の実効半径 SimParams::radius_at)
-  → 塗る筆なら paint_core::load::BrushFrame::drag(各 splat に置く時点で残っている割合を載せ、なぞった長さで減らす)
-  → Splat 列 + BrushFrame → splat storage buffer → splat.wgsl(筆バッファの中身を注ぎ、吸い込みを集計)→ brush.wgsl
+  → 塗る筆なら paint_core::load::BrushFrame::drag(各 splat に置く時点の穂先の残りの予測を載せる。乾いた紙に置いた場合 = 最も減る場合)
+  → Splat 列 + BrushFrame → splat storage buffer → splat.wgsl(穂先と紙の受け渡しを集計)→ brush.wgsl
 ```
 
 - `PointerSource` trait で Mouse / Pen を抽象化する。ペン接地中はマウス入力を無視する(egui-winit が Touch からポインタをエミュレートするため二重ストロークになる)
 - 筆圧マッピングは `実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に適用(splat.wgsl と CPU 側で同式)
 - **筆の中身**: 正典は GPU の筆バッファ(`GpuBrush`)。`PaintApp` は `brush_load`(フレーム頭に読み戻した値。描いている間は数フレーム遅れる)と `brush_refill`(自動補充の戻り先 = 最後に色・水・洗うで作った中身)を持つ。色・水・洗う・自動補充・再生の停止は、`sync_brush`(GPU の完了を待って最新の値を得る。読み戻しが追いついていれば待たない)→ CPU で `BrushLoad` を変える → `set_brush` で筆バッファへその場で write_buffer、の順で置き換える。置き換えをフレームのコールバックに載せないのは、egui が UI を組み直したパスのコールバックを捨てるため。ツールバーの色・水スウォッチは押した瞬間と押し続けている間の2段で中身を変える。`brush_refill` と自動補充の on/off は eframe storage に保存する
-- **なぞった減り・含み・吸い込み**: CPU はフレームごとに `BrushFrame`(なぞった減り `scale` と置いたままの時間 `feed_dt`)を `CanvasCallback.brush` で渡すだけで、筆の中身そのものは GPU で進む。記録の再生は `Player` がストロークの始めに `BrushFrame.set` で記録した中身へ置き換えるので、吸い込みまで含めて画面と headless で同じ経路を通る
-- **筆の含み**: 塗る筆を置いたまま動かないフレームは、読み戻した筆の水が残る間、`PaintApp::feed_charge` が `BrushFrame::feed` で毎フレーム feed splat(`Splat.feed=1`)を1つ積み、brush.wgsl が満タンの筆が `brush_charge` 秒で尽きる速さで水を使う(水が `FEED_MIN_WATER` 以下なら splat.wgsl が feed splat を捨てる)。その水を毛細管拡散が外へ運ぶので、置くだけで色水が広がる。ストローク記録は生ポインタ点のみなので feed は再生で再現されない
+- **受け渡しと補充**: CPU はフレームごとに `BrushFrame`(穂先の残りの予測 `scale` と補充の時間 `dt`)を `CanvasCallback.brush` で渡すだけで、筆の中身そのものは GPU で進む。補充の時間は `BrushClock` が刻みを溜め、brush パスが走るフレーム(塗るツールで流体へ splat を流すフレーム)でまとめて渡す(上限 2 秒)。記録の再生は `Player` がストロークの始めに `BrushFrame.set` で記録した中身へ置き換えるので、受け渡しまで含めて画面と headless で同じ経路を通る
+- **置いたまま**: 塗る筆を置いたまま動かないフレームは、読み戻した穂先か腹に水が残る間、`PaintApp::hold_still` が毎フレーム置いたままの splat(`Splat.feed=1`)を1つ積む。受け渡しの式は同じなので、紙と釣り合うまで色水が出続け、毛細管拡散が外へ運ぶ。ストローク記録は生ポインタ点のみなので置いたままの splat は再生で再現されない
 - ストローク記録は補間前の生ポインタ入力と、ストロークごとに筆を下ろした時点の筆の中身(`RecordedStroke.load`)を保存する。`load` の無い記録はそのストロークの顔料スロットを標準の1回分含んだ筆で再生する。時刻は 1/60 秒の刻み番号(JSON のキー名は `frame`)
 
 ## 10. 保存
@@ -301,7 +302,7 @@ paint:
 - WGSL は `assets/shaders/` から実行時ロード。notify で監視し、保存で `rebuild_pipelines()`。コンパイルエラー時は描画をスキップしてエラーオーバーレイを出し、直前の正常なパイプラインで続行する
 - **シェーダーの連結は3段**: `shader_prelude`(Rust と共有する const: TILE_SIZE / TILES_PER_SIDE / MAX_LAYERS / LAYER_ORDER_VEC4S / GLOBAL_LATENTS / PIGMENT_LATENTS / LIVE_PALETTE / LATENT_TOTAL)+ common.wgsl + 本体。エラーの行番号は連結分ずれるので `remap_shader_error_lines` で補正して表示する
 - compute パイプラインは `COMPUTE_SHADERS` の表(WGSL ファイル名 → レイアウト種別)から作る。参照は名前引き `Pipelines::compute("splat.wgsl")`、実行順は `encode_frame()` のハードコード
-- `SimParams` は毎フレーム uniform へ書く(スライダー即時反映)。WGSL の uniform 規則(16 バイト整列)に合わせ、現在は 56 フィールド = 224B でパディングなし。足すときの手順は [parameters.md](parameters.md) §11
+- `SimParams` は毎フレーム uniform へ書く(スライダー即時反映)。WGSL の uniform 規則(16 バイト整列)に合わせ、現在は 57 フィールド+末尾パディング3 = 240B。足すときの手順は [parameters.md](parameters.md) §11
 - **配布ビルド**(`cargo build --release --features embed-assets`):
   1. `assets/shaders/` を `include_dir!` で埋め込む(取得元の分岐は `GpuCanvas::shader_source` の1か所。ファイル監視は無効)
   2. 既定 JSON(pigments / palettes / presets / strokes)も埋め込み、初回起動時に `assets::seed_default_assets()` が exe 隣へ書き出す(ディレクトリ単位で「無ければ書く」— ユーザーの編集・削除を復活させない)

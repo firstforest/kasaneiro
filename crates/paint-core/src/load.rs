@@ -3,22 +3,23 @@
 //! 単位は「標準の1回分」: 水 1 = 満タン、顔料 1 = 満タンの水に色1回分を溶かした量。
 //! 濃さ = 顔料の合計 ÷ 水。
 //!
-//! 中身の正典は GPU の筆バッファ([`BrushState`])。splat.wgsl がそこから `brush_water` /
-//! `brush_pigment` を掛けて注ぎ、紙から吸い込んだ分を集計して、brush.wgsl がフレームの最後に
-//! なぞった減り・置いたままの含み・吸い込みを中身へ反映する。CPU は [`BrushFrame`] で
-//! 「中身を置き換える」「どれだけなぞった・置いたままだった」を毎フレーム渡し、
+//! 中身の正典は GPU の筆バッファ([`BrushState`])。筆と紙は濡れ具合の差で水を受け渡し
+//! (筆が濡れていれば紙へ出て、紙が濡れていれば筆へ入る。顔料は水と同じ割合で一緒に動く)、
+//! splat.wgsl が受け渡した量を集計して、brush.wgsl がフレームの最後に中身へ反映する。
+//! CPU は [`BrushFrame`] で「中身を置き換える」と「splat ごとの残りの予測」を毎フレーム渡し、
 //! 読み戻した中身を表示と次の操作の起点に使う。
 //!
 //! 中身を変えるのはツールバーのスウォッチだけ:
 //! - 色: 押した瞬間に1回分、押している間も少しずつ足す(濃くなる)
 //! - 水: 押した瞬間に顔料を半分、押している間も水と入れ替わって抜けていく(薄くなる・洗える)
-//! - 洗う: 水も顔料も 0(空の筆)。続けて水に浸せば水だけの筆になる
+//! - 洗う: 水も顔料も 0(空の筆。紙に何も置かず、濡れた所では色水を吸う)。続けて水に浸せば水だけの筆になる
 //!
-//! 描くと中身が減る(`brush_hold` px なぞると半分)。水と顔料は同じ割合で減るので濃さは変わらない。
-//! 減った筆で濡れた色をなでると、紙のほうが濡れている分だけ水と浮いている色を吸い込む
-//! (`brush_absorb`)ので、筆の色が下の色に寄っていく。
+//! 筆は穂先(紙と受け渡す。小さい)と腹(穂先へ水を送る。大きい)の2室。乾いた紙に描くと穂先から出て、
+//! 腹が補充するので全体が減っていく(腹 `brush_hold` px で半分)。出るときは穂先の濃さのまま出るので濃さは
+//! 変わらない。紙のほうが濡れている所では穂先が水と浮いている色を吸うので、乾きかけの筆で濡れた色を
+//! なでると穂先がその色で満ち、その色を運んで置ける。
 
-use crate::sim::Splat;
+use crate::sim::{SimParams, Splat};
 use bytemuck::{Pod, Zeroable};
 use serde::{Deserialize, Serialize};
 
@@ -34,46 +35,21 @@ pub const DIP_KEEP: f32 = 0.5;
 pub const DIP_TAU: f32 = 0.25;
 /// 顔料の合計がこれを下回ったら 0 に切る(水に浸し続ければ必ず透明になる)
 pub const CLEAN_EPS: f32 = 0.02;
-/// 水がこれを下回ったら置いたまま流れ出る色水(feed)を止める(brush.wgsl / splat.wgsl がプレリュード経由で使う)
+/// 水がこれ以下の室は、濃さ(顔料 ÷ 水)を 0 として表示する(ほぼ空の室で濃さが跳ねないように)
 pub const FEED_MIN_WATER: f32 = 0.02;
 
+/// 筆の1室(穂先または腹)の中身。水 1 = その室が満タン、顔料 1 = 満タンの水に標準の1回分
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct BrushLoad {
-    /// 含んでいる水(1 = 満タン)
+pub struct Chamber {
     pub water: f32,
-    /// 顔料スロットごとの量(1 = 標準の1回分)
     pub pigment: [f32; 4],
 }
 
-impl Default for BrushLoad {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
-
-impl BrushLoad {
-    /// 空の筆(洗った直後・起動時): 水も顔料もなく、塗っても何も置かない
-    pub fn empty() -> Self {
-        Self {
-            water: 0.0,
-            pigment: [0.0; 4],
-        }
-    }
-
-    /// 水だけの筆: 水満タン・顔料なし
-    pub fn water_only() -> Self {
-        Self {
-            water: 1.0,
-            pigment: [0.0; 4],
-        }
-    }
-
-    /// 空の筆に色を1回分取った状態(スロット ch の標準の濃さ)
-    pub fn standard(channel: u32) -> Self {
-        let mut load = Self::empty();
-        load.take_pigment(channel, TAKE_DOSE);
-        load
-    }
+impl Chamber {
+    const EMPTY: Self = Self {
+        water: 0.0,
+        pigment: [0.0; 4],
+    };
 
     pub fn pigment_total(&self) -> f32 {
         self.pigment.iter().sum()
@@ -88,9 +64,7 @@ impl BrushLoad {
         }
     }
 
-    /// 色を取る: 顔料を amount 足し、水を満たす(絵具皿の色は水に溶けている)。
-    /// 合計は PIGMENT_MAX で頭打ち(比率を保って縮める)
-    pub fn take_pigment(&mut self, channel: u32, amount: f32) {
+    fn take_pigment(&mut self, channel: u32, amount: f32) {
         self.pigment[channel.min(3) as usize] += amount.max(0.0);
         self.water = 1.0;
         let total = self.pigment_total();
@@ -102,8 +76,7 @@ impl BrushLoad {
         }
     }
 
-    /// 水に浸す: 水を満たし、顔料を keep の割合だけ残す。しきい値以下は 0 に切る
-    pub fn dip_water(&mut self, keep: f32) {
+    fn dip_water(&mut self, keep: f32) {
         self.water = 1.0;
         let keep = keep.clamp(0.0, 1.0);
         for p in &mut self.pigment {
@@ -112,6 +85,102 @@ impl BrushLoad {
         if self.pigment_total() < CLEAN_EPS {
             self.pigment = [0.0; 4];
         }
+    }
+}
+
+/// 塗る筆の中身。腹(`water` / `pigment`。大きく、穂先へ水を送る)と穂先(`tip`。小さく、紙と受け渡す)の2室。
+/// 色を取る・水に浸す・洗うは両方の室に同じ操作をするので、作った直後の2室は同じ濡れ具合・同じ濃さになる。
+/// 描いている間に穂先だけが紙と受け渡して腹と違ってくる
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BrushLoad {
+    /// 腹の水(1 = 満タン)
+    pub water: f32,
+    /// 腹の顔料スロットごとの量(1 = 標準の1回分)
+    pub pigment: [f32; 4],
+    /// 穂先。None = 腹と同じ(色を作った直後。穂先の無い古い記録・保存もこれとして読む)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip: Option<Chamber>,
+}
+
+impl Default for BrushLoad {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl BrushLoad {
+    /// 空の筆(洗った直後・起動時): 水も顔料もない。紙に何も置かず、濡れた所の色水を吸うだけ
+    pub fn empty() -> Self {
+        Self::uniform(Chamber::EMPTY)
+    }
+
+    /// 水だけの筆: 水満タン・顔料なし
+    pub fn water_only() -> Self {
+        Self::uniform(Chamber {
+            water: 1.0,
+            pigment: [0.0; 4],
+        })
+    }
+
+    /// 穂先と腹が同じ中身の筆
+    pub fn uniform(chamber: Chamber) -> Self {
+        Self::from_chambers(chamber, chamber)
+    }
+
+    /// 穂先と腹から組み立てる(同じなら穂先は None にまとめる)
+    pub fn from_chambers(tip: Chamber, belly: Chamber) -> Self {
+        Self {
+            water: belly.water,
+            pigment: belly.pigment,
+            tip: (tip != belly).then_some(tip),
+        }
+    }
+
+    /// 空の筆に色を1回分取った状態(スロット ch の標準の濃さ)
+    pub fn standard(channel: u32) -> Self {
+        let mut load = Self::empty();
+        load.take_pigment(channel, TAKE_DOSE);
+        load
+    }
+
+    pub fn belly(&self) -> Chamber {
+        Chamber {
+            water: self.water,
+            pigment: self.pigment,
+        }
+    }
+
+    pub fn tip(&self) -> Chamber {
+        self.tip.unwrap_or(self.belly())
+    }
+
+    /// 腹の顔料の合計
+    pub fn pigment_total(&self) -> f32 {
+        self.belly().pigment_total()
+    }
+
+    /// 次に置く色の濃さ(穂先の顔料 ÷ 穂先の水)
+    pub fn concentration(&self) -> f32 {
+        self.tip().concentration()
+    }
+
+    /// 穂先と腹に同じ操作をする
+    fn each(&mut self, op: impl Fn(&mut Chamber)) {
+        let (mut tip, mut belly) = (self.tip(), self.belly());
+        op(&mut tip);
+        op(&mut belly);
+        *self = Self::from_chambers(tip, belly);
+    }
+
+    /// 色を取る: 顔料を amount 足し、水を満たす(絵具皿の色は水に溶けている)。
+    /// 合計は PIGMENT_MAX で頭打ち(比率を保って縮める)
+    pub fn take_pigment(&mut self, channel: u32, amount: f32) {
+        self.each(|c| c.take_pigment(channel, amount));
+    }
+
+    /// 水に浸す: 水を満たし、顔料を keep の割合だけ残す。しきい値以下は 0 に切る
+    pub fn dip_water(&mut self, keep: f32) {
+        self.each(|c| c.dip_water(keep));
     }
 
     /// 水に dt 秒浸したときに残る顔料の割合
@@ -124,45 +193,59 @@ impl BrushLoad {
     }
 }
 
-/// GPU の筆バッファ(brush.wgsl / splat.wgsl の `Brush`)と同レイアウト(32 バイト)。
-/// 描いている間の中身(なぞって減る・置いたまま流れ出る・紙から吸い込む)は GPU 側で進む
+/// GPU の筆バッファ(brush.wgsl / splat.wgsl の `Brush`)と同レイアウト(64 バイト)。
+/// 描いている間の中身(紙との受け渡し・腹から穂先への補充)は GPU 側で進む
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct BrushState {
-    pub water: f32,
-    pub _pad: [f32; 3],
-    pub pigment: [f32; 4],
+    pub tip_water: f32,
+    pub _pad0: [f32; 3],
+    pub tip_pigment: [f32; 4],
+    pub belly_water: f32,
+    pub _pad1: [f32; 3],
+    pub belly_pigment: [f32; 4],
 }
 
 impl From<BrushLoad> for BrushState {
     fn from(load: BrushLoad) -> Self {
+        let tip = load.tip();
         Self {
-            water: load.water,
-            _pad: [0.0; 3],
-            pigment: load.pigment,
+            tip_water: tip.water,
+            _pad0: [0.0; 3],
+            tip_pigment: tip.pigment,
+            belly_water: load.water,
+            _pad1: [0.0; 3],
+            belly_pigment: load.pigment,
         }
     }
 }
 
 impl From<BrushState> for BrushLoad {
     fn from(state: BrushState) -> Self {
-        Self {
-            water: state.water,
-            pigment: state.pigment,
-        }
+        Self::from_chambers(
+            Chamber {
+                water: state.tip_water,
+                pigment: state.tip_pigment,
+            },
+            Chamber {
+                water: state.belly_water,
+                pigment: state.belly_pigment,
+            },
+        )
     }
 }
 
 /// 1フレーム分の、GPU の筆の中身への指示。
-/// set はフレーム頭で中身を置き換え、scale と feed_dt は splat を置いた後に brush.wgsl が反映する
+/// set はフレーム頭で中身を置き換える。scale は splat ごとの穂先の残りの予測を前から掛けていく途中の値。
+/// dt は brush.wgsl が腹から穂先へ補充する時間(前回の brush パスからの経過。[`BrushClock`])
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BrushFrame {
-    /// 中身をこれに置き換える(色・水・洗う・自動補充・再生のストローク開始)
+    /// 中身をこれに置き換える(再生のストローク開始)
     pub set: Option<BrushLoad>,
-    /// このフレームのなぞりで中身が残る割合
+    /// このフレームでここまでに置いた splat で、穂先が最も減った場合に残る割合
     pub scale: f32,
-    /// 置いたまま流れ出た色水の時間(秒)
-    pub feed_dt: f32,
+    /// 腹から穂先へ補充する時間(秒)
+    pub dt: f32,
 }
 
 impl Default for BrushFrame {
@@ -170,45 +253,53 @@ impl Default for BrushFrame {
         Self {
             set: None,
             scale: 1.0,
-            feed_dt: 0.0,
+            dt: 0.0,
         }
     }
 }
 
 impl BrushFrame {
-    /// 中身を置き換える。それより前のなぞり・含みは置き換え前の中身の話なので捨てる
+    /// 中身を置き換える。それより前の予測は置き換え前の中身の話なので捨てる(補充の時間は残す)
     pub fn set_load(&mut self, load: BrushLoad) {
         *self = Self {
             set: Some(load),
+            dt: self.dt,
             ..Self::default()
         };
     }
 
-    /// 塗る筆の splat 列に「置く時点で残っている割合」を載せ、なぞった長さぶん減らす。
-    /// last は直前の splat 位置(ストロークの始めに None へ戻す)。
-    /// hold = なぞると中身が半分になる長さ(px)。0 以下なら減らない
-    pub fn drag(&mut self, splats: &mut [Splat], last: &mut Option<[f32; 2]>, hold: f32) {
+    /// 塗る筆の splat 列に「置く時点で穂先に残っている割合」の予測を載せる。予測は乾いた紙に置き、
+    /// 腹からの補充も無い場合(= 穂先が最も減る場合)なので、フレームの中で穂先に残っている以上を出すことはない。
+    /// 実際の中身はフレームの最後に GPU が受け渡しの集計と補充から確定する
+    pub fn drag(&mut self, splats: &mut [Splat], params: &SimParams) {
         for s in splats {
             s.scale = self.scale;
-            let step = last.map_or(0.0, |p| {
-                let (dx, dy) = (s.pos[0] - p[0], s.pos[1] - p[1]);
-                (dx * dx + dy * dy).sqrt()
-            });
-            *last = Some(s.pos);
-            if hold > 0.0 && step > 0.0 {
-                self.scale *= 0.5f32.powf(step / hold);
-            }
+            self.scale *= 1.0 - params.brush_release_max(s.pressure);
         }
     }
+}
 
-    /// 置いたまま動かない間の色水(feed splat)。満タンの筆が charge 秒で空になる速さで、
-    /// GPU が筆の水を使う(水が FEED_MIN_WATER 以下なら GPU 側で何もしない)。charge が 0 なら None
-    pub fn feed(&mut self, pos: [f32; 2], pressure: f32, dt: f32, charge: f32) -> Option<Splat> {
-        if charge <= 0.0 {
-            return None;
-        }
-        self.feed_dt += dt.max(0.0);
-        Some(Splat::feed_at(pos, pressure))
+/// 腹から穂先へ補充する時間を数える。brush パスは塗るツールで splat があるフレームにしか走らないので、
+/// それ以外のフレーム(筆を上げている間など)の刻みも溜めておき、次に塗るフレームでまとめて渡す
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BrushClock {
+    ticks: u32,
+}
+
+impl BrushClock {
+    /// まとめて補充する時間の上限(刻み)。それ以上待っても穂先はほぼ揃っている
+    pub const MAX_TICKS: u32 = 120;
+
+    /// シミュの刻みを進める(1刻み = 1/60 秒)
+    pub fn tick(&mut self, ticks: u32) {
+        self.ticks = self.ticks.saturating_add(ticks);
+    }
+
+    /// brush パスが走るフレームで呼ぶ: 溜めた時間(秒)を返して 0 に戻す
+    pub fn take(&mut self) -> f32 {
+        let dt = self.ticks.min(Self::MAX_TICKS) as f32 / 60.0;
+        self.ticks = 0;
+        dt
     }
 }
 
@@ -274,62 +365,56 @@ mod tests {
         assert_eq!(load, BrushLoad::water_only());
     }
 
-    /// なぞると hold px で半分になる。各 splat には置く時点で残っている割合が載る
+    /// 各 splat には置く時点で残っている割合の予測が載り、1 splat ごとに乾いた紙での減りの上限だけ減る
     #[test]
-    fn drag_scales_splats_and_frame() {
-        let mut splats = vec![
-            Splat::new([0.0, 0.0], [0.0, 0.0], 1.0),
-            Splat::new([100.0, 0.0], [1.0, 0.0], 1.0),
-            Splat::new([200.0, 0.0], [1.0, 0.0], 1.0),
-        ];
+    fn drag_predicts_dry_paper_release() {
+        let params = SimParams::default();
+        let f = params.brush_release_max(1.0);
+        assert!(f > 0.0 && f < 0.1, "1 splat の減り {f}");
+        let mut splats = vec![Splat::new([0.0, 0.0], [0.0, 0.0], 1.0); 3];
         let mut frame = BrushFrame::default();
-        let mut last = None;
-        frame.drag(&mut splats, &mut last, 100.0);
+        frame.drag(&mut splats, &params);
         assert_eq!(splats[0].scale, 1.0);
-        assert_eq!(splats[1].scale, 1.0);
-        assert!((splats[2].scale - 0.5).abs() < 1e-5);
-        assert!((frame.scale - 0.25).abs() < 1e-5);
-        assert_eq!(last, Some([200.0, 0.0]));
+        assert!((splats[1].scale - (1.0 - f)).abs() < 1e-6);
+        assert!((frame.scale - (1.0 - f).powi(3)).abs() < 1e-6);
+    }
+
+    /// 予測は減りの上限なので、乾いた紙を穂先の大きさ(brush_tip)の長さ塗ったときに半分以下になる
+    #[test]
+    fn prediction_is_upper_bound_of_tip() {
+        let params = SimParams::default();
+        let spacing = params.radius_at(1.0) * crate::sim::SPLAT_SPACING;
+        let n = (params.brush_tip / spacing) as usize;
+        let mut splats = vec![Splat::new([0.0, 0.0], [0.0, 0.0], 1.0); n];
+        let mut frame = BrushFrame::default();
+        frame.drag(&mut splats, &params);
+        assert!(frame.scale < 0.5, "予測 {}", frame.scale);
     }
 
     #[test]
     fn hold_zero_never_depletes() {
-        let mut splats = vec![
-            Splat::new([0.0, 0.0], [0.0, 0.0], 1.0),
-            Splat::new([500.0, 0.0], [1.0, 0.0], 1.0),
-        ];
+        let params = SimParams {
+            brush_hold: 0.0,
+            ..SimParams::default()
+        };
+        let mut splats = vec![Splat::new([0.0, 0.0], [0.0, 0.0], 1.0); 2];
         let mut frame = BrushFrame::default();
-        frame.drag(&mut splats, &mut None, 0.0);
+        frame.drag(&mut splats, &params);
         assert_eq!(frame.scale, 1.0);
     }
 
-    /// 中身を置き換えると、それより前のなぞり・含みは捨てる
+    /// 中身を置き換えると、それより前の予測は捨てる
     #[test]
     fn set_load_resets_frame() {
         let mut frame = BrushFrame::default();
         frame.drag(
-            &mut [
-                Splat::new([0.0, 0.0], [0.0, 0.0], 1.0),
-                Splat::new([50.0, 0.0], [1.0, 0.0], 1.0),
-            ],
-            &mut None,
-            10.0,
+            &mut [Splat::new([0.0, 0.0], [0.0, 0.0], 1.0)],
+            &SimParams::default(),
         );
-        assert!(frame.feed([0.0, 0.0], 1.0, 0.1, 2.0).is_some());
+        assert!(frame.scale < 1.0);
         frame.set_load(BrushLoad::standard(1));
         assert_eq!(frame.scale, 1.0);
-        assert_eq!(frame.feed_dt, 0.0);
         assert_eq!(frame.set, Some(BrushLoad::standard(1)));
-    }
-
-    /// 置いたままの色水は経過時間を積み、含み 0 なら出さない
-    #[test]
-    fn feed_accumulates_time() {
-        let mut frame = BrushFrame::default();
-        assert!(frame.feed([0.0, 0.0], 1.0, 0.1, 2.0).is_some());
-        assert!(frame.feed([0.0, 0.0], 1.0, 0.1, 2.0).unwrap().feed > 0.5);
-        assert!((frame.feed_dt - 0.2).abs() < 1e-6);
-        assert!(frame.feed([0.0, 0.0], 1.0, 0.1, 0.0).is_none());
     }
 
     /// GPU レイアウトとの往復で中身が変わらない
@@ -337,7 +422,44 @@ mod tests {
     fn gpu_state_roundtrip() {
         let mut load = BrushLoad::standard(2);
         load.take_pigment(0, 0.5);
-        assert_eq!(std::mem::size_of::<BrushState>(), 32);
+        assert_eq!(std::mem::size_of::<BrushState>(), 64);
         assert_eq!(BrushLoad::from(BrushState::from(load)), load);
+    }
+    /// 色を取る・水に浸す・洗うは穂先と腹の両方に効き、穂先が汚れていても同じ操作がかかる
+    #[test]
+    fn operations_apply_to_both_chambers() {
+        let dirty_tip = Chamber {
+            water: 0.4,
+            pigment: [0.3, 0.0, 0.0, 0.0],
+        };
+        let mut load = BrushLoad::from_chambers(dirty_tip, BrushLoad::standard(1).belly());
+        load.take_pigment(1, 1.0);
+        assert_eq!(load.tip().water, 1.0);
+        assert_eq!(load.tip().pigment, [0.3, 1.0, 0.0, 0.0]);
+        assert_eq!(load.pigment, [0.0, 2.0, 0.0, 0.0]);
+        load.wash();
+        assert_eq!(load, BrushLoad::empty());
+        assert_eq!(load.tip, None);
+    }
+
+    /// 穂先の無い古い記録・保存は「穂先 = 腹」として読み、同じなら書くときも省く
+    #[test]
+    fn json_without_tip_reads_as_uniform() {
+        let load: BrushLoad =
+            serde_json::from_str(r#"{"water":1.0,"pigment":[0.0,1.0,0.0,0.0]}"#).unwrap();
+        assert_eq!(load, BrushLoad::standard(1));
+        assert_eq!(load.tip(), load.belly());
+        assert!(!serde_json::to_string(&load).unwrap().contains("tip"));
+    }
+
+    /// 補充の時間は塗らない間も溜まり、上限で頭打ちして、取り出すと 0 に戻る
+    #[test]
+    fn brush_clock_accumulates_and_caps() {
+        let mut clock = BrushClock::default();
+        clock.tick(30);
+        assert!((clock.take() - 0.5).abs() < 1e-6);
+        assert_eq!(clock.take(), 0.0);
+        clock.tick(1000);
+        assert!((clock.take() - BrushClock::MAX_TICKS as f32 / 60.0).abs() < 1e-6);
     }
 }

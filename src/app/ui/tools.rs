@@ -205,7 +205,7 @@ impl PaintApp {
             }
             if ui
                 .add(egui::Button::new("洗う").min_size(egui::vec2(0.0, 28.0)))
-                .on_hover_text("筆を洗う: 水も色もすべて落として空の筆にする(リセット)。続けて「水」を押すと水だけの筆になる")
+                .on_hover_text("筆を洗う: 水も色もすべて落として空の筆にする(リセット)。空の筆は紙に何も置かず、濡れた絵の具をなでると吸い取る。続けて「水」を押すと水だけの筆になる")
                 .clicked()
             {
                 self.edit_brush(BrushLoad::wash);
@@ -274,25 +274,27 @@ impl PaintApp {
                 ui.checkbox(&mut self.auto_refill, "筆を下ろすたびに含み直す")
                     .on_hover_text(
                         "on: 最後に色・水・洗うで作った中身へ戻してから描き始める。\
-                         off: 前のストロークの残りから続き、描くほど減っていく",
+                         off: 前のストロークの残りから続き、描くほど減っていく。\
+                         乾きかけた筆で濡れた色をなでると、筆がその色を吸って染まる",
                     );
                 ui.add(
                     egui::Slider::new(&mut self.params.brush_hold, 0.0..=5000.0)
-                        .text("含みの持ち")
+                        .text("筆の大きさ")
                         .suffix(" px"),
                 )
                 .on_hover_text(
-                    "この長さをなぞると筆の中身(水と色)が半分になる。濃さは変わらず量が減る。0=減らない",
+                    "筆の腹の大きさ。満タンの腹だけで乾いた紙をこの長さ塗ると、腹の水と色が半分になる。\
+                     腹は穂先へ水を送り続けるので、大きいほど長く塗り続けられる。0=減らない(吸いもしない)",
                 );
                 ui.add(
-                    egui::Slider::new(&mut self.params.brush_charge, 0.0..=5.0)
-                        .text("筆の含み")
-                        .suffix(" 秒"),
+                    egui::Slider::new(&mut self.params.brush_tip, 10.0..=1000.0)
+                        .text("穂先の大きさ")
+                        .suffix(" px"),
                 )
                 .on_hover_text(
-                    "筆を置いたまま動かさなくても色水が流れ出続ける。満タンの筆ならこの秒数で\
-                     中身の水が尽きる(なぞり直さなくても水を伝って広がっていく)。\
-                     広がる距離は「水量」と含みの長さで決まる。0=置いた瞬間だけ",
+                    "紙に触れる穂先の大きさ。穂先が濡れていれば紙へ色水が出て、紙のほうが濡れていれば\
+                     穂先が水と色を吸う。小さいほど吸った色ですぐ満ち、その色を短く運ぶ。\
+                     置いたまま動かさなくても、紙と釣り合うまで色水が流れ出る",
                 );
                 ui.add(
                     egui::Slider::new(&mut self.params.paint_pickup, 0.0..=1.0)
@@ -301,15 +303,6 @@ impl PaintApp {
                 .on_hover_text(
                     "筆が触れた沈着顔料を浮かせて筆の色と混ぜる割合。水だけの筆で\
                      なでるときは、これがぼかしの強さになる。染みつき(ω)が強い色は剥がれず残る",
-                );
-                ui.add(
-                    egui::Slider::new(&mut self.params.brush_absorb, 0.0..=1.0)
-                        .text("筆が色を吸う"),
-                )
-                .on_hover_text(
-                    "減った筆で、筆より濡れている所をなでると、水と浮いている色を筆が吸い込む強さ。\
-                     吸った色は筆の中で混ざり、次に置く色になる(筆が汚れていく)。\
-                     満タンの筆と洗った空の筆は吸わない。0=吸わない",
                 );
             }
             Some(WetTool::Lift) => {
@@ -554,12 +547,13 @@ impl PaintApp {
         self.brush_refill = self.brush_load;
     }
 
-    /// 筆の状態パネル: 混ざった色の見本・濃さ・水のゲージ・顔料の色別積み上げゲージ。
-    /// 描いて減る・取って増える様子を毎フレーム追従して見せる
+    /// 筆の状態パネル: 次に置く色(穂先)の見本・濃さ・穂先と腹それぞれの水のゲージと顔料の色別積み上げゲージ。
+    /// 描いて減る・吸って変わる・取って増える様子を GPU から読み戻して追従する(数フレーム遅れる)
     fn brush_load_view(&self, ui: &mut egui::Ui) {
         let load = self.brush_load;
+        let tip = load.tip();
         let paper = pigment::PAPER_RGB.map(|c| c * 255.0);
-        let shown = match self.palette.mix_rgb(&load.pigment) {
+        let shown = match self.palette.mix_rgb(&tip.pigment) {
             Some(rgb) => {
                 // 見本の色の乗り方: 濃さ 1 で 7 割、2 で 9 割ほど
                 let t = 1.0 - (-1.2 * load.concentration()).exp();
@@ -568,7 +562,6 @@ impl PaintApp {
             }
             None => egui::Color32::from_rgb(paper[0] as u8, paper[1] as u8, paper[2] as u8),
         };
-        let total = load.pigment_total();
         let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
         let track = ui.visuals().extreme_bg_color;
         egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -592,68 +585,71 @@ impl PaintApp {
                 });
             });
 
-            // 水: 0〜100%(満タン = 1)
-            let water = load.water.clamp(0.0, 1.0);
-            gauge_row(
-                ui,
-                "含む水",
-                format!("{:.0}%", water * 100.0),
-                stroke,
-                track,
-                |painter, r| {
-                    let w = r.width() * water;
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(r.min, egui::vec2(w, r.height())),
-                        3.0,
-                        egui::Color32::from_rgb(90, 150, 220),
-                    );
-                },
-            );
-
-            // 顔料: 色ごとの量を色つきで左から積み上げる(上限 PIGMENT_MAX 回分)
-            gauge_row(
-                ui,
-                "含む顔料",
-                if total <= 0.0 {
-                    "なし".to_owned()
-                } else {
-                    format!("{total:.1}")
-                },
-                stroke,
-                track,
-                |painter, r| {
-                    let mut x = r.min.x;
-                    for (p, a) in self.palette.pigments.iter().zip(load.pigment) {
-                        let w = r.width() * (a / load::PIGMENT_MAX).clamp(0.0, 1.0);
-                        if w <= 0.0 {
-                            continue;
-                        }
-                        let seg = egui::Rect::from_min_size(
-                            egui::pos2(x, r.min.y),
-                            egui::vec2(w.min(r.max.x - x), r.height()),
-                        );
+            // 穂先と腹それぞれ、水(0〜100%、その室が満タン = 1)と、顔料(色ごとの量を色つきで
+            // 左から積み上げる。上限 PIGMENT_MAX 回分)
+            for (name, chamber) in [("穂先", tip), ("腹", load.belly())] {
+                let water = chamber.water.clamp(0.0, 1.0);
+                gauge_row(
+                    ui,
+                    &format!("{name}の水"),
+                    format!("{:.0}%", water * 100.0),
+                    stroke,
+                    track,
+                    |painter, r| {
+                        let w = r.width() * water;
                         painter.rect_filled(
-                            seg,
-                            0.0,
-                            egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]),
+                            egui::Rect::from_min_size(r.min, egui::vec2(w, r.height())),
+                            3.0,
+                            egui::Color32::from_rgb(90, 150, 220),
                         );
-                        x += w;
-                    }
-                },
-            );
+                    },
+                );
+                let total = chamber.pigment_total();
+                gauge_row(
+                    ui,
+                    &format!("{name}の顔料"),
+                    if total <= 0.0 {
+                        "なし".to_owned()
+                    } else {
+                        format!("{total:.1}")
+                    },
+                    stroke,
+                    track,
+                    |painter, r| {
+                        let mut x = r.min.x;
+                        for (p, a) in self.palette.pigments.iter().zip(chamber.pigment) {
+                            let w = r.width() * (a / load::PIGMENT_MAX).clamp(0.0, 1.0);
+                            if w <= 0.0 {
+                                continue;
+                            }
+                            let seg = egui::Rect::from_min_size(
+                                egui::pos2(x, r.min.y),
+                                egui::vec2(w.min(r.max.x - x), r.height()),
+                            );
+                            painter.rect_filled(
+                                seg,
+                                0.0,
+                                egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]),
+                            );
+                            x += w;
+                        }
+                    },
+                );
+            }
 
-            // 内訳(5% 以上の色だけ)
-            if total > 0.0 {
+            // 次に置く色(穂先)の内訳(5% 以上の色だけ)
+            let tip_total = tip.pigment_total();
+            if tip_total > 0.0 {
                 let parts = self
                     .palette
                     .pigments
                     .iter()
-                    .zip(load.pigment)
-                    .filter(|(_, a)| *a / total >= 0.05)
-                    .map(|(p, a)| format!("{} {:.0}%", p.name, a / total * 100.0))
+                    .zip(tip.pigment)
+                    .filter(|(_, a)| *a / tip_total >= 0.05)
+                    .map(|(p, a)| format!("{} {:.0}%", p.name, a / tip_total * 100.0))
                     .collect::<Vec<_>>()
                     .join(" + ");
-                ui.label(egui::RichText::new(parts).weak().small());
+                ui.label(egui::RichText::new(format!("穂先: {parts}")).weak().small());
             }
         });
     }

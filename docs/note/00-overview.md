@@ -39,4 +39,4 @@
 | [02-pigment-mixing.md](02-pigment-mixing.md) | 物理的に正しい混色(Kubelka-Munk / Mixbox / spectral.js / 2022年以降の動向)と、濃度→発色の調整の性質 |
 | [03-layering-glazing-lifting.md](03-layering-glazing-lifting.md) | 重ね塗り(KM層合成・グレージング)と削り(リフティング・粒状感・ステイニング) |
 | [04-platform-and-references.md](04-platform-and-references.md) | 実装基盤(wgpu / egui / ペン入力 / mixbox クレート)の知見、参考実装・論文、性能の目安 |
-| [05-wet-spreading.md](05-wet-spreading.md) | 本実装で置いた色が広がって馴染む仕組み(水の毛細管拡散・水依存の混ざり・しきい値型の吸着・筆の含み・溶かし戻し)と調整ガイド |
+| [05-wet-spreading.md](05-wet-spreading.md) | 本実装で置いた色が広がって馴染む仕組み(水の毛細管拡散・水依存の混ざり・しきい値型の吸着・置いたままの流れ出し・溶かし戻し)と調整ガイド |

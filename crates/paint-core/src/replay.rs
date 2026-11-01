@@ -118,8 +118,6 @@ pub struct Player {
     point_idx: usize,
     stroke_state: StrokeState,
     in_stroke: bool,
-    /// 直前の splat 位置(筆の中身を減らす長さの計測用)
-    last_splat: Option<[f32; 2]>,
 }
 
 impl Player {
@@ -131,12 +129,11 @@ impl Player {
             point_idx: 0,
             stroke_state: StrokeState::default(),
             in_stroke: false,
-            last_splat: None,
         }
     }
 
     /// 1刻み分のポインタ入力を再生して splat を out に積み、筆の中身への指示を brush に足す
-    /// (塗るストロークの始めに記録した中身へ置き換え、なぞった長さで減らす)。
+    /// (塗るストロークの始めに記録した中身へ置き換え、splat ごとの残りを予測する)。
     /// ライブ描画と同じ経路(StrokeState → splat.wgsl)を通すため、現在のブラシ
     /// パラメータがそのまま効く。顔料スロットとツールだけは記録値で params を上書きする。
     /// UI 側が毎フレーム params.tool を選択中ツールで書き直すため、ストローク中は
@@ -178,7 +175,6 @@ impl Player {
                 if stroke.tool == WetTool::Paint.gpu_id() {
                     brush.set_load(stroke.brush_load());
                 }
-                self.last_splat = None;
             }
             // サンプル間隔は筆圧を反映した実効半径から(ライブ描画 src/app/mod.rs と同じ式)
             let spacing = (params.radius_at(point.pressure) * SPLAT_SPACING).max(1.0);
@@ -186,7 +182,7 @@ impl Player {
             self.stroke_state
                 .add_motion(point.pos, point.pressure, spacing, out);
             if stroke.tool == WetTool::Paint.gpu_id() {
-                brush.drag(&mut out[start..], &mut self.last_splat, params.brush_hold);
+                brush.drag(&mut out[start..], params);
             }
             self.point_idx += 1;
         }

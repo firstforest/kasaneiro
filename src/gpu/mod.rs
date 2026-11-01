@@ -480,8 +480,8 @@ impl GpuCanvas {
             let header = SplatHeader {
                 count: chunk.len() as u32,
                 fluid_count: 0,
-                brush_scale: 1.0,
-                feed_dt: 0.0,
+                brush_dt: 0.0,
+                _pad: 0,
             };
             let mut bytes = Vec::with_capacity(
                 std::mem::size_of::<SplatHeader>() + std::mem::size_of_val(chunk),

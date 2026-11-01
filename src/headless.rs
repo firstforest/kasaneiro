@@ -9,8 +9,9 @@ use crate::gpu::hot_reload::shader_dir;
 use crate::gpu::{CanvasCallback, GpuCanvas, ViewUniform};
 use crate::replay::{Player, Recording};
 use eframe::egui_wgpu::wgpu;
-use paint_core::load::{BrushFrame, BrushLoad};
+use paint_core::load::{BrushClock, BrushFrame, BrushLoad};
 use paint_core::sim::{SimParams, Splat};
+use paint_core::tool::WetTool;
 use pigment::Palette;
 use std::path::Path;
 
@@ -30,6 +31,8 @@ pub struct HeadlessCanvas {
     /// 1フレームあたりのシミュレーションステップ数。headless は1フレーム=1刻み(1/60 秒)で、
     /// アプリの既定(速度倍率 1)と同じ進み方になる
     pub steps_per_frame: u32,
+    /// 腹から穂先へ補充する時間(アプリと同じく、塗るフレームでまとめて渡す)
+    brush_clock: BrushClock,
 }
 
 impl HeadlessCanvas {
@@ -46,6 +49,7 @@ impl HeadlessCanvas {
             palette,
             params: SimParams::default(),
             steps_per_frame: 1,
+            brush_clock: BrushClock::default(),
         })
     }
 
@@ -63,7 +67,11 @@ impl HeadlessCanvas {
     }
 
     /// 1フレーム進める(筆の中身への指示と splat を注入してから steps_per_frame ステップ)
-    pub fn frame(&mut self, splats: Vec<Splat>, brush: BrushFrame) {
+    pub fn frame(&mut self, splats: Vec<Splat>, mut brush: BrushFrame) {
+        self.brush_clock.tick(1);
+        if self.params.tool == WetTool::Paint.gpu_id() && !splats.is_empty() {
+            brush.dt = self.brush_clock.take();
+        }
         let frame = CanvasCallback {
             params: self.params,
             splats,

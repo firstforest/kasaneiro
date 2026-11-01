@@ -36,6 +36,22 @@ impl PaintApp {
             egui::Slider::new(&mut self.params.brush_pigment, 0.0..=1.0).text("色1回分の顔料量"),
         )
         .on_hover_text("色スウォッチを1回押したときに筆へ入る顔料の基準量(濃さ ×1.0 の濃さ)");
+        ui.add(
+            egui::Slider::new(&mut self.params.brush_refill_time, 0.0..=2.0)
+                .text("腹から穂先へ送る時間")
+                .suffix(" 秒"),
+        )
+        .on_hover_text(
+            "腹が穂先より濡れていれば、濡れ具合の差をこの時間で約 6 割詰める(腹 → 穂先の一方向)。\
+             短いほど速く描いても穂先が乾きにくく、吸った色は腹へは戻らない。0 = 送らない",
+        );
+        ui.add(
+            egui::Slider::new(&mut self.params.brush_exchange, 0.0..=1.0).text("受け渡しの速さ"),
+        )
+        .on_hover_text(
+            "1回の筆跡で、筆と紙の濡れ具合の差のこの割合だけ水が動く(筆が濡れていれば紙へ出て、\
+                 紙が濡れていれば筆が吸う)。上げるほど1回なぞるだけで紙が筆の濡れ具合に近づく",
+        );
 
         // 筆圧 (M1.5)
         ui.separator();
@@ -133,8 +149,8 @@ impl PaintApp {
                         .text("発色の濃さ(濃度→被覆率)"),
                 );
 
-                // 広がり・馴染み関連の性格パラメータ(毛細管拡散・水依存 γ・吸着カーブ・
-                // 含みの顔料比)は WGSL 定数(docs/note/05。ホットリロードで再調整可)
+                // 広がり・馴染み関連の性格パラメータ(毛細管拡散・水依存 γ・吸着カーブ)は
+                // WGSL 定数(docs/note/05。ホットリロードで再調整可)
 
                 ui.separator();
                 ui.heading("紙・エッジ (M1d)");

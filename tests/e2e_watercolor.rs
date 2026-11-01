@@ -57,7 +57,8 @@ fn wet_on_wet_blends_into_green_gradient() {
     assert!(
         rows.iter().any(|(_, m)| {
             let (h, s, _) = hsv(*m);
-            GREEN_HUE.contains(&h) && s > 0.08
+            // 受け渡しの式では筆跡の重なりで顔料が積み上がらず全体が淡いので、彩度は控えめに見る
+            GREEN_HUE.contains(&h) && s > 0.05
         }),
         "境界に緑が出ていない(混ざっていない)\n{ctx}"
     );
@@ -533,35 +534,36 @@ fn inactive_tiles_keep_pingpong_in_sync() {
     );
 }
 
-/// 塗る筆の吸い込み: 濡れた黄の上を、ほぼ乾いた透明な筆でなでて乾いた紙まで引くと、
-/// 筆が黄を吸い込んで黄の筆になり、その先の紙へ黄を運ぶ(筆の水が少ないので線は淡い)。
-/// 吸い込みを切った筆と比べる
+/// 塗る筆の吸い込み: 濡れた黄の上を、乾きかけの透明な筆でなでて乾いた紙まで引くと、
+/// 筆が水と黄を吸って黄の筆になり、その先の紙へ黄を運ぶ。溜まりのない紙で同じ筆を引いたものと比べる
 #[test]
 fn paint_brush_picks_up_wet_color() {
-    let run = |absorb: f32| {
+    let run = |pool: bool| {
         let mut c = canvas();
-        c.params.brush_absorb = absorb;
-        // 濡れた黄の溜まり(3本並べて太くする)
-        let pool = [230.0, 250.0, 270.0]
-            .iter()
-            .enumerate()
-            .map(|(k, &y)| hstroke(WetTool::Paint, YELLOW, 60.0, 220.0, y, k as u32 * 40))
-            .collect();
-        c.play(recording(pool));
-        c.idle(10);
-        // 黄の中から右の乾いた紙へ、水が 5% だけ残った透明な筆で引く
+        if pool {
+            // 濡れた黄の溜まり(3本並べて太くする)
+            let strokes = [230.0, 250.0, 270.0]
+                .iter()
+                .enumerate()
+                .map(|(k, &y)| hstroke(WetTool::Paint, YELLOW, 60.0, 220.0, y, k as u32 * 40))
+                .collect();
+            c.play(recording(strokes));
+            c.idle(10);
+        }
+        // 左から右の乾いた紙へ、水が 5% だけ残った透明な筆で引く
         let mut thirsty = hstroke(WetTool::Paint, YELLOW, 80.0, 440.0, 250.0, 0);
         thirsty.load = Some(BrushLoad {
             water: 0.05,
             pigment: [0.0; 4],
+            tip: None,
         });
         c.play(recording(vec![thirsty]));
         let brush = c.brush_load().unwrap();
         c.idle(120);
         (c.snapshot().unwrap(), brush)
     };
-    let (img, brush) = run(0.3);
-    let (control, control_brush) = run(0.0);
+    let (img, brush) = run(true);
+    let (control, control_brush) = run(false);
     let png = save(&img, "brush_pickup");
     save(&control, "brush_pickup_off");
     // 黄の溜まりを抜けた先(乾いた紙だった所)の線
@@ -569,8 +571,8 @@ fn paint_brush_picks_up_wet_color() {
     let control_trail = control.mean_rgb(300, 244, 420, 256);
     let ctx = format!(
         "{}
-吸う: 線 {:?} hsv {:?} 筆 {:?}
-吸わない: 線 {:?} hsv {:?} 筆 {:?}",
+溜まりあり: 線 {:?} hsv {:?} 筆 {:?}
+溜まりなし: 線 {:?} hsv {:?} 筆 {:?}",
         png.display(),
         trail,
         hsv(trail),
@@ -580,49 +582,114 @@ fn paint_brush_picks_up_wet_color() {
         control_brush
     );
 
-    // 溜まりは標準の濃さ(濃さ 1)なので、吸った筆はその色に寄る
+    // 溜まりは標準の濃さ(濃さ 1)なので、吸った筆はその色に寄り、水も増える
     assert!(
-        brush.concentration() > 0.3 && brush.water > 0.05,
-        "筆が黄を吸い込んでいない
+        brush.concentration() > 0.3 && brush.tip().water > 0.15,
+        "筆が黄の溜まりを吸い込んでいない
 {ctx}"
     );
     assert_eq!(
         control_brush.pigment, [0.0; 4],
-        "吸い込みを切った筆に色が入った
+        "透明な筆に色が入った
 {ctx}"
     );
     let (h, s, _) = hsv(trail);
     assert!(
-        (40.0..80.0).contains(&h) && s > hsv(control_trail).1 + 0.015,
+        (40.0..80.0).contains(&h) && s > hsv(control_trail).1 + 0.03,
         "吸い込んだ黄が先の紙へ運ばれていない
 {ctx}"
     );
 }
 
-/// 満タンの筆は、自分が置いたばかりの水を吸い戻さない: 同じ線を往復しても、
-/// なぞった長さのぶん減り(含みの持ち 2000px で半分)、濃さは変わらない
+/// 満タンの筆は乾いた紙で減り(腹の大きさ brush_hold の見積もりより少し長持ちする。穂先の濡れ具合の分だけ
+/// 出る量が少ないため)、ふつうの速さなら穂先は腹からの補充で乾かない。自分が塗ったばかりの所を
+/// 戻っても、行きより減りがずっと小さい(紙と穂先の濡れ具合がほぼ釣り合っている)
 #[test]
-fn full_brush_still_depletes_over_own_stroke() {
+fn full_brush_depletes_on_dry_paper_only() {
     let mut c = canvas();
-    let mut back_and_forth = hstroke(WetTool::Paint, BLUE, 60.0, 450.0, 250.0, 0);
-    let back = hstroke(WetTool::Paint, BLUE, 450.0, 60.0, 250.0, 0);
-    let offset = back_and_forth.points.last().unwrap().frame + 2;
-    back_and_forth
-        .points
-        .extend(back.points.into_iter().skip(1).map(|mut p| {
-            p.frame += offset;
-            p
-        }));
-    c.play(recording(vec![back_and_forth]));
-    let brush = c.brush_load().unwrap();
-    // 780px なぞると 0.5^(780/2000) ≈ 0.76
-    let expected = 0.5f32.powf(780.0 / 2000.0);
+    c.play(recording(vec![hstroke(
+        WetTool::Paint,
+        BLUE,
+        100.0,
+        400.0,
+        250.0,
+        0,
+    )]));
+    let there = c.brush_load().unwrap();
+    let mut back = hstroke(WetTool::Paint, BLUE, 400.0, 100.0, 250.0, 0);
+    back.load = Some(there);
+    c.play(recording(vec![back]));
+    let back = c.brush_load().unwrap();
+    // 腹だけで 300px 塗ったときの見積もり 0.5^(300 / brush_hold)
+    let expected = 0.5f32.powf(300.0 / c.params.brush_hold);
+    let ctx = format!("行き {there:?} / 戻り {back:?}(腹の見積もり {expected:.2})");
     assert!(
-        (brush.water - expected).abs() < 0.05,
-        "筆の水が減っていない: {brush:?}(なぞった長さからの見込み {expected:.2})"
+        (expected - 0.02..0.97).contains(&there.water),
+        "乾いた紙で筆が見込みどおり減っていない: {ctx}"
     );
     assert!(
-        (brush.concentration() - 1.0).abs() < 0.1,
-        "往復で筆の濃さが変わった: {brush:?}"
+        there.tip().water > 0.85 * there.water,
+        "ふつうの速さで穂先が乾いた(腹からの補充が追いつかない): {ctx}"
+    );
+    // 戻りで減るのは、行きで減った量の半分以下(紙が穂先とほぼ同じだけ濡れているので受け渡しが小さい)
+    assert!(
+        back.water <= there.water + 0.01 && there.water - back.water < 0.5 * (1.0 - there.water),
+        "自分が塗った所を戻って筆が大きく変わった: {ctx}"
+    );
+    assert!(
+        (there.concentration() - 1.0).abs() < 0.1 && (back.concentration() - 1.0).abs() < 0.1,
+        "筆の濃さが変わった: {ctx}"
+    );
+}
+
+/// 洗った空の筆: 乾いた紙では何も置かず、濡れた絵の具の中をなでると穂先が色水を吸い取る
+/// (吸った跡は溜まりより淡くなる)
+#[test]
+fn washed_brush_lifts_wet_paint() {
+    let mut c = canvas();
+    // 乾いた紙を空の筆でなでても何も起きない
+    let mut dry = hstroke(WetTool::Paint, YELLOW, 60.0, 450.0, 400.0, 0);
+    dry.load = Some(BrushLoad::empty());
+    c.play(recording(vec![dry]));
+    let after_dry = c.brush_load().unwrap();
+    // 濡れた黄の溜まり(3本並べて太くする)の中を、空の筆で横切る
+    let pool = [230.0, 250.0, 270.0]
+        .iter()
+        .enumerate()
+        .map(|(k, &y)| hstroke(WetTool::Paint, YELLOW, 60.0, 450.0, y, k as u32 * 80))
+        .collect();
+    c.play(recording(pool));
+    c.idle(10);
+    let before = c.snapshot().unwrap().mean_rgb(150, 245, 350, 255);
+    let mut washed = hstroke(WetTool::Paint, YELLOW, 80.0, 430.0, 250.0, 0);
+    washed.load = Some(BrushLoad::empty());
+    c.play(recording(vec![washed]));
+    let brush = c.brush_load().unwrap();
+    c.idle(60);
+    let img = c.snapshot().unwrap();
+    let png = save(&img, "washed_brush_lift");
+    let lifted = img.mean_rgb(150, 245, 350, 255);
+    let blank = img.mean_rgb(100, 395, 400, 405);
+    let ctx = format!(
+        "{}\n乾いた紙の後の筆 {after_dry:?}\n吸った後の筆 {brush:?}\n溜まり {before:?} → 吸った跡 {lifted:?} / 乾いた紙をなでた所 {blank:?}",
+        png.display()
+    );
+
+    assert_eq!(
+        after_dry,
+        BrushLoad::empty(),
+        "乾いた紙で空の筆が変わった\n{ctx}"
+    );
+    assert!(
+        hsv(blank).1 < 0.03 && lightness(blank) > lightness(paper(&c)) - 0.02,
+        "空の筆が乾いた紙に何か置いた\n{ctx}"
+    );
+    assert!(
+        brush.tip().water > 0.1 && brush.tip().pigment[YELLOW as usize] > 0.05,
+        "空の筆が濡れた黄を吸っていない\n{ctx}"
+    );
+    assert!(
+        hsv(lifted).1 < hsv(before).1 - 0.01,
+        "吸った跡が淡くなっていない\n{ctx}"
     );
 }

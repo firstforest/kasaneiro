@@ -23,7 +23,7 @@ pub struct CanvasCallback {
     pub line_target: Option<LineTarget>,
     /// パン/ズーム(M6): display の画面 uv → キャンバス uv 変換。毎フレーム反映する
     pub view: ViewUniform,
-    /// 塗る筆の中身への指示(置き換え・なぞった減り・置いたままの含み)
+    /// 塗る筆の中身への指示(置き換え・穂先の残りの予測・補充の時間)
     pub brush: BrushFrame,
 }
 
@@ -100,8 +100,8 @@ impl GpuCanvas {
             } else {
                 0
             },
-            brush_scale: frame.brush.scale,
-            feed_dt: frame.brush.feed_dt,
+            brush_dt: frame.brush.dt,
+            _pad: 0,
         };
         let mut bytes = Vec::with_capacity(
             std::mem::size_of::<SplatHeader>() + splat_count * std::mem::size_of::<Splat>(),
@@ -184,7 +184,7 @@ impl GpuCanvas {
             // 流体ツールのときだけ splat を流す(ラスタツールは上の line_pass で処理済み)
             if run_splat {
                 run(&mut pass, pipelines.compute("splat.wgsl"));
-                // 塗る筆: なぞった減り・含み・吸い込みを筆の中身へ反映する。テクスチャは読み書き
+                // 塗る筆: 受け渡しの集計を穂先へ反映し、腹から補充する。テクスチャは読み書き
                 // しない(ping-pong しない)ので、筆のバッファが同じならどちらの bind group でもよい
                 if frame.params.tool == WetTool::Paint.gpu_id() {
                     pass.set_pipeline(pipelines.compute("brush.wgsl"));

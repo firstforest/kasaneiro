@@ -31,16 +31,25 @@ pub const DEFAULT_CANVAS_SIZE: u32 = 512;
 /// 通常の描画では届かない。超えた分は gpu/callback.rs が警告ログを出して切り捨てる
 pub const MAX_SPLATS: usize = 8192;
 
-/// ストロークに splat を置く間隔 = 筆圧を反映した実効半径 × これ(下限 1px)。
-/// splat.wgsl / brush.wgsl も筆跡の重なり・筆が一生で置く量の見積もりに同じ値を使う(プレリュード経由)
+/// ストロークに splat を置く間隔 = 筆圧を反映した実効半径 × これ(下限 1px)
 pub const SPLAT_SPACING: f32 = 0.25;
+
+/// 筆跡1つの被覆(coverage = 1 − smoothstep(0.6r, r, d)、splat.wgsl)を円で積分した面積 ÷ πr²
+pub const FOOTPRINT_RATIO: f32 = 0.648;
+
+/// 筆跡1つの被覆を中心を通る直線に沿って積分した長さ ÷ r(= 1回なぞって濡れる帯の実効の幅 ÷ r)
+pub const CROSS_RATIO: f32 = 1.6;
+
+/// 紙が満タンに濡れた水位 = brush_water × これ。満タンの筆で乾いた紙を1回なぞり、
+/// 筆跡の幅の中で均された後の水位の計測値(docs/memo/2026-11-01-brush-exchange.md §6)
+pub const SAT_RATIO: f32 = 4.3;
 
 /// 全シミュレーションパラメータの唯一の置き場(H2)。
 /// フィールドを足したら: ①ここに1行 ②src/app/ui/ の該当パネルにスライダー1行 ③common.wgsl の struct に1行
 /// (名前・順序・型の一致は tests/sim_params_layout.rs が検査する)。
 /// メモリレイアウトは WGSL の uniform 規則(16 バイト整列)に合わせること。
-/// 全体サイズは 16 の倍数を保つ(56 フィールド = 224B でパディングなし。次に足すときは
-/// 末尾に #[serde(skip)] の _pad を置いて 16B 境界を保ち、以降はその _pad を置き換えて増やす。
+/// 全体サイズは 16 の倍数を保つ(57 フィールド+末尾の _pad_brush: [f32; 3] = 240B。次に足すときは
+/// _pad_brush を1つずつ実フィールドへ置き換え、使い切ったら末尾に新しい _pad を置いて 16B 境界を保つ。
 /// _pad は WGSL 側には書かない。手順は docs/parameters.md §11)。
 /// serde(default): プリセット(H3)にないフィールドは Default 値で埋める
 /// (パラメータを増やしても古い JSON が読めるように)。
@@ -50,7 +59,9 @@ pub const SPLAT_SPACING: f32 = 0.25;
 pub struct SimParams {
     /// ブラシ半径(テクセル単位)
     pub brush_radius: f32,
-    /// 1 splat あたりに置く水量
+    /// 水量: 満タンの筆で塗った紙の水位の目安。紙が満タンに濡れた水位 = brush_water × SAT_RATIO で、
+    /// 塗る筆は紙をこの水位 × 筆の濡れ具合まで濡らす(splat.wgsl の受け渡し)。
+    /// 削りが濡らす水量(1 splat あたり)にも使う
     pub brush_water: f32,
     /// splat 時にストローク方向へ与える初速
     pub brush_velocity: f32,
@@ -127,7 +138,7 @@ pub struct SimParams {
     pub rewet_water: f32,
     /// ブラシツール: 0=描画 / 1=リフト(削り) / 2=消去 / 3=吸い取り。
     /// splat.wgsl が分岐する。
-    /// 描画 = 筆の中身を置く。水だけの筆(顔料 0)なら水を置いて下の色を溶かす(先濡らし・ぼかし)。空の筆(水 0)は何もしない。
+    /// 描画 = 筆の中身を置く。水だけの筆(顔料 0)なら水を置いて下の色を溶かす(先濡らし・ぼかし)。空の筆(水 0)は紙に何も置かず、濡れた所の色水を吸うだけ。
     /// リフト = 沈着顔料を浮遊層へ戻して縁へ流す(ステイニング顔料は ω で残る)。
     /// 消去 = 湿レイヤーの水・顔料・濡れマスクを機械的にゼロへ(紙の白まで戻す完全消去)。
     /// 吸い取り = 乾いた筆で表面の自由水と浮遊顔料を取り除く(absorb_rate)
@@ -180,29 +191,32 @@ pub struct SimParams {
     ///
     /// なお「置いた色が外へ広がる」挙動はパラメータではなく水の毛細管拡散
     /// (diffuse.wgsl の WATER_DIFFUSE / WATER_GAMMA 定数、note/05)が担う:
-    /// 広がる距離は置く水の量(brush_water)と含み(brush_charge)で決まる
+    /// 広がる距離は紙を濡らす水位(brush_water)と、置いたままの筆が流し続ける水で決まる
     pub paint_pickup: f32,
-    /// 筆の含み(秒): 塗るブラシを置いたまま動かさなくても、満タンの筆ならこの秒数だけ色水が
-    /// 流れ出続ける(毎フレーム feed splat = 目標水位への水補充(max)+少量の顔料
-    /// (brush_pigment×CHARGE_PIGMENT、splat.wgsl の定数)。広げるのは毛細管拡散)。
-    /// 流れ出るぶん筆の中身の水を使う(load.rs の feed)。0=無効
-    pub brush_charge: f32,
+    /// 筆と紙の受け渡しの速さ: 1 splat で、筆と紙の濡れ具合の差(s_b − s_p)× 満タン水位 の
+    /// この割合だけ水が動く(coverage × 筆圧(pressure_water)で変調)。筆が濡れていれば紙へ出て、
+    /// 紙が濡れていれば筆へ入る。顔料は出るとき筆の濃さ、入るとき紙の浮遊顔料の濃さで一緒に動く
+    pub brush_exchange: f32,
     /// 吸い取り(tool=3)の強さ: 1 splat で表面の自由水と浮遊顔料を取り除く割合
     /// (coverage×筆圧で変調)。浮遊顔料は水に乗っているだけなので水と同率で取れ、
     /// ω(染みつき)は関与しない。沈着顔料は紙に付いているので残る(剥がすのはリフト)
     pub absorb_rate: f32,
-    /// 含みの持ち(px): 塗る筆でこの長さをなぞると筆の中身(水と顔料)が半分になる。
-    /// 水と顔料は同じ割合で減るので濃さは変わらない(load.rs)。0=減らない
+    /// 筆の腹の大きさ(px): 満タンの腹だけで乾いた紙をこの長さ塗ると中身が半分になる。
+    /// 腹の容量 = brush_hold × CROSS_RATIO × brush_radius × 満タン水位 ÷ ln2(紙のセルの量の単位)。
+    /// 腹は紙と直接は受け渡さず、穂先へ水を送る。0=減らない筆(紙から吸いもしない)
     pub brush_hold: f32,
     /// 削り(tool=1)の吸い取り: 1 splat で、浮かせた色ごと水を取り去る割合(coverage×筆圧で変調)。
     /// 浮かせるだけだと色は周りへ移るだけなので、その場から色を抜くために押さえて吸う。
     /// 0 = 浮かせるだけ(水だけの筆に近い)
     pub lift_blot: f32,
-    /// 塗る筆の吸い込み: 紙の水位が筆の水位(brush_water × 筆の水)より高いセルから、
-    /// 1 splat で超えた分の水と、その水に浮いている顔料を筆へ吸い込む割合
-    /// (coverage×筆圧×筆の渇き(1 − 筆の水)で変調)。吸った分は筆の中身に足され、次に置く色に混ざる。
-    /// 満タンの筆と空の筆(洗った直後)は吸わない。0=吸わない
-    pub brush_absorb: f32,
+    /// 筆の穂先の大きさ(px): 満タンの穂先だけで乾いた紙をこの長さ塗ると穂先が半分になる(容量の式は腹と同じ)。
+    /// 穂先は紙と受け渡し、腹から補充される。小さいほど、吸った色ですぐ満ちてその色を短く運ぶ
+    pub brush_tip: f32,
+    /// 腹から穂先へ送る時定数(秒): 腹が穂先より濡れていれば、濡れ具合の差をこの時間で約 63% 詰める。
+    /// 一方向(穂先 → 腹へは戻さない)ので、吸った色は穂先にとどまる
+    pub brush_refill_time: f32,
+    #[serde(skip)]
+    pub _pad_brush: [f32; 3],
 }
 
 impl SimParams {
@@ -217,6 +231,24 @@ impl SimParams {
     /// 水ブラシの実効半径。CPU 側ではストローク補間のサンプル間隔の算出に使う(brush.rs / replay.rs)
     pub fn radius_at(&self, pressure: f32) -> f32 {
         self.radius_at_base(self.brush_radius, pressure)
+    }
+
+    /// 塗る筆が乾いた紙に1 splat 置いたとき、穂先の中身が減る割合の上限(splat.wgsl の受け渡しと同じ式)。
+    /// 乾いた紙(s_p = 0)では出る水が穂先の濡れ具合に比例するので、濡れ具合に依らない割合になる。
+    /// 実際は先に置いた splat で紙が濡れている分と、腹からの補充の分だけ少ない。
+    /// BrushFrame::drag がフレーム内の残りの予測に使う
+    pub fn brush_release_max(&self, pressure: f32) -> f32 {
+        if self.brush_hold <= 0.0 || self.brush_tip <= 0.0 {
+            return 0.0;
+        }
+        let p = pressure.clamp(0.0, 1.0).powf(self.pressure_gamma.max(0.01));
+        let rate = self.brush_exchange * (1.0 + (p - 1.0) * self.pressure_water.clamp(0.0, 1.0));
+        let r = self.radius_at(pressure);
+        let base = self.brush_radius.max(0.5);
+        // 出る水 = rate × s_t × 満タン水位 × 被覆の面積、穂先の容量 = tip × 幅 × 満タン水位 ÷ ln2
+        let frac = rate * FOOTPRINT_RATIO * std::f32::consts::PI * r * r * std::f32::consts::LN_2
+            / (self.brush_tip * CROSS_RATIO * base);
+        frac.clamp(0.0, 1.0)
     }
 }
 
@@ -283,11 +315,13 @@ impl Default for SimParams {
             show_highlight: 1,
             active_tiles: 1,   // M6: 既定で有効(濡れ面積に比例。0 で全面計算へ戻せる)
             paint_pickup: 0.2, // 筆が下の色を軽く溶かして混ぜる(ω が高い顔料は残る)
-            brush_charge: 2.0, // 筆の含み: 置いたまま2秒は色水が流れ出続ける
-            absorb_rate: 0.5,  // 吸い取り: ひとなでで水たまりの大半を回収できる強さ
-            brush_hold: 2000.0, // 長いストロークの終わりがやや淡くなる程度
-            lift_blot: 0.5,    // 削り: 吸い取りツールと同じ強さで押さえる
-            brush_absorb: 0.3, // 減った筆で濡れた色をなでると、その色が筆に移る程度
+            brush_exchange: 0.3, // 1回なぞる間(筆跡が約 6 回重なる)に紙が筆の濡れ具合の 9 割近くまで濡れる
+            absorb_rate: 0.5,    // 吸い取り: ひとなでで水たまりの大半を回収できる強さ
+            brush_hold: 500.0,   // 乾いた紙にキャンバス幅(512px)の線を1本引くと 6〜7 割まで減る
+            lift_blot: 0.5,      // 削り: 吸い取りツールと同じ強さで押さえる
+            brush_tip: 80.0,     // 吸った色を 100px ほど運ぶ
+            brush_refill_time: 0.05, // ふつうの速さ(300px/秒)で描いても穂先が 9 割近くを保つ
+            _pad_brush: [0.0; 3],
         }
     }
 }
@@ -302,13 +336,11 @@ pub struct Splat {
     pub vel: [f32; 2],
     /// 筆圧(マウスは 1.0。ペンは egui Touch の force)
     pub pressure: f32,
-    /// 筆の含み(feed)フラグ: 1 = 置いたまま動かない間に毎フレーム注がれる色水。
-    /// 水・初速・顔料の一括注入(+=)はせず、目標水位への水補充(max)+
-    /// 少量の顔料(CHARGE_PIGMENT 比)だけを注ぐ(splat.wgsl の描画ブランチが分岐)
+    /// 置いたまま(feed)フラグ: 1 = 塗る筆を置いたまま動かない間に毎フレーム積む splat。
+    /// 筆と紙の受け渡しは同じ式で、初速は与えず、色の溶かし戻しを弱める(splat.wgsl)
     pub feed: f32,
-    /// 塗る筆の中身のうち、この splat を置く時点で残っている割合(フレーム頭の中身に対する比)。
-    /// 中身そのものは GPU の筆バッファが持ち、なぞった長さで減る分だけを CPU が渡す
-    /// (load.rs の BrushFrame::drag)。塗る筆以外は使わない
+    /// 塗る筆の中身のうち、この splat を置く時点で残っている割合の予測(フレーム頭の中身に対する比)。
+    /// 乾いた紙に置いた場合 = 最も減った場合で見積もる(load.rs の BrushFrame::drag)。塗る筆以外は使わない
     pub scale: f32,
     pub _pad: f32,
 }
@@ -325,7 +357,7 @@ impl Splat {
         }
     }
 
-    /// 筆の含み(feed)splat: 置いたまま動かないフレームに1つ積む(初速なし)
+    /// 置いたままの splat: 塗る筆を置いたまま動かないフレームに1つ積む(初速なし)
     pub fn feed_at(pos: [f32; 2], pressure: f32) -> Self {
         Self {
             feed: 1.0,
@@ -343,10 +375,9 @@ pub struct SplatHeader {
     /// 流体へ流す splat 数(tilescan.wgsl のブラシ近傍判定が読む)。線画ツールのフレームは 0
     /// (splat は線画テクスチャにだけ描かれ、流体のタイルを立てる必要がない)
     pub fluid_count: u32,
-    /// このフレームのなぞりで塗る筆の中身が残る割合(brush.wgsl がフレームの最後に掛ける)
-    pub brush_scale: f32,
-    /// このフレームに置いたまま流れ出た色水の時間(秒。0 = feed なし。brush.wgsl が筆の水を減らす)
-    pub feed_dt: f32,
+    /// brush.wgsl が腹から穂先へ補充する時間(秒。前回の brush パスからの経過)
+    pub brush_dt: f32,
+    pub _pad: u32,
 }
 
 #[cfg(test)]

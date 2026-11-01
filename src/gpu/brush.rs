@@ -1,7 +1,7 @@
 //! 塗る筆の中身(GPU の筆バッファ)と、CPU から見るための読み戻し。
 //!
-//! 中身の正典は GPU の `state` バッファ。描いている間は splat.wgsl が読んで注ぎ、brush.wgsl が
-//! なぞった減り・置いたままの含み・紙からの吸い込みを毎フレーム反映する。CPU は
+//! 中身の正典は GPU の `state` バッファ。描いている間は splat.wgsl が読んで紙と水を受け渡し、
+//! brush.wgsl が受け渡した量を毎フレーム中身へ反映する。CPU は
 //! - 置き換え(色・水・洗う・自動補充・再生のストローク開始)を `set` で書き込み、
 //! - 表示用に、中身が変わったフレームの値を非同期で読み戻して `mirror` に持つ(数フレーム遅れる)。
 //!
@@ -19,14 +19,14 @@ const MAP_PENDING: u8 = 0;
 const MAP_OK: u8 = 1;
 const MAP_FAILED: u8 = 2;
 
-/// splat.wgsl / brush.wgsl の BrushIntake(atomic<u32> × 5)のバイト数
-const INTAKE_SIZE: u64 = 5 * 4;
+/// splat.wgsl / brush.wgsl の BrushFlow(atomic<i32> × 5)のバイト数
+const FLOW_SIZE: u64 = 5 * 4;
 
 pub(crate) struct GpuBrush {
     /// 筆の中身(binding 12)。COPY_SRC は読み戻し、COPY_DST は `set` のため
     pub(super) state: wgpu::Buffer,
-    /// 紙から吸った量の集計(binding 13)。brush.wgsl が毎回 0 に戻す
-    pub(super) intake: wgpu::Buffer,
+    /// 筆と紙が受け渡した量の集計(binding 13)。brush.wgsl が毎回 0 に戻す
+    pub(super) flow: wgpu::Buffer,
     /// 読み戻し用(MAP_READ)
     staging: wgpu::Buffer,
     /// GPU の中身の版。中身を書き換えうる操作(set・brush.wgsl)を積むたびに 1 進める
@@ -50,9 +50,9 @@ impl GpuBrush {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        let intake = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("brush_intake"),
-            size: INTAKE_SIZE,
+        let flow = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("brush_flow"),
+            size: FLOW_SIZE,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -65,7 +65,7 @@ impl GpuBrush {
         // 作成直後のバッファはゼロ = 空の筆
         Self {
             state,
-            intake,
+            flow,
             staging,
             version: 0,
             mirror: BrushLoad::empty(),
