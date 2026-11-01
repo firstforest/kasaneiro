@@ -140,7 +140,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             // 受け渡しの仕事ではなく、顔料個性の差(粒の細かさ μ・密度 ρ・染みつき ω)が起こす物理。
             // s.feed > 0.5 は置いたまま動かない筆の splat(CPU が毎フレーム積む)。式は同じで、
             // 紙と釣り合うまで出続けた水を毛細管拡散(diffuse.wgsl)が外へ運ぶので、
-            // 「筆に含まれた色水が置いている間ずっと流れ出て広がる」動きになる。初速は与えない。
+            // 「筆に含まれた色水が置いている間ずっと流れ出て広がる」動きになる。進行方向を持たない(s.vel = 0)ので、
+            // 出た水は止まっていて初速を与えない。
             // 空の筆(洗った直後)は乾いた穂先として、濡れた所の色水を吸うだけ(紙へは何も出さない。
             // 乾いた紙を濡らさず、初速も溶かし戻しも与えない)
             let feed = s.feed > 0.5;
@@ -155,6 +156,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                     // 筆圧(pressure_pigment)が弱いほど顔料を控えめに出す(出した分だけ穂先から引くので量は釣り合う)
                     let conc = brush.tip_pigment * (params.brush_pigment / (params.brush_water * brush.tip_water));
                     let out_pigment = f * max(conc, vec4f(0.0)) * mix(1.0, press, params.pressure_pigment);
+                    // 初速は穂先から出た水が持ち込む: 紙の水と運動量で混ぜる。筆の勢いで色水が走るのは
+                    // 筆が水を出したときだけで、吸っている筆は紙の水を押さない。出る水の速さは穂先の
+                    // 濡れ具合に比例する(乾きかけの筆の薄い水が濡れた所の前縁へ寄って筋を残さないように)。
+                    // 足し込みにしないので、1フレームに来る splat の数で勢いが変わらない
+                    let v_brush = params.brush_velocity * s_b * s.vel;
+                    vel = (vel * water + v_brush * f) / (water + f);
                     water += f;
                     susp += out_pigment;
                     flow_water -= f;
@@ -175,9 +182,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             }
             if (empty) {
                 continue;
-            }
-            if (!feed) {
-                vel += coverage * params.brush_velocity * s.vel;
             }
             // 筆が届いた範囲を濡らす(wet-area mask)。水が動けるのはこの領域だけ。
             // 水を置く範囲(coverage > 0)と一致させ、マスク外に水が取り残されないようにする

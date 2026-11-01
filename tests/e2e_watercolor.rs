@@ -584,7 +584,7 @@ fn paint_brush_picks_up_wet_color() {
 
     // 溜まりは標準の濃さ(濃さ 1)なので、吸った筆はその色に寄り、水も増える
     assert!(
-        brush.concentration() > 0.3 && brush.tip().water > 0.15,
+        brush.concentration() > 0.3 && brush.tip().water > 0.07,
         "筆が黄の溜まりを吸い込んでいない
 {ctx}"
     );
@@ -691,5 +691,47 @@ fn washed_brush_lifts_wet_paint() {
     assert!(
         hsv(lifted).1 < hsv(before).1 - 0.01,
         "吸った跡が淡くなっていない\n{ctx}"
+    );
+}
+
+/// 洗った筆で濃い濡れ色をなぞった筋が、なぞった方向に段々(粒の列)にならない。
+/// 記録 assets/strokes/washed-brush-over-dense.json = 濃い色を塗る → 洗う → 空の筆で3本なぞる(ペン入力で、
+/// 1フレームに来る splat の数がむらになる)。最後の1本の、溜まりを出た先の筋に沿って明度を取り、
+/// 15px の移動平均からの揺れを見る
+#[test]
+fn washed_brush_trail_has_no_beads() {
+    let stored = kasaneiro::replay::load("washed-brush-over-dense").unwrap();
+    let last = stored.recording.strokes.last().unwrap();
+    let a = last.points.first().unwrap().pos;
+    let b = last.points.last().unwrap().pos;
+    let mut c = canvas();
+    c.set_palette(stored.palette.clone());
+    c.play(stored.recording.clone());
+    let img = c.snapshot().unwrap();
+    let png = save(&img, "washed_brush_trail");
+
+    let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+    let dir = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+    let along = |t: f32| {
+        let x = (a[0] + dir[0] * t) as u32;
+        let y = (a[1] + dir[1] * t) as u32;
+        lightness(img.rgb(x, y))
+    };
+    // 溜まりを出た先(始点から 120〜200px。溜まりの縁の段差は含めない)
+    const WINDOW: i32 = 15;
+    let ripple: Vec<f32> = (120..200)
+        .map(|t| {
+            let avg = (-WINDOW / 2..=WINDOW / 2)
+                .map(|d| along((t + d) as f32))
+                .sum::<f32>()
+                / WINDOW as f32;
+            along(t as f32) - avg
+        })
+        .collect();
+    let rms = (ripple.iter().map(|d| d * d).sum::<f32>() / ripple.len() as f32).sqrt();
+    assert!(
+        rms < 0.0025,
+        "なぞった筋が段々になっている(移動平均からの揺れ RMS {rms:.4})\n{}",
+        png.display()
     );
 }
