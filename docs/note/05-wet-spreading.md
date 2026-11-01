@@ -58,7 +58,7 @@ cap_weight(a, b) = max(a, b)^WATER_GAMMA
 
 splat はポインタが動いたときにしか生まれないので、そのままでは「置いたまま=何も起きない」。
 
-- 塗る筆を置いたまま動かないフレームでも、筆の中身の水が残る間は **CPU(`PaintApp::feed_charge` → `BrushLoad::feed`)が毎フレーム feed splat(`Splat.feed=1`)を1つ積む**
+- 塗る筆を置いたまま動かないフレームでも、筆の中身の水が残る間は **CPU(`PaintApp::feed_charge` → `BrushFrame::feed`)が毎フレーム feed splat(`Splat.feed=1`)を1つ積む**(筆の水を減らすのは GPU の brush.wgsl)
 - feed splat の中身は通常の splat と違う: 水は目標水位への max 補充(積み上がらない。目標は筆の中身の水に比例)、顔料は通常の `CHARGE_PIGMENT`(0.15)倍だけ。広げるのは毛細管拡散の仕事で、流れ出るのは主に水
 - 流れ出るぶん筆の中身の水を使い、満タンの筆は `brush_charge` 秒で尽きる。描いて減った筆ほど早く止まる。動いているフレームは通常の注入があるので積まない
 - **既知の制約**: ストローク記録(H5)は生ポインタ点だけを記録するので、「置いたまま保持」は再生で再現されない

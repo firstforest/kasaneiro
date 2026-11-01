@@ -10,6 +10,7 @@ mod common;
 
 use common::*;
 use kasaneiro::headless::{HeadlessCanvas, Image};
+use paint_core::load::BrushLoad;
 use paint_core::tool::WetTool;
 
 const YELLOW: u32 = 0;
@@ -529,5 +530,99 @@ fn inactive_tiles_keep_pingpong_in_sync() {
         c.pingpong_mismatch().unwrap(),
         [0; 3],
         "乾かした後に2枚がずれている"
+    );
+}
+
+/// 塗る筆の吸い込み: 濡れた黄の上を、ほぼ乾いた透明な筆でなでて乾いた紙まで引くと、
+/// 筆が黄を吸い込んで黄の筆になり、その先の紙へ黄を運ぶ(筆の水が少ないので線は淡い)。
+/// 吸い込みを切った筆と比べる
+#[test]
+fn paint_brush_picks_up_wet_color() {
+    let run = |absorb: f32| {
+        let mut c = canvas();
+        c.params.brush_absorb = absorb;
+        // 濡れた黄の溜まり(3本並べて太くする)
+        let pool = [230.0, 250.0, 270.0]
+            .iter()
+            .enumerate()
+            .map(|(k, &y)| hstroke(WetTool::Paint, YELLOW, 60.0, 220.0, y, k as u32 * 40))
+            .collect();
+        c.play(recording(pool));
+        c.idle(10);
+        // 黄の中から右の乾いた紙へ、水が 5% だけ残った透明な筆で引く
+        let mut thirsty = hstroke(WetTool::Paint, YELLOW, 80.0, 440.0, 250.0, 0);
+        thirsty.load = Some(BrushLoad {
+            water: 0.05,
+            pigment: [0.0; 4],
+        });
+        c.play(recording(vec![thirsty]));
+        let brush = c.brush_load().unwrap();
+        c.idle(120);
+        (c.snapshot().unwrap(), brush)
+    };
+    let (img, brush) = run(0.3);
+    let (control, control_brush) = run(0.0);
+    let png = save(&img, "brush_pickup");
+    save(&control, "brush_pickup_off");
+    // 黄の溜まりを抜けた先(乾いた紙だった所)の線
+    let trail = img.mean_rgb(300, 244, 420, 256);
+    let control_trail = control.mean_rgb(300, 244, 420, 256);
+    let ctx = format!(
+        "{}
+吸う: 線 {:?} hsv {:?} 筆 {:?}
+吸わない: 線 {:?} hsv {:?} 筆 {:?}",
+        png.display(),
+        trail,
+        hsv(trail),
+        brush,
+        control_trail,
+        hsv(control_trail),
+        control_brush
+    );
+
+    // 溜まりは標準の濃さ(濃さ 1)なので、吸った筆はその色に寄る
+    assert!(
+        brush.concentration() > 0.3 && brush.water > 0.05,
+        "筆が黄を吸い込んでいない
+{ctx}"
+    );
+    assert_eq!(
+        control_brush.pigment, [0.0; 4],
+        "吸い込みを切った筆に色が入った
+{ctx}"
+    );
+    let (h, s, _) = hsv(trail);
+    assert!(
+        (40.0..80.0).contains(&h) && s > hsv(control_trail).1 + 0.015,
+        "吸い込んだ黄が先の紙へ運ばれていない
+{ctx}"
+    );
+}
+
+/// 満タンの筆は、自分が置いたばかりの水を吸い戻さない: 同じ線を往復しても、
+/// なぞった長さのぶん減り(含みの持ち 2000px で半分)、濃さは変わらない
+#[test]
+fn full_brush_still_depletes_over_own_stroke() {
+    let mut c = canvas();
+    let mut back_and_forth = hstroke(WetTool::Paint, BLUE, 60.0, 450.0, 250.0, 0);
+    let back = hstroke(WetTool::Paint, BLUE, 450.0, 60.0, 250.0, 0);
+    let offset = back_and_forth.points.last().unwrap().frame + 2;
+    back_and_forth
+        .points
+        .extend(back.points.into_iter().skip(1).map(|mut p| {
+            p.frame += offset;
+            p
+        }));
+    c.play(recording(vec![back_and_forth]));
+    let brush = c.brush_load().unwrap();
+    // 780px なぞると 0.5^(780/2000) ≈ 0.76
+    let expected = 0.5f32.powf(780.0 / 2000.0);
+    assert!(
+        (brush.water - expected).abs() < 0.05,
+        "筆の水が減っていない: {brush:?}(なぞった長さからの見込み {expected:.2})"
+    );
+    assert!(
+        (brush.concentration() - 1.0).abs() < 0.1,
+        "往復で筆の濃さが変わった: {brush:?}"
     );
 }

@@ -1,8 +1,9 @@
 // splat.wgsl — ブラシ入力の compute パス。ツール(params.tool)で4分岐する:
-//   0 = 描画: 筆の中身(splat が運ぶ水と4色の顔料)を置く(M1a/M1b)。置いた水は毛細管拡散(diffuse.wgsl、note/05)が
-//       濡れた紙を伝ってひとりでに広げ、色の溶かし戻し(paint_pickup)で下の色と馴染む。
-//       水だけの筆(顔料 0)なら水を置いて下の色を溶かすので、先濡らしとぼかしもこの分岐が担う。
-//       空の筆(水 0)は何もしない
+//   0 = 描画: 筆の中身(筆バッファ binding 12 の水と4色の顔料)を置く(M1a/M1b)。置いた水は毛細管拡散
+//       (diffuse.wgsl、note/05)が濡れた紙を伝ってひとりでに広げ、色の溶かし戻し(paint_pickup)で下の色と馴染む。
+//       紙の水位が筆の水位より高いセルからは、水と浮いている色を筆へ吸い込む(brush_absorb。集計は binding 13、
+//       中身への反映は brush.wgsl)。水だけの筆(顔料 0)なら水を置いて下の色を溶かすので、
+//       先濡らしとぼかしもこの分岐が担う。空の筆(水 0)は何もしない
 //   1 = リフト(削り): その場を濡らして沈着顔料を浮遊層へ戻し、浮いた色ごと水を吸い取る
 //       (濡らして押さえる)。ステイニング顔料(ω)は残り、紙の凸部から先に剥がれる
 //       (粒状化 γ の顔料は谷に残る) — Curtis の削りレシピ+吸い取り
@@ -24,9 +25,13 @@
 @group(0) @binding(9) var<uniform> pigment: array<vec4f, 4>;
 // アクティブタイル(M6): タイルの状態(TILE_COLD / TILE_COPY / TILE_ACTIVE。tiledilate.wgsl 参照)
 @group(0) @binding(11) var<storage, read> tile_active: array<u32>;
+// 塗る筆の中身(フレーム頭の値。このパスでは読むだけ)と、紙から吸った量の集計
+@group(0) @binding(12) var<storage, read_write> brush: Brush;
+@group(0) @binding(13) var<storage, read_write> intake: BrushIntake;
 
 // 筆の含み(brush_charge)の調整済み定数(docs/note/05 §4)。再調整はホットリロード(H1)で直接編集
 const CHARGE_PIGMENT: f32 = 0.15; // feed splat 1フレームが注ぐ顔料の通常 splat に対する比
+const FEED_ABSORB: f32 = 0.1;     // feed splat の吸い込みの通常 splat に対する比(毎フレーム来るので弱める)
 
 // 4スロットの顔料個性 ω(染みつき)・γ(粒状)をベクトルにまとめる
 fn pigment_omega() -> vec4f {
@@ -65,6 +70,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var vel = cell.gb;
     var wet = cell.a;
     let h = textureLoad(paper_tex, ip, 0).r;
+    // このセルから筆が吸った量(水, 4色の浮遊顔料)。最後にまとめて集計へ足す
+    var intake_water = 0.0;
+    var intake_pigment = vec4f(0.0);
 
     for (var i = 0u; i < splat_buf.count; i++) {
         let s = splat_buf.splats[i];
@@ -126,8 +134,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             vel *= 1.0 - frac;
             susp *= 1.0 - frac;
         } else {
-            // 描画(既定): 水+初速+顔料の注入。量は splat が運ぶ筆の中身(s.water / s.pigment、
-            // 単位は満タン・標準の1回分)に brush_water / brush_pigment を掛けたもの。
+            // 描画(既定): 水+初速+顔料の注入。量は筆の中身(筆バッファ × s.scale = この splat を置く
+            // 時点の残り。単位は満タン・標準の1回分)に brush_water / brush_pigment を掛けたもの。
             // 筆の中で混ざった色はそのまま4スロットへ同時に注ぐ。紙の上で色が分かれるのは
             // 注入の仕事ではなく、顔料個性の差(粒の細かさ μ・密度 ρ・染みつき ω)が起こす物理。
             // s.feed > 0.5 は「筆の含み」splat(置いたまま動かない間、CPU が毎フレーム積む):
@@ -135,12 +143,35 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             // (なでても積み上がらない)、顔料は CHARGE_PIGMENT ぶんだけ注ぐ。
             // 補充され続ける水を毛細管拡散(diffuse.wgsl)が外へ運ぶので、
             // 「筆に含まれた色水が置いている間ずっと流れ出て広がる」動きになる
-            // 空の筆(洗った直後)は濡らしも溶かし戻しもしない
-            if (s.water <= 0.0) {
+            // 空の筆(洗った直後)は濡らしも溶かし戻しも吸い込みもしない。置いたままの色水は筆の水が
+            // 尽きたら止まる
+            let feed = s.feed > 0.5;
+            let bw = brush.water * s.scale;
+            if (bw <= 0.0 || (feed && bw <= FEED_MIN_WATER)) {
                 continue;
             }
-            let feed = s.feed > 0.5;
-            let w_in = coverage * params.brush_water * s.water * mix(1.0, press, params.pressure_water);
+            // 吸い込み(置く前に): 紙の水位が筆の水位より高ければ、超えた分の水を筆の渇き(1 − 筆の水)に
+            // 応じて吸い、その水に浮いている顔料も同じ割合で持っていく(浮遊顔料は水に乗っているので、
+            // 吸った水の濃度 = セルの濃度)。筆の水位は「この筆で1回なぞったときの紙の水位」
+            // (筆跡1つの水位 × 重なり)にするので、自分が置いたばかりの水は吸い戻さない。
+            // 満タンの筆と、なぞっても減らない筆(brush_hold = 0)は吸わない。
+            // 筆と紙の水が釣り合う向きに動くので、減った筆で濡れた色をなでると筆がその色を拾う
+            if (params.brush_absorb > 0.0 && params.brush_hold > 0.0 && coverage > 0.0) {
+                let level = params.brush_water * bw * stroke_overlap();
+                if (water > level) {
+                    let thirst = clamp(1.0 - bw, 0.0, 1.0);
+                    let k = clamp(params.brush_absorb * coverage * press * thirst * select(1.0, FEED_ABSORB, feed), 0.0, 1.0);
+                    let take = (water - level) * k;
+                    let ratio = take / water;
+                    let taken = susp * ratio;
+                    water -= take;
+                    vel *= 1.0 - ratio;
+                    susp -= taken;
+                    intake_water += take;
+                    intake_pigment += taken;
+                }
+            }
+            let w_in = coverage * params.brush_water * bw * mix(1.0, press, params.pressure_water);
             var pig = coverage * params.brush_pigment * mix(1.0, press, params.pressure_pigment);
             if (!feed) {
                 water += w_in;
@@ -149,7 +180,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 water = max(water, w_in);
                 pig *= CHARGE_PIGMENT;
             }
-            susp += pig * max(s.pigment, vec4f(0.0));
+            susp += pig * max(brush.pigment * s.scale, vec4f(0.0));
             // 筆が届いた範囲を濡らす(wet-area mask)。水が動けるのはこの領域だけ。
             // 水を置く範囲(coverage > 0)と一致させ、マスク外に水が取り残されないようにする
             if (dist < radius) {
@@ -167,6 +198,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                 susp += picked;
             }
         }
+    }
+
+    // 吸った量を集計へ足す(brush.wgsl が筆の中身へ移す)。足し算の順序に依らない整数で集計する
+    if (intake_water > 0.0) {
+        atomicAdd(&intake.amount[0], u32(intake_water * INTAKE_SCALE + 0.5));
+        let q = vec4u(max(intake_pigment, vec4f(0.0)) * INTAKE_SCALE + 0.5);
+        atomicAdd(&intake.amount[1], q.x);
+        atomicAdd(&intake.amount[2], q.y);
+        atomicAdd(&intake.amount[3], q.z);
+        atomicAdd(&intake.amount[4], q.w);
     }
 
     // 安定性: 水量は非負、速度は CFL 的上限でクランプ

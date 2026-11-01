@@ -7,7 +7,9 @@
 
 use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, ViewUniform};
 use eframe::egui_wgpu::{self, wgpu};
+use paint_core::load::BrushFrame;
 use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
+use paint_core::tool::WetTool;
 use std::sync::atomic::Ordering;
 
 /// 1フレーム分の描画データ。src/app/ui/canvas.rs で組み立てて PaintCallback として渡す。
@@ -21,18 +23,22 @@ pub struct CanvasCallback {
     pub line_target: Option<LineTarget>,
     /// パン/ズーム(M6): display の画面 uv → キャンバス uv 変換。毎フレーム反映する
     pub view: ViewUniform,
+    /// 塗る筆の中身への指示(置き換え・なぞった減り・置いたままの含み)
+    pub brush: BrushFrame,
 }
 
 impl egui_wgpu::CallbackTrait for CanvasCallback {
     fn prepare(
         &self,
-        _device: &wgpu::Device,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         _screen_descriptor: &egui_wgpu::ScreenDescriptor,
         egui_encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         if let Some(canvas) = callback_resources.get_mut::<GpuCanvas>() {
+            // 前のフレームの筆の中身の読み戻し(そのコピーは submit 済み)
+            canvas.poll_brush(device);
             canvas.encode_frame(queue, egui_encoder, self);
         }
         Vec::new()
@@ -72,6 +78,10 @@ impl GpuCanvas {
         queue.write_buffer(&canvas.params_buffer, 0, bytemuck::bytes_of(&frame.params));
         // M6: パン/ズームの変換を display 用 uniform へ(compute には影響しない)
         queue.write_buffer(&canvas.view_buffer, 0, bytemuck::bytes_of(&frame.view));
+        // 筆の中身の置き換えはこのフレームの splat より前に効く
+        if let Some(load) = frame.brush.set {
+            canvas.brush.set(queue, load);
+        }
 
         if frame.splats.len() > MAX_SPLATS {
             log::warn!(
@@ -90,7 +100,8 @@ impl GpuCanvas {
             } else {
                 0
             },
-            _pad: [0; 2],
+            brush_scale: frame.brush.scale,
+            feed_dt: frame.brush.feed_dt,
         };
         let mut bytes = Vec::with_capacity(
             std::mem::size_of::<SplatHeader>() + splat_count * std::mem::size_of::<Splat>(),
@@ -115,6 +126,7 @@ impl GpuCanvas {
         }
 
         let mut current = canvas.current;
+        let mut brush_ran = false;
         if let Some(pipelines) = &canvas.pipelines {
             let workgroups = canvas.size.div_ceil(8);
 
@@ -140,6 +152,7 @@ impl GpuCanvas {
             // タイル判定ごと積まない。tiledilate の dirty 更新は「このフレームに少なくとも1パス進む」
             // ことを前提にしているため(tiledilate.wgsl)。active は前フレームの値が残る
             if !run_splat && frame.sim_steps == 0 {
+                canvas.brush.encode_readback(encoder);
                 return;
             }
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -171,6 +184,14 @@ impl GpuCanvas {
             // 流体ツールのときだけ splat を流す(ラスタツールは上の line_pass で処理済み)
             if run_splat {
                 run(&mut pass, pipelines.compute("splat.wgsl"));
+                // 塗る筆: なぞった減り・含み・吸い込みを筆の中身へ反映する。テクスチャは読み書き
+                // しない(ping-pong しない)ので、筆のバッファが同じならどちらの bind group でもよい
+                if frame.params.tool == WetTool::Paint.gpu_id() {
+                    pass.set_pipeline(pipelines.compute("brush.wgsl"));
+                    pass.set_bind_group(0, &bind_groups[0], &[]);
+                    pass.dispatch_workgroups(1, 1, 1);
+                    brush_ran = true;
+                }
             }
             // 1 ステップ = 速度更新 → 発散緩和 × N → FlowOutward → 移流
             //   → 顔料拡散 × N → 吸着/脱着+蒸発(パス実行順はここがハードコードの正典)
@@ -193,5 +214,9 @@ impl GpuCanvas {
             }
         }
         canvas.current = current;
+        if brush_ran {
+            canvas.brush.touched();
+        }
+        canvas.brush.encode_readback(encoder);
     }
 }

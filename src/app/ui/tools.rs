@@ -143,14 +143,15 @@ impl PaintApp {
                         // ダブルクリックの1回目より前の中身を覚えておく(2回目の押下では上書きしない)
                         let fresh = !matches!(self.swatch_undo, Some((k, t, _)) if k == i && now - t < 0.5);
                         if fresh {
+                            self.sync_brush();
                             self.swatch_undo = Some((i, now, self.brush_load));
                         }
-                        self.brush_load.take_pigment(i as u32, load::TAKE_DOSE);
+                        self.edit_brush(|b| b.take_pigment(i as u32, load::TAKE_DOSE));
                         self.after_brush_take();
                         self.params.brush_channel = i as u32;
                     }
                     Some(false) => {
-                        self.brush_load.take_pigment(i as u32, load::TAKE_RATE * dt);
+                        self.edit_brush(|b| b.take_pigment(i as u32, load::TAKE_RATE * dt));
                         self.after_brush_take();
                     }
                     None => {}
@@ -161,7 +162,7 @@ impl PaintApp {
                     if let Some((k, _, before)) = self.swatch_undo.take()
                         && k == i
                     {
-                        self.brush_load = before;
+                        self.edit_brush(|b| *b = before);
                         self.brush_refill = before;
                     }
                     self.palette_ui.color_modal = true;
@@ -193,11 +194,11 @@ impl PaintApp {
             );
             match self.swatch_press(4, resp.is_pointer_button_down_on()) {
                 Some(true) => {
-                    self.brush_load.dip_water(load::DIP_KEEP);
+                    self.edit_brush(|b| b.dip_water(load::DIP_KEEP));
                     self.after_brush_take();
                 }
                 Some(false) => {
-                    self.brush_load.dip_water(BrushLoad::dip_keep(dt));
+                    self.edit_brush(|b| b.dip_water(BrushLoad::dip_keep(dt)));
                     self.after_brush_take();
                 }
                 None => {}
@@ -207,7 +208,7 @@ impl PaintApp {
                 .on_hover_text("筆を洗う: 水も色もすべて落として空の筆にする(リセット)。続けて「水」を押すと水だけの筆になる")
                 .clicked()
             {
-                self.brush_load.wash();
+                self.edit_brush(BrushLoad::wash);
                 self.after_brush_take();
             }
             // 「筆の中身を作る操作」と「削り以降の4ツール」の意味グループを小さいギャップで区切る
@@ -300,6 +301,15 @@ impl PaintApp {
                 .on_hover_text(
                     "筆が触れた沈着顔料を浮かせて筆の色と混ぜる割合。水だけの筆で\
                      なでるときは、これがぼかしの強さになる。染みつき(ω)が強い色は剥がれず残る",
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.params.brush_absorb, 0.0..=1.0)
+                        .text("筆が色を吸う"),
+                )
+                .on_hover_text(
+                    "減った筆で、筆より濡れている所をなでると、水と浮いている色を筆が吸い込む強さ。\
+                     吸った色は筆の中で混ざり、次に置く色になる(筆が汚れていく)。\
+                     満タンの筆と洗った空の筆は吸わない。0=吸わない",
                 );
             }
             Some(WetTool::Lift) => {

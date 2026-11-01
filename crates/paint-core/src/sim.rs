@@ -31,6 +31,10 @@ pub const DEFAULT_CANVAS_SIZE: u32 = 512;
 /// 通常の描画では届かない。超えた分は gpu/callback.rs が警告ログを出して切り捨てる
 pub const MAX_SPLATS: usize = 8192;
 
+/// ストロークに splat を置く間隔 = 筆圧を反映した実効半径 × これ(下限 1px)。
+/// splat.wgsl / brush.wgsl も筆跡の重なり・筆が一生で置く量の見積もりに同じ値を使う(プレリュード経由)
+pub const SPLAT_SPACING: f32 = 0.25;
+
 /// 全シミュレーションパラメータの唯一の置き場(H2)。
 /// フィールドを足したら: ①ここに1行 ②src/app/ui/ の該当パネルにスライダー1行 ③common.wgsl の struct に1行
 /// (名前・順序・型の一致は tests/sim_params_layout.rs が検査する)。
@@ -194,8 +198,11 @@ pub struct SimParams {
     /// 浮かせるだけだと色は周りへ移るだけなので、その場から色を抜くために押さえて吸う。
     /// 0 = 浮かせるだけ(水だけの筆に近い)
     pub lift_blot: f32,
-    #[serde(skip)]
-    pub _pad_brush: f32,
+    /// 塗る筆の吸い込み: 紙の水位が筆の水位(brush_water × 筆の水)より高いセルから、
+    /// 1 splat で超えた分の水と、その水に浮いている顔料を筆へ吸い込む割合
+    /// (coverage×筆圧×筆の渇き(1 − 筆の水)で変調)。吸った分は筆の中身に足され、次に置く色に混ざる。
+    /// 満タンの筆と空の筆(洗った直後)は吸わない。0=吸わない
+    pub brush_absorb: f32,
 }
 
 impl SimParams {
@@ -280,12 +287,12 @@ impl Default for SimParams {
             absorb_rate: 0.5,  // 吸い取り: ひとなでで水たまりの大半を回収できる強さ
             brush_hold: 2000.0, // 長いストロークの終わりがやや淡くなる程度
             lift_blot: 0.5,    // 削り: 吸い取りツールと同じ強さで押さえる
-            _pad_brush: 0.0,
+            brush_absorb: 0.3, // 減った筆で濡れた色をなでると、その色が筆に移る程度
         }
     }
 }
 
-/// ストローク上の1点。WGSL 側の Splat と同レイアウト(48 バイト)。
+/// ストローク上の1点。WGSL 側の Splat と同レイアウト(32 バイト)。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Splat {
@@ -299,11 +306,11 @@ pub struct Splat {
     /// 水・初速・顔料の一括注入(+=)はせず、目標水位への水補充(max)+
     /// 少量の顔料(CHARGE_PIGMENT 比)だけを注ぐ(splat.wgsl の描画ブランチが分岐)
     pub feed: f32,
-    /// 塗る筆の中身の水(1 = 満タン。splat.wgsl が brush_water を掛ける)。塗る筆以外は使わない
-    pub water: f32,
+    /// 塗る筆の中身のうち、この splat を置く時点で残っている割合(フレーム頭の中身に対する比)。
+    /// 中身そのものは GPU の筆バッファが持ち、なぞった長さで減る分だけを CPU が渡す
+    /// (load.rs の BrushFrame::drag)。塗る筆以外は使わない
+    pub scale: f32,
     pub _pad: f32,
-    /// 塗る筆の中身の顔料(スロットごと。1 = 標準の1回分。splat.wgsl が brush_pigment を掛ける)
-    pub pigment: [f32; 4],
 }
 
 impl Splat {
@@ -313,9 +320,8 @@ impl Splat {
             vel,
             pressure,
             feed: 0.0,
-            water: 1.0,
+            scale: 1.0,
             _pad: 0.0,
-            pigment: [0.0; 4],
         }
     }
 
@@ -337,7 +343,10 @@ pub struct SplatHeader {
     /// 流体へ流す splat 数(tilescan.wgsl のブラシ近傍判定が読む)。線画ツールのフレームは 0
     /// (splat は線画テクスチャにだけ描かれ、流体のタイルを立てる必要がない)
     pub fluid_count: u32,
-    pub _pad: [u32; 2],
+    /// このフレームのなぞりで塗る筆の中身が残る割合(brush.wgsl がフレームの最後に掛ける)
+    pub brush_scale: f32,
+    /// このフレームに置いたまま流れ出た色水の時間(秒。0 = feed なし。brush.wgsl が筆の水を減らす)
+    pub feed_dt: f32,
 }
 
 #[cfg(test)]
@@ -366,10 +375,10 @@ mod tests {
         assert_eq!(std::mem::size_of::<SimParams>() % 16, 0);
     }
 
-    /// Splat は WGSL の storage 配列要素(vec4 を含むので 16 バイト整列)と同じ 48 バイト
+    /// Splat は WGSL の storage 配列要素と同じ 32 バイト(f32 × 8)
     #[test]
     fn splat_layout() {
-        assert_eq!(std::mem::size_of::<Splat>(), 48);
-        assert_eq!(std::mem::offset_of!(Splat, pigment), 32);
+        assert_eq!(std::mem::size_of::<Splat>(), 32);
+        assert_eq!(std::mem::offset_of!(Splat, scale), 24);
     }
 }

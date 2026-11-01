@@ -20,6 +20,7 @@
 //!
 //! ファイル構成(このモジュールはリソース定義と型・実行時メソッドを持つ。長い処理は分離):
 //! - [`init`] — `GpuCanvas::new`(テクスチャ・バッファ・bind group の生成)
+//! - [`brush`] — 塗る筆の中身(GPU の筆バッファ)と CPU への読み戻し
 //! - [`callback`] — `CanvasCallback`(フレーム描画。パス実行順の正典)
 //! - [`snapshot`] — `GpuCanvas::snapshot`(PNG 読み戻し。H6)
 //! - [`persist`] — `GpuCanvas::export_state` / `import_state`(作品保存の GPU 読み戻し/書き戻し。M7)
@@ -29,6 +30,7 @@
 
 pub mod hot_reload;
 
+mod brush;
 mod callback;
 mod init;
 mod persist;
@@ -109,6 +111,7 @@ impl LineTarget {
 /// どのレイアウトでビルドするか」だけで、実行順は心臓部なので prepare() 側に残す。
 const COMPUTE_SHADERS: &[(&str, ComputeLayout)] = &[
     ("splat.wgsl", ComputeLayout::Common),
+    ("brush.wgsl", ComputeLayout::Common),
     ("velocity.wgsl", ComputeLayout::Common),
     ("relax.wgsl", ComputeLayout::Common),
     ("flowout.wgsl", ComputeLayout::Common),
@@ -309,6 +312,8 @@ pub struct GpuCanvas {
     /// bake_dry が末尾に push、clear が全消去、merge_into_base が残りを先頭へ詰め直し、
     /// 作品読込は work::decode が個数一致を検査した値を代入する
     pub layer_palettes: Vec<pigment::Palette>,
+    /// 塗る筆の中身(正典は GPU。CPU は読み戻した値を表示と操作の起点に使う)
+    brush: brush::GpuBrush,
     /// シェーダーが一度も通っていない/壊れている間は None(描画をスキップして継続)
     pipelines: Option<Pipelines>,
     /// 表示中のテクスチャ番号。各 compute パスは current を読み 1-current へ書いてから反転する
@@ -475,7 +480,8 @@ impl GpuCanvas {
             let header = SplatHeader {
                 count: chunk.len() as u32,
                 fluid_count: 0,
-                _pad: [0; 2],
+                brush_scale: 1.0,
+                feed_dt: 0.0,
             };
             let mut bytes = Vec::with_capacity(
                 std::mem::size_of::<SplatHeader>() + std::mem::size_of_val(chunk),
@@ -499,6 +505,33 @@ impl GpuCanvas {
             queue.submit([encoder.finish()]);
         }
         Ok(())
+    }
+
+    /// 塗る筆の中身のうち最後に分かっている値(描いている間は数フレーム遅れる。表示用)
+    pub fn brush_mirror(&self) -> paint_core::load::BrushLoad {
+        self.brush.mirror()
+    }
+
+    /// 塗る筆の中身を置き換える(次の submit の前に効く)
+    pub fn set_brush(&mut self, queue: &wgpu::Queue, load: paint_core::load::BrushLoad) {
+        self.brush.set(queue, load);
+    }
+
+    /// 塗る筆の中身を GPU の完了を待って得る。CPU で中身を編集する前・記録に残す前に呼ぶ
+    pub fn sync_brush(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<paint_core::load::BrushLoad, String> {
+        self.brush.sync(device, queue)
+    }
+
+    /// 前のフレームまでに積んだ筆の中身の読み戻しを進める(完了は待たない)。
+    /// フレームのコマンドを submit した後、次の encode_frame の前に呼ぶ
+    pub fn poll_brush(&mut self, device: &wgpu::Device) {
+        if let Err(e) = self.brush.poll(device, false) {
+            log::warn!("{e}");
+        }
     }
 
     /// 全タイルを「ping-pong の2枚が食い違いうる」にする。次にシミュが進むフレームで全タイルが

@@ -4,7 +4,7 @@
 //! WGSL 側はここで定義した名前(TILE_SIZE・MAX_LAYERS・LATENT_TOTAL など)を参照し、
 //! 値をベタ書きしない。tests/shader_compile.rs もこのファイルを `#[path]` で取り込み、
 //! 同じプレリュードで全キャンバスサイズ分を検証する(二重管理しない)。
-//! そのためこのファイルは crate 内の他モジュールに依存しない(外部 crate は pigment だけ)。
+//! そのためこのファイルは crate 内の他モジュールに依存しない(外部 crate は pigment と paint_core だけ)。
 
 /// 乾燥レイヤー(M2)の上限枚数。texture array のスライス数として固定確保する
 /// (512² rgba32float × 8 = 32MB)。display.wgsl の visible_mask が u32 なので 32 が理論上限、
@@ -50,10 +50,16 @@ pub fn shader_prelude(size: u32) -> String {
          const GLOBAL_LATENTS: u32 = {global}u;\n\
          const PIGMENT_LATENTS: u32 = {pigment}u;\n\
          const LIVE_PALETTE: u32 = {LIVE_PALETTE}u;\n\
-         const LATENT_TOTAL: u32 = {LATENT_TOTAL}u;\n",
+         const LATENT_TOTAL: u32 = {LATENT_TOTAL}u;\n\
+         const PIGMENT_MAX: f32 = {pigment_max:?};\n\
+         const FEED_MIN_WATER: f32 = {feed_min:?};\n\
+         const SPLAT_SPACING: f32 = {spacing:?};\n",
         tiles = size / TILE_SIZE,
         order = MAX_LAYERS / 4,
         global = pigment::GLOBAL_LATENTS,
         pigment = pigment::PIGMENT_LATENTS,
+        pigment_max = paint_core::load::PIGMENT_MAX,
+        feed_min = paint_core::load::FEED_MIN_WATER,
+        spacing = paint_core::sim::SPLAT_SPACING,
     )
 }

@@ -9,6 +9,7 @@ use crate::gpu::hot_reload::shader_dir;
 use crate::gpu::{CanvasCallback, GpuCanvas, ViewUniform};
 use crate::replay::{Player, Recording};
 use eframe::egui_wgpu::wgpu;
+use paint_core::load::{BrushFrame, BrushLoad};
 use paint_core::sim::{SimParams, Splat};
 use pigment::Palette;
 use std::path::Path;
@@ -61,14 +62,15 @@ impl HeadlessCanvas {
         self.palette = palette;
     }
 
-    /// 1フレーム進める(splat を注入してから steps_per_frame ステップ)
-    pub fn frame(&mut self, splats: Vec<Splat>) {
+    /// 1フレーム進める(筆の中身への指示と splat を注入してから steps_per_frame ステップ)
+    pub fn frame(&mut self, splats: Vec<Splat>, brush: BrushFrame) {
         let frame = CanvasCallback {
             params: self.params,
             splats,
             sim_steps: self.steps_per_frame,
             line_target: None,
             view: ViewUniform::default(),
+            brush,
         };
         let mut encoder = self
             .device
@@ -77,12 +79,18 @@ impl HeadlessCanvas {
             });
         self.canvas.encode_frame(&self.queue, &mut encoder, &frame);
         self.queue.submit([encoder.finish()]);
+        self.canvas.poll_brush(&self.device);
+    }
+
+    /// 塗る筆の中身(GPU の完了を待った最新の値)
+    pub fn brush_load(&mut self) -> Result<BrushLoad, String> {
+        self.canvas.sync_brush(&self.device, &self.queue)
     }
 
     /// 入力なしで `frames` フレーム進める(にじみ・乾燥の経過を待つ)
     pub fn idle(&mut self, frames: u32) {
         for _ in 0..frames {
-            self.frame(Vec::new());
+            self.frame(Vec::new(), BrushFrame::default());
         }
     }
 
@@ -91,8 +99,9 @@ impl HeadlessCanvas {
         let mut player = Player::new(recording);
         for n in 1..=MAX_REPLAY_FRAMES {
             let mut splats = Vec::new();
-            let more = player.advance(&mut self.params, &mut splats);
-            self.frame(splats);
+            let mut brush = BrushFrame::default();
+            let more = player.advance(&mut self.params, &mut splats, &mut brush);
+            self.frame(splats, brush);
             if !more {
                 return n;
             }

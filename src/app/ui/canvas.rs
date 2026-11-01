@@ -161,7 +161,7 @@ impl PaintApp {
         if let Some(player) = &mut self.replay_ui.player {
             let mut more = true;
             for _ in 0..ticks {
-                more = player.advance(&mut self.params, &mut splats);
+                more = player.advance(&mut self.params, &mut splats, &mut self.brush_frame);
                 if !more {
                     break;
                 }
@@ -190,6 +190,7 @@ impl PaintApp {
                 sim_steps,
                 line_target: self.line_target(),
                 view: self.view_uniform(),
+                brush: std::mem::take(&mut self.brush_frame),
             },
         ));
         ui.painter().rect_stroke(

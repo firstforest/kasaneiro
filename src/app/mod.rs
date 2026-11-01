@@ -25,8 +25,8 @@ use eframe::egui_wgpu;
 use linehist::{LineHistory, stroke_splats};
 use paint_core::brush::StrokeState;
 use paint_core::clock::SimClock;
-use paint_core::load::BrushLoad;
-use paint_core::sim::{DEFAULT_CANVAS_SIZE, SimParams, Splat};
+use paint_core::load::{self as brush_load, BrushFrame, BrushLoad};
+use paint_core::sim::{DEFAULT_CANVAS_SIZE, SPLAT_SPACING, SimParams, Splat};
 use paint_core::tool::{RasterTool, Tool, WetTool};
 use std::path::PathBuf;
 use ui::{NamedStore, PaletteUi, PresetUi, ReplayUi, WorkUi};
@@ -138,8 +138,15 @@ pub struct PaintApp {
     /// 離したとき戻す元ツール(水彩=Wet(Erase) / 線画=Raster{eraser:true} / 乾燥=無反応)
     erase_hold: Option<Tool>,
     stroke: StrokeState,
-    /// 塗る筆の中身(水と4色の顔料)。ツールバーの色・水・洗うで変え、描くと減る
+    /// 塗る筆の中身(水と4色の顔料)。正典は GPU の筆バッファで、ここはフレーム頭に読み戻した値
+    /// (描いている間は数フレーム遅れる)。ツールバーの色・水・洗うは edit_brush で
+    /// 最新の値を待ってから変え、GPU へその場で書き戻す
     brush_load: BrushLoad,
+    /// このフレームに GPU の筆へ渡す指示(なぞった減り・置いたままの含み。再生中は記録した中身への
+    /// 置き換えも)。キャンバスのコールバックを組むときに取り出す
+    brush_frame: BrushFrame,
+    /// 記録の再生前の筆の中身(再生は記録した中身で塗るので、止めたら戻す)
+    replay_saved_brush: Option<BrushLoad>,
     /// 自動補充で戻す中身 = 最後に色・水・洗うで作った時点の中身。eframe storage に永続化
     brush_refill: BrushLoad,
     /// 自動補充: 筆を下ろすたびに brush_refill へ戻す。off なら前のストロークの残りから続く。
@@ -278,8 +285,10 @@ impl PaintApp {
             .and_then(|s| s.get_string("brush_load"))
             .and_then(|json| serde_json::from_str::<BrushLoad>(&json).ok())
             .unwrap_or_default();
-        // GpuCanvas::new は既定パレットで初期化するので、復元したパレットを書き込んでから挿す
+        // GpuCanvas::new は既定パレットと空の筆で初期化するので、復元したパレットと筆の中身を
+        // 書き込んでから挿す
         canvas.set_palette(&render_state.queue, &palette);
+        canvas.set_brush(&render_state.queue, brush_refill);
         render_state
             .renderer
             .write()
@@ -296,6 +305,8 @@ impl PaintApp {
             erase_hold: None,
             stroke: StrokeState::default(),
             brush_load: brush_refill,
+            brush_frame: BrushFrame::default(),
+            replay_saved_brush: None,
             brush_refill,
             auto_refill,
             brush_last: None,
@@ -364,6 +375,8 @@ impl PaintApp {
     /// 生成し直して callback_resources を差し替える(部分的な作り直しより単純で安全。
     /// 旧キャンバスは差し替えで drop され VRAM が返る)。現行パレット・SimParams は引き継ぐ
     fn recreate_canvas(&mut self, size: u32) {
+        // 筆の中身は旧キャンバスの GPU にあるので、確定させてから新キャンバスへ書き直す
+        self.sync_brush();
         let mut canvas = GpuCanvas::new(
             &self.render_state.device,
             &self.render_state.queue,
@@ -374,6 +387,7 @@ impl PaintApp {
         self.shader_error = canvas.rebuild_pipelines(&self.render_state.device).err();
         // 新キャンバスは既定パレットで生成されるので、現行パレットを書き直して引き継ぐ
         canvas.set_palette(&self.render_state.queue, &self.palette);
+        canvas.set_brush(&self.render_state.queue, self.brush_load);
         self.render_state
             .renderer
             .write()
@@ -573,6 +587,44 @@ impl PaintApp {
         }
     }
 
+    /// GPU の筆の中身を待って brush_load に取り込む。CPU で中身を変える前・記録に残す前に呼ぶ
+    fn sync_brush(&mut self) {
+        let mut synced = None;
+        self.run_canvas_action(|c, d, q| {
+            synced = Some(c.sync_brush(d, q)?);
+            Ok(())
+        });
+        if let Some(load) = synced {
+            self.brush_load = load;
+        }
+    }
+
+    /// 筆の中身を置き換える。GPU のバッファへその場で書く(次の submit の前に効く)。
+    /// フレームのコールバックに載せると、egui が UI を組み直して捨てたパスの分が届かないため
+    fn set_brush(&mut self, load: BrushLoad) {
+        self.brush_load = load;
+        self.run_canvas_action(|c, _, q| {
+            c.set_brush(q, load);
+            Ok(())
+        });
+    }
+
+    /// 筆の中身を CPU で変える(色を取る・水に浸す・洗う)。最新の値を待ってから変えて書き戻す
+    fn edit_brush(&mut self, edit: impl FnOnce(&mut BrushLoad)) {
+        self.sync_brush();
+        let mut load = self.brush_load;
+        edit(&mut load);
+        self.set_brush(load);
+    }
+
+    /// フレーム頭: 表示用に GPU の筆の中身(最後に読み戻した値)を取り込む
+    fn pull_brush(&mut self) {
+        let renderer = self.render_state.renderer.read();
+        if let Some(canvas) = renderer.callback_resources.get::<GpuCanvas>() {
+            self.brush_load = canvas.brush_mirror();
+        }
+    }
+
     /// 水彩ストローク開始(Down)時に湿レイヤーを退避する(M6)。restore の読み元になる
     fn backup_wet_layer(&mut self) {
         self.run_canvas_action(|c, d, q| {
@@ -761,6 +813,11 @@ impl PaintApp {
         self.replay_ui
             .saved_channel
             .get_or_insert(self.params.brush_channel);
+        // 再生は記録した中身で塗るので、いまの筆を退避して止めたら戻す
+        if self.replay_saved_brush.is_none() {
+            self.sync_brush();
+            self.replay_saved_brush = Some(self.brush_load);
+        }
         self.replay_ui.player = Some(Player::new(recording));
         // 再生で絵が載るので初回ガイドは出さない
         self.has_painted = true;
@@ -772,6 +829,9 @@ impl PaintApp {
     /// self.tool から再同期されるので復元不要 — tools.rs)。
     fn stop_replay(&mut self) {
         self.replay_ui.player = None;
+        if let Some(load) = self.replay_saved_brush.take() {
+            self.set_brush(load);
+        }
         if let Some(channel) = self.replay_ui.saved_channel.take() {
             self.params.brush_channel = channel;
         }
@@ -801,18 +861,23 @@ impl PaintApp {
                     self.stroke.begin();
                     // 自動補充: 最後に作った筆の中身へ戻してから描き始める
                     if self.auto_refill {
-                        self.brush_load = self.brush_refill;
+                        self.set_brush(self.brush_refill);
                     }
                     self.brush_last = None;
                     // H5: 記録はストローク単位。そのとき選ばれていた顔料スロット・ツール・筆の中身も残す
-                    if let Some(recorder) = &mut self.replay_ui.recorder
-                        && recordable
-                    {
-                        recorder.begin_stroke(
-                            self.params.brush_channel,
-                            self.params.tool,
-                            Some(self.brush_load),
-                        );
+                    // (自動補充しないときは前のストロークの残りから始まるので、GPU の最新の値を待つ)
+                    if self.replay_ui.recorder.is_some() && recordable {
+                        if !self.auto_refill {
+                            self.sync_brush();
+                        }
+                        let load = self.brush_load;
+                        if let Some(recorder) = &mut self.replay_ui.recorder {
+                            recorder.begin_stroke(
+                                self.params.brush_channel,
+                                self.params.tool,
+                                Some(load),
+                            );
+                        }
                     }
                     // M4.5d: ラスタ線画は履歴へストロークを開始(実効パラメータをスナップショット)
                     if let Some(target) = line_target {
@@ -858,12 +923,12 @@ impl PaintApp {
             // サンプル間隔は筆圧を反映した実効半径から(細い筆入れでも隙間を作らない)。
             // ラスタ線画は鉛筆/ペン/ハイライトの独立半径を使う(brush_radius と切り離す)
             let base = self.active_base_radius();
-            let spacing = (self.params.radius_at_base(base, ev.pressure) * 0.25).max(1.0);
+            let spacing = (self.params.radius_at_base(base, ev.pressure) * SPLAT_SPACING).max(1.0);
             let start = splats.len();
             self.stroke
                 .add_motion([px.x, px.y], ev.pressure, spacing, splats);
             if self.tool == Tool::Wet(WetTool::Paint) {
-                self.brush_load.load_splats(
+                self.brush_frame.drag(
                     &mut splats[start..],
                     &mut self.brush_last,
                     self.params.brush_hold,
@@ -887,7 +952,8 @@ impl PaintApp {
 
     /// 筆の含み: 塗る筆(Wet::Paint)を置いたまま動かさないフレームでは、筆の中身の水が
     /// 残っている間 feed splat を1つ積んで色水を流し出し続ける(置き馴染みの水補充+広がる勢い+
-    /// 少量の顔料。splat.wgsl の feed 分岐)。満タンの筆は brush_charge 秒で尽きる。
+    /// 少量の顔料。splat.wgsl の feed 分岐)。満タンの筆は brush_charge 秒で尽きる(水を使うのは
+    /// brush.wgsl。ここでの残量の判定は読み戻した値なので数フレーム遅れ、尽きた後の分は GPU が捨てる)。
     /// 動いている(通常 splat が出た)フレームは積まない。dt はフレーム時間(秒)
     pub(in crate::app) fn feed_charge(&mut self, dt: f32, splats: &mut Vec<Splat>) {
         if !self.painting || self.tool != Tool::Wet(WetTool::Paint) || !splats.is_empty() {
@@ -896,8 +962,11 @@ impl PaintApp {
         let Some((pos, pressure)) = self.feed_pos else {
             return;
         };
+        if self.brush_load.water <= brush_load::FEED_MIN_WATER {
+            return;
+        }
         if let Some(s) = self
-            .brush_load
+            .brush_frame
             .feed(pos, pressure, dt, self.params.brush_charge)
         {
             splats.push(s);
@@ -1256,6 +1325,7 @@ impl eframe::App for PaintApp {
             self.rebuild_shaders();
         }
         self.poll_video_export();
+        self.pull_brush();
 
         // M4.5d/M6: 統一 Undo/Redo(Ctrl+Z / Ctrl+Shift+Z)。線画・水彩の両方を振り分ける
         self.handle_undo_shortcuts(ui.ctx());

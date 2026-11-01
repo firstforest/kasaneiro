@@ -8,6 +8,7 @@
 use crate::headless::HeadlessCanvas;
 use crate::replay::{Player, Recording};
 use eframe::egui_wgpu::wgpu;
+use paint_core::load::BrushFrame;
 use paint_core::sim::SimParams;
 use pigment::Palette;
 use std::io::{Read, Write};
@@ -98,16 +99,17 @@ pub fn encode(
                 return Err("動画の書き出しを取り消しました".to_owned());
             }
             let mut splats = Vec::new();
+            let mut brush = BrushFrame::default();
             match &mut player {
                 Some(p) => {
-                    if !p.advance(&mut canvas.params, &mut splats) {
+                    if !p.advance(&mut canvas.params, &mut splats, &mut brush) {
                         player = None;
                     }
                 }
                 None if tail < settings.tail_frames => tail += 1,
                 None => return Ok(()),
             }
-            canvas.frame(splats);
+            canvas.frame(splats, brush);
             let image = canvas.snapshot()?;
             ffmpeg.write_frame(&image.rgba)?;
             progress.done.fetch_add(1, Ordering::Relaxed);

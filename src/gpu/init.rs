@@ -391,7 +391,8 @@ impl GpuCanvas {
         // 全 compute パス共通のレイアウト。binding は common.wgsl のコメントと対応:
         // 0/1 = 水 src/dst, 2/3 = 浮遊 src/dst, 4/5 = 沈着 src/dst, 6 = params, 7 = splats,
         // 8 = 紙ハイト(M1d、静的), 9 = 顔料個性 ρ/ω/γ(M3、静的),
-        // 10 = 清書ペンの線画(M4.5b、透水率の境界。velocity/diffuse だけが読む。他パスは宣言せず素通し)
+        // 10 = 清書ペンの線画(M4.5b、透水率の境界。velocity/diffuse だけが読む。他パスは宣言せず素通し)、
+        // 11 = アクティブタイル、12/13 = 塗る筆の中身と吸い込みの集計(splat / brush だけが宣言する)
         let compute_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("sim_bgl"),
             entries: &[
@@ -423,6 +424,17 @@ impl GpuCanvas {
                     11,
                     wgpu::ShaderStages::COMPUTE,
                     wgpu::BufferBindingType::Storage { read_only: true },
+                ),
+                // 塗る筆の中身と、紙から吸った量の集計(splat が読み・足し、brush が更新する)
+                buffer_entry(
+                    12,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Storage { read_only: false },
+                ),
+                buffer_entry(
+                    13,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Storage { read_only: false },
                 ),
             ],
         });
@@ -624,6 +636,7 @@ impl GpuCanvas {
             ],
         });
 
+        let brush = super::brush::GpuBrush::new(device);
         // src=current / dst=もう片方 の2方向分
         let make_compute_bg = |src: usize, dst: usize| {
             let mut entries = Vec::new();
@@ -663,6 +676,15 @@ impl GpuCanvas {
             entries.push(wgpu::BindGroupEntry {
                 binding: 11,
                 resource: active_buffer.as_entire_binding(),
+            });
+            // 塗る筆(src/dst に依らず固定)
+            entries.push(wgpu::BindGroupEntry {
+                binding: 12,
+                resource: brush.state.as_entire_binding(),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 13,
+                resource: brush.intake.as_entire_binding(),
             });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("sim_bg"),
@@ -924,6 +946,7 @@ impl GpuCanvas {
             tiledilate_layout,
             layers: Vec::new(),
             layer_palettes: Vec::new(),
+            brush,
             pipelines: None,
             current: 0,
             snapshot_format,

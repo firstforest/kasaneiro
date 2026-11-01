@@ -17,11 +17,12 @@
 | `lift_strength` | 0.3 | 0〜1 | リフト(tool=1)の基準強度。実効値は顔料の ω と紙ハイト(凸部ほど剥がれる)で変調 |
 | `lift_blot` | 0.5 | 0〜1 | リフト(tool=1)の吸い取り: 浮かせた後、1 splat で水・浮遊顔料・速度を取り去る割合(coverage×筆圧で変調。吸い取り tool=3 と同じ式)。浮かせるだけだと色は周りへ移るだけなので、その場から色を抜くために押さえて吸う。0 = 浮かせるだけ |
 | `paint_pickup` | 0.2 | 0〜1 | 色の溶かし戻し: 塗る筆が触れた沈着顔料を浮遊層へ戻す割合(coverage×筆圧×(1−ω) で変調。リフト tool=1 の弱い版)。筆の色と下の色が同じ浮遊層で混ざり、置いた境界が馴染む。水だけの筆(顔料 0)でなでるときはこれがぼかしの強さになる。feed splat 経由(筆の含み)では毎フレーム適用になるため 0.1 倍に減衰される。0=無効 |
-| `brush_charge` | 2.0 | 0〜5 秒 | 筆の含み: 塗る筆を置いたまま動かさなくても色水が流れ出続ける。満タンの筆ならこの秒数で中身の水が尽きる(CPU が毎フレーム feed splat を積む=目標水位への水補充(max)+`brush_pigment`×`CHARGE_PIGMENT`(=0.15、splat.wgsl の定数)×筆の中身の顔料。`Splat.feed` フラグで分岐)。動いているフレームは通常注入があるので積まない。0=無効 |
+| `brush_charge` | 2.0 | 0〜5 秒 | 筆の含み: 塗る筆を置いたまま動かさなくても色水が流れ出続ける。満タンの筆ならこの秒数で中身の水が尽きる(CPU が毎フレーム feed splat を積む=目標水位への水補充(max)+`brush_pigment`×`CHARGE_PIGMENT`(=0.15、splat.wgsl の定数)×筆の中身の顔料。`Splat.feed` フラグで分岐。筆の水を減らすのは brush.wgsl)。動いているフレームは通常注入があるので積まない。0=無効 |
 | `absorb_rate` | 0.5 | 0〜1 | 吸い取り(tool=3)の強さ: 1 splat で表面の自由水と浮遊顔料を取り除く割合(coverage×筆圧で変調)。浮遊顔料は水に乗っているだけなので水と同率で取れ、ω(染みつき)は関与しない。沈着顔料は紙に付いているので残る(剥がすのはリフト)。速度も同率で減衰=吸った水の運動量ごと持ち去る |
 | `brush_hold` | 2000 | 0〜5000 px | 含みの持ち: 塗る筆でこの長さをなぞると筆の中身(水と顔料)が半分になる。水と顔料は同じ割合で減るので濃さは変わらず、量だけが減る。0=減らない |
+| `brush_absorb` | 0.3 | 0〜1 | 塗る筆の吸い込み: 紙の水位が筆の水位(この筆で1回なぞったときの水位 = `brush_water` × 筆の水 W × 重なり `CROSS_RATIO`×r ÷ 間隔)より高いセルから、超えた分の水を 1 splat で `brush_absorb`×coverage×筆圧×(1−W) の割合で吸い、その水に浮いている顔料も同じ割合で持っていく(feed splat 経由は `FEED_ABSORB`=0.1 倍)。吸った量は brush.wgsl が「満タンの筆が一生で置く量」(筆跡1つの量 `brush_water`(顔料は `brush_pigment`)× 0.648πr² × `brush_hold` ÷ ln2 ÷ 間隔)を 1 として筆の中身に足す(水は満タンまで、顔料は `PIGMENT_MAX` で頭打ち)。置いた分以上は戻らないので、満タンに近い筆はほとんど変わらず、乾きかけの筆ほど吸った色に染まる。満タンの筆・空の筆・`brush_hold`=0(減らない筆)は吸わない。0=吸わない |
 
-**筆の中身**([crates/paint-core/src/load.rs](../crates/paint-core/src/load.rs) の `BrushLoad`): 塗る筆は水 W(1 = 満タン)と4スロットの顔料 c(1 = 標準の1回分)を持ち、splat ごとにその時点の中身を運ぶ(splat.wgsl が水に `brush_water`、顔料に `brush_pigment` を掛けて注ぐ)。濃さ = Σc ÷ W。中身を変えるのはツールバーの色・水・洗う(水も顔料も 0 の空の筆にする。空の筆の splat は splat.wgsl が何もしない)だけで、SimParams ではなく load.rs の定数で決まる:
+**筆の中身**([crates/paint-core/src/load.rs](../crates/paint-core/src/load.rs) の `BrushLoad`): 塗る筆は水 W(1 = 満タン)と4スロットの顔料 c(1 = 標準の1回分)を持つ。中身は GPU の筆バッファにあり、splat.wgsl が水に `brush_water`、顔料に `brush_pigment` を掛けて注ぐ。濃さ = Σc ÷ W。描いている間はなぞって減り(`brush_hold`)、置いたままで水を使い(`brush_charge`)、紙から吸い込む(`brush_absorb`)。中身を作るのはツールバーの色・水・洗う(水も顔料も 0 の空の筆にする。空の筆の splat は splat.wgsl が何もしない)で、量は SimParams ではなく load.rs の定数で決まる:
 
 | 定数 | 値 | 意味 |
 |---|---|---|
@@ -31,7 +32,7 @@
 | `DIP_KEEP` | 0.5 | 水スウォッチを押した瞬間に残る顔料の割合(水は満タンにする) |
 | `DIP_TAU` | 0.25 秒 | 水を押し続けている間に顔料が抜ける時定数 |
 | `CLEAN_EPS` | 0.02 | 顔料の合計がこれを下回ったら 0 に切る(いちばん濃い筆でも約 1.2 秒で透明) |
-| `FEED_MIN_WATER` | 0.02 | 水がこれを下回ったら feed splat を止める |
+| `FEED_MIN_WATER` | 0.02 | 水がこれを下回ったら feed splat を止める(brush.wgsl / splat.wgsl はプレリュード経由で同じ値を使う。`PIGMENT_MAX` も同じ) |
 
 自動補充(左パネルの「筆を下ろすたびに含み直す」、既定 on)は、最後に色・水・洗うで作った中身へ筆を下ろすたびに戻す。off なら前のストロークの残りから続く。
 
@@ -89,6 +90,10 @@ transfer.wgsl の実効式(per-channel、M3):
 | `WATER_GAMMA` | 2.0 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 水の毛細管の水依存カーブ: 流束の重み = max(両セル水量)^γ。max なのは乾きかけへ吸い込まれる向きを殺さないため |
 | `DIFFUSE_GAMMA` | 4.0 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 顔料の混ざりの水依存 γ: 拡散流束の重み = (水量平均)^γ。水たっぷり=自由に混ざる/引くと止まる |
 | `CHARGE_PIGMENT` | 0.15 | [splat.wgsl](../assets/shaders/splat.wgsl) | 筆の含みの feed splat 1フレームが注ぐ顔料の通常比。0 で水だけ |
+| `FEED_ABSORB` | 0.1 | [splat.wgsl](../assets/shaders/splat.wgsl) | feed splat の吸い込み(`brush_absorb`)の通常比。置いたままだと毎フレーム来るので弱める |
+| `FOOTPRINT_RATIO` | 0.648 | [common.wgsl](../assets/shaders/common.wgsl) | 筆跡1つの被覆の面積 ÷ πr²(coverage = 1 − smoothstep(0.6r, r, d) の円の積分)。満タンの筆が一生で置く量の見積もりに使う |
+| `CROSS_RATIO` | 1.6 | [common.wgsl](../assets/shaders/common.wgsl) | 筆跡1つの被覆を中心線に沿って積分した長さ ÷ r。× r ÷ splat の間隔 = 1回なぞったときに1セルへ重なる筆跡の数(r ≥ 4 で 6.4) |
+| `SPLAT_SPACING` | 0.25 | [sim.rs](../crates/paint-core/src/sim.rs)(プレリュードで WGSL へ) | splat の間隔 = 実効半径 × これ(下限 1px)。CPU のストローク補間と、WGSL の重なり・一生で置く量の見積もりが同じ値を使う |
 | `DEPOSIT_WET_FLOOR` | 0.1 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 水膜がある間(w ≥ DRY_POINT)の吸着倍率。0 にすると濡れている間は全く沈まない |
 | `DEPOSIT_DRY_POINT` | 0.35 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 吸着が立ち上がる水量しきい値(=水膜が切れる点)。上げるほど早く沈み始め、下げるほど流れている間は浮遊し続ける |
 
@@ -195,7 +200,7 @@ GPU へ渡す前に `physics_uniform()` が ρ・μ を 0 以上、ω・γ を 0
 2. [src/app/ui/](../src/app/ui/) の該当パネルにスライダー1行
 3. [assets/shaders/common.wgsl](../assets/shaders/common.wgsl) の `struct SimParams` に1行(Rust 側と同レイアウト。名前・順序・型の不一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検出する)
 
-**現在のレイアウト**: `SimParams` は 55 フィールド+パディング1(全て f32 / u32 の 4 バイト)= 224 バイト(16×14)。`SimParams` の末尾4バイトは `_pad_brush`(serde skip。WGSL には書かない)。`Splat` は 48 バイト(`pos`・`vel`・`pressure`・`feed`・`water`・`_pad`・`pigment: [f32; 4]`。vec4 を含むので WGSL の配列要素は 16 バイト整列で、`pigment` をオフセット 32 に置く)。
+**現在のレイアウト**: `SimParams` は 56 フィールド(全て f32 / u32 の 4 バイト)= 224 バイト(16×14)でパディングなし。`Splat` は 32 バイト(`pos`・`vel`・`pressure`・`feed`・`scale`・`_pad`)。筆の中身 `BrushState` は 32 バイト(`water`・`_pad`×3・`pigment: [f32; 4]`。vec4 を含むので `pigment` をオフセット 16 に置く)。
 
 **16 バイト整列の保ち方**: uniform buffer は Rust の構造体を bytemuck で生バイトのまま渡すので、全体サイズを 16 の倍数に保つ(`params_size_aligned` テスト)。次にフィールドを足すとき 16 の倍数から外れるなら、Rust 側の末尾に `#[serde(skip)]` のパディング(例: 1個足すなら `_pad: [f32; 3]`)を置き、以降はそのパディングを1つずつ実フィールドへ置き換えていく。パディングは WGSL 側の struct には書かない([tests/sim_params_layout.rs](../tests/sim_params_layout.rs) は直列化されるフィールドの名前・順序・型を common.wgsl と突き合わせ、直列化されない末尾 16 バイト未満だけをパディングとして許す)。
 

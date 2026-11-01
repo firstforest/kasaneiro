@@ -10,8 +10,8 @@
 //! バイナリ crate 側(src/replay.rs)に置く。ここはその永続化が使う純粋なモデルだけを持つ。
 
 use crate::brush::StrokeState;
-use crate::load::BrushLoad;
-use crate::sim::{SimParams, Splat};
+use crate::load::{BrushFrame, BrushLoad};
+use crate::sim::{SPLAT_SPACING, SimParams, Splat};
 use crate::tool::WetTool;
 use serde::{Deserialize, Serialize};
 
@@ -118,8 +118,6 @@ pub struct Player {
     point_idx: usize,
     stroke_state: StrokeState,
     in_stroke: bool,
-    /// 再生中のストロークの筆の中身(塗るストロークでなぞるほど減る)
-    load: BrushLoad,
     /// 直前の splat 位置(筆の中身を減らす長さの計測用)
     last_splat: Option<[f32; 2]>,
 }
@@ -133,17 +131,22 @@ impl Player {
             point_idx: 0,
             stroke_state: StrokeState::default(),
             in_stroke: false,
-            load: BrushLoad::empty(),
             last_splat: None,
         }
     }
 
-    /// 1刻み分のポインタ入力を再生して splat を out に積む。
+    /// 1刻み分のポインタ入力を再生して splat を out に積み、筆の中身への指示を brush に足す
+    /// (塗るストロークの始めに記録した中身へ置き換え、なぞった長さで減らす)。
     /// ライブ描画と同じ経路(StrokeState → splat.wgsl)を通すため、現在のブラシ
     /// パラメータがそのまま効く。顔料スロットとツールだけは記録値で params を上書きする。
     /// UI 側が毎フレーム params.tool を選択中ツールで書き直すため、ストローク中は
     /// 毎刻み記録値を書き直す。再生し終えたら false を返す。
-    pub fn advance(&mut self, params: &mut SimParams, out: &mut Vec<Splat>) -> bool {
+    pub fn advance(
+        &mut self,
+        params: &mut SimParams,
+        out: &mut Vec<Splat>,
+        brush: &mut BrushFrame,
+    ) -> bool {
         if self.in_stroke
             && let Some(stroke) = self.recording.strokes.get(self.stroke_idx)
         {
@@ -172,17 +175,18 @@ impl Player {
                 params.brush_channel = stroke.channel;
                 // ツールも記録値で上書き(リフト/消去ストロークを正しく再現する。M3)
                 params.tool = stroke.tool;
-                self.load = stroke.brush_load();
+                if stroke.tool == WetTool::Paint.gpu_id() {
+                    brush.set_load(stroke.brush_load());
+                }
                 self.last_splat = None;
             }
             // サンプル間隔は筆圧を反映した実効半径から(ライブ描画 src/app/mod.rs と同じ式)
-            let spacing = (params.radius_at(point.pressure) * 0.25).max(1.0);
+            let spacing = (params.radius_at(point.pressure) * SPLAT_SPACING).max(1.0);
             let start = out.len();
             self.stroke_state
                 .add_motion(point.pos, point.pressure, spacing, out);
             if stroke.tool == WetTool::Paint.gpu_id() {
-                self.load
-                    .load_splats(&mut out[start..], &mut self.last_splat, params.brush_hold);
+                brush.drag(&mut out[start..], &mut self.last_splat, params.brush_hold);
             }
             self.point_idx += 1;
         }
@@ -211,7 +215,7 @@ mod tests {
         let mut out = Vec::new();
 
         // 刻み0: 始点の splat + 顔料スロット・ツールの上書き
-        assert!(player.advance(&mut params, &mut out));
+        assert!(player.advance(&mut params, &mut out, &mut BrushFrame::default()));
         assert_eq!(params.brush_channel, 2);
         assert_eq!(params.tool, 1);
         assert_eq!(out.len(), 1);
@@ -219,10 +223,10 @@ mod tests {
 
         // 刻み1: 補間された splat 列。以降は入力が尽きて終了
         out.clear();
-        player.advance(&mut params, &mut out);
+        player.advance(&mut params, &mut out, &mut BrushFrame::default());
         assert!(!out.is_empty());
         assert_eq!(out.last().unwrap().pos, [20.0, 10.0]);
-        assert!(!player.advance(&mut params, &mut out));
+        assert!(!player.advance(&mut params, &mut out, &mut BrushFrame::default()));
     }
 
     /// UI が毎フレーム params.tool / brush_channel を書き直しても、ストローク中は
@@ -241,20 +245,20 @@ mod tests {
         let mut params = SimParams::default();
         let mut out = Vec::new();
 
-        player.advance(&mut params, &mut out);
+        player.advance(&mut params, &mut out, &mut BrushFrame::default());
         for _ in 0..2 {
             // UI の選択ツール・顔料での上書き(tools.rs が advance より先に走る)
             params.tool = 0;
             params.brush_channel = 0;
             out.clear();
-            player.advance(&mut params, &mut out);
+            player.advance(&mut params, &mut out, &mut BrushFrame::default());
             assert!(!out.is_empty());
             assert_eq!(params.tool, 1);
             assert_eq!(params.brush_channel, 2);
         }
     }
 
-    /// 塗るストロークは記録した筆の中身で再生され、load の無い記録は標準の1回分になる
+    /// 塗るストロークは記録した筆の中身で始まり、load の無い記録は標準の1回分になる
     #[test]
     fn replay_paints_with_recorded_load() {
         let mut loaded = BrushLoad::standard(1);
@@ -270,10 +274,24 @@ mod tests {
         let mut player = Player::new(recorder.finish());
         let mut params = SimParams::default();
         let mut out = Vec::new();
-        player.advance(&mut params, &mut out);
-        assert_eq!(out[0].pigment, [0.0, 1.0, 0.0, 1.0]);
-        out.clear();
-        player.advance(&mut params, &mut out);
-        assert_eq!(out[0].pigment, [0.0, 0.0, 1.0, 0.0]);
+        let mut brush = BrushFrame::default();
+        player.advance(&mut params, &mut out, &mut brush);
+        assert_eq!(brush.set, Some(loaded));
+        let mut brush = BrushFrame::default();
+        player.advance(&mut params, &mut out, &mut brush);
+        assert_eq!(brush.set, Some(BrushLoad::standard(2)));
+    }
+
+    /// 削りなど塗る筆以外のストロークは筆の中身に触れない
+    #[test]
+    fn replay_other_tools_keep_brush() {
+        let mut recorder = Recorder::new();
+        recorder.begin_stroke(0, 1, None);
+        recorder.add_point([10.0, 10.0], 1.0);
+        recorder.end_stroke();
+        let mut player = Player::new(recorder.finish());
+        let mut brush = BrushFrame::default();
+        player.advance(&mut SimParams::default(), &mut Vec::new(), &mut brush);
+        assert_eq!(brush, BrushFrame::default());
     }
 }
