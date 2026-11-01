@@ -116,6 +116,12 @@ impl HeadlessCanvas {
         self.canvas.fast_dry(&self.device, &self.queue)
     }
 
+    /// 下から `k` 番目の乾燥レイヤーの濃度倍率を変える
+    pub fn set_layer_density(&mut self, k: usize, density: f32) {
+        self.canvas.layers[k].density = density;
+        self.canvas.sync_layers(&self.queue);
+    }
+
     /// 乾燥レイヤーの枚数
     pub fn layer_count(&self) -> usize {
         self.canvas.layers.len()
