@@ -29,6 +29,15 @@
 // 筆の含み(brush_charge)の調整済み定数(docs/note/05 §4)。再調整はホットリロード(H1)で直接編集
 const CHARGE_PIGMENT: f32 = 0.15; // feed splat 1フレームが注ぐ顔料の通常 splat に対する比
 
+// 4スロットの顔料個性 ω(染みつき)・γ(粒状)をベクトルにまとめる
+fn pigment_omega() -> vec4f {
+    return vec4f(pigment[0].y, pigment[1].y, pigment[2].y, pigment[3].y);
+}
+
+fn pigment_gamma() -> vec4f {
+    return vec4f(pigment[0].z, pigment[1].z, pigment[2].z, pigment[3].z);
+}
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
     let dims = textureDimensions(src_water);
@@ -92,15 +101,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             if (dist < radius) {
                 wet = 1.0;
             }
-            for (var c = 0u; c < 4u; c++) {
-                let omega = pigment[c].y;
-                let gamma = pigment[c].z;
-                let peak_gate = max(1.0 + gamma * (2.0 * h - 1.0), 0.0);
-                let frac = clamp(params.lift_strength * coverage * press * (1.0 - omega) * peak_gate, 0.0, 1.0);
-                let lifted = dep[c] * frac;
-                dep[c] -= lifted;
-                susp[c] += lifted;
-            }
+            // (vec4 の成分を動的インデックスで書くと FXC が外側ループの展開を試みて失敗するので、
+            //  4スロットまとめてベクトル演算で書く)
+            let peak_gate = max(vec4f(1.0) + pigment_gamma() * (2.0 * h - 1.0), vec4f(0.0));
+            let frac = clamp(params.lift_strength * coverage * press * (vec4f(1.0) - pigment_omega()) * peak_gate, vec4f(0.0), vec4f(1.0));
+            let lifted = dep * frac;
+            dep -= lifted;
+            susp += lifted;
         } else if (params.tool == 4u) {
             // 吸い取り(乾いた筆): 表面の自由水と、水に浮いている顔料を同じ割合で取り除く。
             // 浮遊顔料は水に乗っているだけなので、吸った水の顔料濃度=セルの濃度、
@@ -125,12 +132,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             // 溶かし戻し: リフト(tool=1)の弱い版・paint_pickup と同じレシピ。
             // 紙ハイトのゲートは掛けない(ぼかしは均したい操作で、紙目の強調は不要)。
             // ステイニング ω の顔料は (1−ω) で剥がれず残る = 描線の芯は保たれる
-            for (var c = 0u; c < 4u; c++) {
-                let frac = clamp(params.water_lift * coverage * press * (1.0 - pigment[c].y), 0.0, 1.0);
-                let picked = dep[c] * frac;
-                dep[c] -= picked;
-                susp[c] += picked;
-            }
+            let frac = clamp(params.water_lift * coverage * press * (vec4f(1.0) - pigment_omega()), vec4f(0.0), vec4f(1.0));
+            let picked = dep * frac;
+            dep -= picked;
+            susp += picked;
         } else {
             // 描画(既定): 水+初速+顔料の注入。量は splat が運ぶ筆の中身(s.water / s.pigment、
             // 単位は満タン・標準の1回分)に brush_water / brush_pigment を掛けたもの。
@@ -163,12 +168,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             // feed splat は毎フレーム来るので弱める(そのままだと1秒で筆の下が全部剥がれる)
             if (params.paint_pickup > 0.0 && coverage > 0.0) {
                 let pickup_k = params.paint_pickup * select(1.0, 0.1, feed);
-                for (var c = 0u; c < 4u; c++) {
-                    let frac = clamp(pickup_k * coverage * press * (1.0 - pigment[c].y), 0.0, 1.0);
-                    let picked = dep[c] * frac;
-                    dep[c] -= picked;
-                    susp[c] += picked;
-                }
+                let frac = clamp(pickup_k * coverage * press * (vec4f(1.0) - pigment_omega()), vec4f(0.0), vec4f(1.0));
+                let picked = dep * frac;
+                dep -= picked;
+                susp += picked;
             }
         }
     }
