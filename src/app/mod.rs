@@ -272,7 +272,7 @@ impl PaintApp {
             .and_then(|s| s.get_string("auto_refill"))
             .map(|v| v == "true")
             .unwrap_or(true);
-        // 筆の中身(自動補充の戻り先)を前回終了時のまま復元する。初回は洗った筆
+        // 筆の中身(自動補充の戻り先)を前回終了時のまま復元する。初回は空の筆
         let brush_refill = cc
             .storage
             .and_then(|s| s.get_string("brush_load"))

@@ -204,7 +204,7 @@ paint:
 | ファイル | 役割 |
 |---|---|
 | common.wgsl | 共通定義(SimParams / Splat 構造体、濡れ判定、バイリニア補間、`tile_index_of`)。各シェーダーの先頭に連結する(§11) |
-| splat.wgsl | ブラシ入力。tool(描画 / リフト / 消去 / ぼかし筆 / 吸い取り)で分岐。描画は splat が運ぶ筆の中身(`water` × brush_water、`pigment` vec4 × brush_pigment)を4スロットへ同時に注ぐ。feed splat(§9)は目標水位への補充+少量の顔料 |
+| splat.wgsl | ブラシ入力。tool(描画 / リフト / 消去 / 吸い取り)で分岐。描画は splat が運ぶ筆の中身(`water` × brush_water、`pigment` vec4 × brush_pigment)を4スロットへ同時に注ぐ。feed splat(§9)は目標水位への補充+少量の顔料 |
 | velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率を速度場・にじみ拡張に掛ける |
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
 | flowout.wgsl | FlowOutward(縁の水を抜く)。既定オフ(edge_eta 0 で dispatch ごと省略) |

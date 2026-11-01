@@ -29,6 +29,14 @@ impl PaintApp {
         );
         ui.add(egui::Slider::new(&mut self.params.rewet_water, 0.0..=2.0).text("再湿潤の水量"));
 
+        // 筆の濃さの基準量。普段の濃淡は色を取る長さと水で作るので、通常 UI には出さない
+        ui.separator();
+        ui.heading("筆");
+        ui.add(
+            egui::Slider::new(&mut self.params.brush_pigment, 0.0..=1.0).text("色1回分の顔料量"),
+        )
+        .on_hover_text("色スウォッチを1回押したときに筆へ入る顔料の基準量(濃さ ×1.0 の濃さ)");
+
         // 筆圧 (M1.5)
         ui.separator();
         ui.heading("筆圧");

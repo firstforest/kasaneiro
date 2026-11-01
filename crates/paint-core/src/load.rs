@@ -7,7 +7,7 @@
 //! 中身を変えるのはツールバーのスウォッチだけ:
 //! - 色: 押した瞬間に1回分、押している間も少しずつ足す(濃くなる)
 //! - 水: 押した瞬間に顔料を半分、押している間も水と入れ替わって抜けていく(薄くなる・洗える)
-//! - 洗う: 顔料 0・水満タン
+//! - 洗う: 水も顔料も 0(空の筆)。続けて水に浸せば水だけの筆になる
 //!
 //! 描くと中身が減る(`brush_hold` px なぞると半分)。水と顔料は同じ割合で減るので濃さは変わらない。
 
@@ -39,22 +39,30 @@ pub struct BrushLoad {
 
 impl Default for BrushLoad {
     fn default() -> Self {
-        Self::clean()
+        Self::empty()
     }
 }
 
 impl BrushLoad {
-    /// 洗った筆: 水満タン・顔料なし
-    pub fn clean() -> Self {
+    /// 空の筆(洗った直後・起動時): 水も顔料もなく、塗っても何も置かない
+    pub fn empty() -> Self {
+        Self {
+            water: 0.0,
+            pigment: [0.0; 4],
+        }
+    }
+
+    /// 水だけの筆: 水満タン・顔料なし
+    pub fn water_only() -> Self {
         Self {
             water: 1.0,
             pigment: [0.0; 4],
         }
     }
 
-    /// 洗った筆に色を1回分取った状態(スロット ch の標準の濃さ)
+    /// 空の筆に色を1回分取った状態(スロット ch の標準の濃さ)
     pub fn standard(channel: u32) -> Self {
-        let mut load = Self::clean();
+        let mut load = Self::empty();
         load.take_pigment(channel, TAKE_DOSE);
         load
     }
@@ -104,7 +112,7 @@ impl BrushLoad {
     }
 
     pub fn wash(&mut self) {
-        *self = Self::clean();
+        *self = Self::empty();
     }
 
     /// 水と顔料を同じ割合 k で残す(濃さは変わらない)
@@ -197,6 +205,17 @@ mod tests {
         }
         assert_eq!(load.pigment, [0.0; 4]);
         assert_eq!(load.water, 1.0);
+    }
+
+    /// 洗うと空になり、水に浸すと水だけの筆になる
+    #[test]
+    fn wash_empties_then_dip_gives_water_only() {
+        let mut load = BrushLoad::standard(2);
+        load.wash();
+        assert_eq!(load, BrushLoad::empty());
+        assert_eq!(load.concentration(), 0.0);
+        load.dip_water(DIP_KEEP);
+        assert_eq!(load, BrushLoad::water_only());
     }
 
     /// なぞると hold px で半分になり、濃さは保たれる。各 splat には減る前の中身が載る

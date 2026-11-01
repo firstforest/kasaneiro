@@ -133,7 +133,7 @@ impl Player {
             point_idx: 0,
             stroke_state: StrokeState::default(),
             in_stroke: false,
-            load: BrushLoad::clean(),
+            load: BrushLoad::empty(),
             last_splat: None,
         }
     }

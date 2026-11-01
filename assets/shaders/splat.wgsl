@@ -1,15 +1,13 @@
-// splat.wgsl — ブラシ入力の compute パス。ツール(params.tool)で3分岐する(M3):
+// splat.wgsl — ブラシ入力の compute パス。ツール(params.tool)で4分岐する:
 //   0 = 描画: 筆の中身(splat が運ぶ水と4色の顔料)を置く(M1a/M1b)。置いた水は毛細管拡散(diffuse.wgsl、note/05)が
-//       濡れた紙を伝ってひとりでに広げ、色の溶かし戻し(paint_pickup)で下の色と馴染む
+//       濡れた紙を伝ってひとりでに広げ、色の溶かし戻し(paint_pickup)で下の色と馴染む。
+//       水だけの筆(顔料 0)なら水を置いて下の色を溶かすので、先濡らしとぼかしもこの分岐が担う。
+//       空の筆(水 0)は何もしない
 //   1 = リフト(削り): 沈着顔料を浮遊層へ戻し、その場を濡らして流す。ステイニング顔料(ω)は
 //       残り、紙の凸部から先に剥がれる(粒状化 γ の顔料は谷に残る) — Curtis の削りレシピ
 //   2 = 消去: 湿レイヤーの水・速度・顔料・濡れマスクを機械的にゼロへ(紙の白まで戻す完全消去)
-//   3 = ぼかし筆: 顔料を注がず水を置き、ブラシ下の沈着顔料を浮遊層へ溶かし戻す(water_lift)。
-//       馴染ませは毛細管拡散+γ重み顔料拡散の物理に任せる(2026-07-09 に箱ぼかしの均しを廃止して
-//       一次原理化)
-//   4 = 吸い取り: 乾いた筆(thirsty brush)。表面の自由水と、水に浮いている顔料を同率で
-//       取り除く(absorb_rate)。沈着顔料は紙に付いているので残る = リフトと逆方向の対。
-//       旧ならしの跡地(2026-07-09 廃止)を 2026-07-10 に再利用
+//   3 = 吸い取り: 乾いた筆(thirsty brush)。表面の自由水と、水に浮いている顔料を同率で
+//       取り除く(absorb_rate)。沈着顔料は紙に付いているので残る = リフトと逆方向の対
 // 先頭に common.wgsl が連結される(SimParams / Splat / ヘルパー関数はそちら)。
 
 @group(0) @binding(0) var src_water: texture_2d<f32>;
@@ -108,7 +106,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             let lifted = dep * frac;
             dep -= lifted;
             susp += lifted;
-        } else if (params.tool == 4u) {
+        } else if (params.tool == 3u) {
             // 吸い取り(乾いた筆): 表面の自由水と、水に浮いている顔料を同じ割合で取り除く。
             // 浮遊顔料は水に乗っているだけなので、吸った水の顔料濃度=セルの濃度、
             // つまり水と同率で取れる(ω=染みつきは沈着の性質なのでここでは関与しない)。
@@ -119,23 +117,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             water *= 1.0 - frac;
             vel *= 1.0 - frac;
             susp *= 1.0 - frac;
-        } else if (params.tool == 3u) {
-            // ぼかし筆: 顔料・初速は注入せず、水を置いて下の色を溶かし戻す。
-            //   用途1: 大きな領域を先に濡らす → 後で置いた顔料筆が毛細管拡散で滑らかに広がる
-            //   用途2: 境界をなでる → 沈着顔料が浮遊層へ戻り、水量に応じた拡散でひとりでに馴染む
-            // 水は「足す」のではなく目標水位まで「上げる」(max)。なでても水位が積み上がらない。
-            let target_water = coverage * params.brush_water * mix(1.0, press, params.pressure_water);
-            water = max(water, target_water);
-            if (dist < radius) {
-                wet = 1.0;
-            }
-            // 溶かし戻し: リフト(tool=1)の弱い版・paint_pickup と同じレシピ。
-            // 紙ハイトのゲートは掛けない(ぼかしは均したい操作で、紙目の強調は不要)。
-            // ステイニング ω の顔料は (1−ω) で剥がれず残る = 描線の芯は保たれる
-            let frac = clamp(params.water_lift * coverage * press * (vec4f(1.0) - pigment_omega()), vec4f(0.0), vec4f(1.0));
-            let picked = dep * frac;
-            dep -= picked;
-            susp += picked;
         } else {
             // 描画(既定): 水+初速+顔料の注入。量は splat が運ぶ筆の中身(s.water / s.pigment、
             // 単位は満タン・標準の1回分)に brush_water / brush_pigment を掛けたもの。
@@ -143,9 +124,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             // 注入の仕事ではなく、顔料個性の差(粒の細かさ μ・密度 ρ・染みつき ω)が起こす物理。
             // s.feed > 0.5 は「筆の含み」splat(置いたまま動かない間、CPU が毎フレーム積む):
             // 一括注入(+=)を毎フレーム繰り返すと溢れるので、水は目標水位への max 補充
-            // (なでても積み上がらない。ぼかし筆と同じ流儀)、顔料は CHARGE_PIGMENT ぶんだけ注ぐ。
+            // (なでても積み上がらない)、顔料は CHARGE_PIGMENT ぶんだけ注ぐ。
             // 補充され続ける水を毛細管拡散(diffuse.wgsl)が外へ運ぶので、
             // 「筆に含まれた色水が置いている間ずっと流れ出て広がる」動きになる
+            // 空の筆(洗った直後)は濡らしも溶かし戻しもしない
+            if (s.water <= 0.0) {
+                continue;
+            }
             let feed = s.feed > 0.5;
             let w_in = coverage * params.brush_water * s.water * mix(1.0, press, params.pressure_water);
             var pig = coverage * params.brush_pigment * mix(1.0, press, params.pressure_pigment);

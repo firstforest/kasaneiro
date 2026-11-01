@@ -98,7 +98,7 @@ impl PaintApp {
     /// 水彩レイヤーのツール(M1〜M4): ツール選択・筆の中身・ブラシスライダー
     pub(in crate::app) fn brush_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("水彩ブラシ");
-        // 1列(折り返しあり)に「塗る」の色4つ+水+洗う、続けて削り/消す/ぼかし筆/吸い取り。
+        // 1列(折り返しあり)に「塗る」の色4つ+水+洗う、続けて削り/消す/吸い取り。
         // 色・水・洗うは筆の中身を作る操作で、押すと塗るツールにもなる。
         // 選択状態: 色は塗るツールのとき筆に入っている色、他の4ツールは tool==Wet(wt)。
         // F2: ホバーは平易な日本語(数式記号は顔料の詳細設定側に残す)
@@ -204,7 +204,7 @@ impl PaintApp {
             }
             if ui
                 .add(egui::Button::new("洗う").min_size(egui::vec2(0.0, 28.0)))
-                .on_hover_text("筆を洗う: 色をすべて落とし、きれいな水を満たす")
+                .on_hover_text("筆を洗う: 水も色もすべて落として空の筆にする(リセット)。続けて「水」を押すと水だけの筆になる")
                 .clicked()
             {
                 self.brush_load.wash();
@@ -213,7 +213,7 @@ impl PaintApp {
             // 「筆の中身を作る操作」と「削り以降の4ツール」の意味グループを小さいギャップで区切る
             // (horizontal_wrapped の折返し挙動を壊さないよう要素の追加はしない)
             ui.add_space(8.0);
-            // 削り/消す/ぼかし筆/吸い取り: 枠付きの文字ボタン(Paint はスウォッチ側で出すので飛ばす)。
+            // 削り/消す/吸い取り: 枠付きの文字ボタン(Paint はスウォッチ側で出すので飛ばす)。
             // 色スウォッチと高さ 28px を揃え、選択中は F17 のスウォッチ選択太枠と整合する
             // selection 色の塗り+枠で明示する
             for wt in WetTool::ALL {
@@ -267,7 +267,6 @@ impl PaintApp {
         ui.add(egui::Slider::new(&mut self.params.brush_water, 0.0..=2.0).text("水量"));
         ui.add(egui::Slider::new(&mut self.params.brush_velocity, 0.0..=2.0).text("筆の勢い"))
             .on_hover_text("初速: ストロークが水に与える初期速度。上げるほど置いた色が流れ出す");
-        ui.add(egui::Slider::new(&mut self.params.brush_pigment, 0.0..=1.0).text("顔料量"));
         // F5: ツール固有スライダーは、そのツールを選んでいるときだけ出す(通常時の壁を減らす)
         match self.tool.wet() {
             Some(WetTool::Paint) => {
@@ -299,22 +298,13 @@ impl PaintApp {
                         .text("下の色を溶かす"),
                 )
                 .on_hover_text(
-                    "筆が触れた沈着顔料を浮かせて筆の色と混ぜる割合。\
-                         染みつき(ω)が強い色は剥がれず残る",
+                    "筆が触れた沈着顔料を浮かせて筆の色と混ぜる割合。水だけの筆で\
+                     なでるときは、これがぼかしの強さになる。染みつき(ω)が強い色は剥がれず残る",
                 );
             }
             Some(WetTool::Lift) => {
                 ui.add(
                     egui::Slider::new(&mut self.params.lift_strength, 0.0..=1.0).text("削りの強さ"),
-                );
-            }
-            Some(WetTool::WaterBrush) => {
-                ui.add(
-                    egui::Slider::new(&mut self.params.water_lift, 0.0..=1.0).text("ぼかしの強さ"),
-                )
-                .on_hover_text(
-                    "筆が触れた沈着顔料を溶かして浮かせる割合。浮いた色は水の量に応じて\
-                         ひとりでに混ざって馴染む。染みつき(ω)が強い色は剥がれず残る",
                 );
             }
             Some(WetTool::Absorb) => {

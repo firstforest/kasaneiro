@@ -54,10 +54,9 @@ struct SimParams {
     dry_gran: f32,
     dry_edge: f32,
     rewet_water: f32,
-    tool: u32,           // M3: 0=描画 / 1=リフト(削り) / 2=消去 / 3=ぼかし筆 / 4=吸い取り(旧ならし跡地)
+    tool: u32,           // 0=描画 / 1=リフト(削り) / 2=消去 / 3=吸い取り
     lift_strength: f32,  // M3: リフトの基準強度
     compose_mode: u32,   // M3: 0=multiply / 1=KM(R/T 光学合成)
-    water_lift: f32,     // ぼかし筆(tool=3): 沈着顔料を浮遊層へ溶かし戻す率(馴染ませは拡散の物理が担う)
     line_mode: u32,        // M4.5a: ラスタ線画 0=鉛筆 / 1=ペン / 2=ハイライト(予約)
     line_eraser: u32,      // M4.5a: ラスタ消しゴム 0=描画 / 1=減算
     pencil_radius: f32,    // M4.5a: 鉛筆の半径(brush_radius と独立)
@@ -74,7 +73,7 @@ struct SimParams {
     active_tiles: u32,     // M6: アクティブタイル最適化 0=全面計算 / 1=濡れ+ブラシのタイルだけ計算
     paint_pickup: f32,      // 色の溶かし戻し: 筆が触れた沈着顔料を浮遊層へ戻す割合(0=無効)
     brush_charge: f32,      // 筆の含み(秒): 置いたまま色水が流れ出続ける時間(CPU 側で消費。0=無効)
-    absorb_rate: f32,       // 吸い取り(tool=4): 1 splat で自由水+浮遊顔料を取り除く割合(沈着は残る)
+    absorb_rate: f32,       // 吸い取り(tool=3): 1 splat で自由水+浮遊顔料を取り除く割合(沈着は残る)
     brush_hold: f32,        // 含みの持ち(px): なぞると筆の中身が半分になる長さ(CPU 側で消費。0=減らない)
 };
 

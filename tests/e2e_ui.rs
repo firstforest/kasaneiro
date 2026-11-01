@@ -144,7 +144,7 @@ fn mouse_drag_paints_on_canvas() {
     );
 }
 
-/// 筆の中身で濃さを描き分けられる: 青を取った線 > 水に浸して薄めた線 > 洗った筆の線(ほぼ紙の白)。
+/// 筆の中身で濃さを描き分けられる: 青を取った線 > 水に浸して薄めた線 > 洗って水だけにした筆の線(ほぼ紙の白)。
 /// 自動補充(既定 on)は最後に作った中身へ戻すので、取り直した直後の線はその濃さで引ける
 #[test]
 fn brush_load_controls_density() {
@@ -156,6 +156,7 @@ fn brush_load_controls_density() {
     frames(&mut harness, 2);
     mouse_drag(&mut harness, 0.2, 0.8, 0.5);
     harness.get_by_label("洗う").click();
+    harness.get_by_label("水").click();
     frames(&mut harness, 2);
     mouse_drag(&mut harness, 0.2, 0.8, 0.8);
     frames(&mut harness, 60);
@@ -177,7 +178,10 @@ fn brush_load_controls_density() {
         ink(colors[1]) > ink(colors[2]) + 0.03,
         "薄めた線が水の線と変わらない: {ctx}"
     );
-    assert!(hsv(colors[2]).1 < 0.1, "洗った筆で色が乗った: {ctx}");
+    assert!(
+        hsv(colors[2]).1 < 0.1,
+        "洗って水だけにした筆で色が乗った: {ctx}"
+    );
 }
 
 /// ペンの筆圧が線の濃さ・太さに効く(弱い筆圧の線は強い筆圧の線より細く薄い)

@@ -40,21 +40,17 @@ pub enum WetTool {
     Lift,
     /// 湿レイヤーの水・顔料をゼロへ(完全消去。M3)
     Erase,
-    /// 水を置き、ブラシ下の沈着顔料を溶かし戻してぼかす(M4 → 2026-07-09 に一次原理化。
-    /// 均しの箱ぼかしは廃止し、馴染ませは毛細管拡散+γ重み顔料拡散の物理に任せる)
-    WaterBrush,
     /// 乾いた筆(thirsty brush): 表面の自由水と、水に浮いている顔料を吸い取る。
-    /// 沈着顔料は紙に付いているので残る(剥がすのはリフト=削り)。ぼかし筆の逆方向の水管理ツール
+    /// 沈着顔料は紙に付いているので残る(剥がすのはリフト=削り)
     Absorb,
 }
 
 impl WetTool {
     /// UI・記録が回すための全列挙(順序 = ツールバーの並び)
-    pub const ALL: [WetTool; 5] = [
+    pub const ALL: [WetTool; 4] = [
         WetTool::Paint,
         WetTool::Lift,
         WetTool::Erase,
-        WetTool::WaterBrush,
         WetTool::Absorb,
     ];
 
@@ -65,9 +61,7 @@ impl WetTool {
             WetTool::Paint => 0,
             WetTool::Lift => 1,
             WetTool::Erase => 2,
-            WetTool::WaterBrush => 3,
-            // 4 は旧ならし(2026-07-09 廃止)の跡地を再利用(リリース前につき互換考慮なし)
-            WetTool::Absorb => 4,
+            WetTool::Absorb => 3,
         }
     }
 
@@ -84,7 +78,6 @@ impl WetTool {
             WetTool::Paint => "水と顔料を置いて描く基本のブラシ",
             WetTool::Lift => "乾いた色を水で戻して薄くする削りツール",
             WetTool::Erase => "水・顔料を消して紙の白まで戻す完全消去",
-            WetTool::WaterBrush => "水だけを塗り、下の色を溶かしてぼかす",
             WetTool::Absorb => "乾いた筆で浮いた色水を吸い取る",
         }
     }
@@ -125,7 +118,6 @@ impl ToolInfo for WetTool {
             WetTool::Paint => "塗る",
             WetTool::Lift => "削り",
             WetTool::Erase => "消す",
-            WetTool::WaterBrush => "ぼかし筆",
             WetTool::Absorb => "吸い取り",
         }
     }
@@ -133,14 +125,13 @@ impl ToolInfo for WetTool {
     fn hint(&self) -> &'static str {
         // 冒頭に一言で効果、続けて仕組み(専門語は末尾)。選択中ツールの説明として常時表示もされる
         match self {
-            WetTool::Paint => "水と顔料を置いて描く基本のブラシ。",
+            WetTool::Paint => {
+                "筆の中身(水と顔料)を置いて描く基本のブラシ。水だけの筆(洗う → 水)で塗ると、①広い領域を先に濡らす ②境界をなでて下の色を溶かし、ぼかす こともできる"
+            }
             WetTool::Lift => {
                 "乾いた色を水で戻して薄くする削りツール。再湿潤して沈着顔料を浮遊層へ戻す(リフト)。染みつきの強い顔料は残り、紙の凸部から先に剥がれる"
             }
             WetTool::Erase => "水・顔料をその場で消して紙の白まで戻す完全消去。",
-            WetTool::WaterBrush => {
-                "色を置かずに水だけ塗り、下の沈着した色を溶かして浮かせる。浮いた色は水の量に応じてひとりでに混ざって馴染む。①広い領域を先に濡らす ②境界をなでてぼかす(なでても濃くならない。ぼかしの強さ=溶かす量。染みつきの強い顔料は残る)"
-            }
             WetTool::Absorb => {
                 "乾いた筆やスポンジのように、まだ乾いていない水と浮いている色を吸い取る。強く押すほど・なでるほど多く吸う。紙に沈着した色は残る(剥がしたいときは「削り」)。①にじみすぎた水たまりを回収 ②ハイライトの白抜き ③水際のエッジを整える"
             }
@@ -179,8 +170,6 @@ mod tests {
         }
         assert_eq!(WetTool::from_gpu_id(99), None);
         assert_eq!(WetTool::try_from(99u32), Err(99));
-        // 4 = 旧ならし(2026-07-09 廃止)の跡地を吸い取りが再利用している
-        assert_eq!(WetTool::from_gpu_id(4), Some(WetTool::Absorb));
     }
 
     /// ラスタツールは流体経路に流れない(wet() が None)= 型が経路を保証する
