@@ -4,6 +4,7 @@
 use crate::app::PaintApp;
 use crate::gpu::hot_reload::shader_dir;
 use crate::replay::{self, Recorder, Recording};
+use crate::video::{self, VideoJob, VideoSettings};
 use eframe::egui;
 
 impl PaintApp {
@@ -64,16 +65,92 @@ impl PaintApp {
                 replay_now = Some((recording, self.palette.clone()));
             }
         }
-        if let Some(name) = self.replay_ui.store.list_rows(ui, "▶ 再生") {
-            match replay::load(&name) {
-                Ok(stored) => replay_now = Some((stored.recording, stored.palette)),
-                Err(e) => self.status_msg = Some(e),
-            }
+        // 保存済み一覧: 行ごとに再生と動画書き出し
+        let mut video_name: Option<String> = None;
+        let exporting = self.replay_ui.video.is_some();
+        for name in &self.replay_ui.store.list {
+            ui.horizontal(|ui| {
+                if ui.button("▶ 再生").clicked() {
+                    match replay::load(name) {
+                        Ok(stored) => replay_now = Some((stored.recording, stored.palette)),
+                        Err(e) => self.status_msg = Some(e),
+                    }
+                }
+                if ui
+                    .add_enabled(!exporting, egui::Button::new("🎬 動画"))
+                    .on_hover_text("記録を裏で再生して MP4 に書き出す(ffmpeg を使う)。いまのキャンバスは変えない")
+                    .clicked()
+                {
+                    video_name = Some(name.clone());
+                }
+                ui.label(name);
+            });
         }
         if let Some((recording, palette)) = replay_now {
             self.start_replay(recording, palette);
         }
+        if let Some(name) = video_name {
+            self.start_video_export(name);
+        }
+        if let Some(job) = &self.replay_ui.video {
+            ui.horizontal(|ui| {
+                let done = job.done().min(job.total);
+                ui.add(
+                    egui::ProgressBar::new(done as f32 / job.total.max(1) as f32)
+                        .desired_width(160.0)
+                        .text(format!("{} {done}/{}", job.name, job.total)),
+                );
+                if ui.button("取り消し").clicked() {
+                    job.cancel();
+                }
+            });
+        }
         // status_msg の表示は status_bar(常時可視・スクロール外)へ移した(F3)
+    }
+
+    /// 保存済みストロークを動画に書き出し始める。キャンバスサイズ・パラメータは今の値、
+    /// パレットは記録時のもの(画面の再生と同じ条件)。書き出しは別スレッドの別キャンバスで行う
+    fn start_video_export(&mut self, name: String) {
+        let stored = match replay::load(&name) {
+            Ok(s) => s,
+            Err(e) => {
+                self.status_msg = Some(e);
+                return;
+            }
+        };
+        let settings = VideoSettings {
+            size: self.canvas_size,
+            params: self.params,
+            steps_per_frame: self.steps_per_frame,
+            fps: video::VIDEO_FPS,
+            tail_frames: video::TAIL_FRAMES,
+        };
+        let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let path = video::videos_dir().join(format!("{stamp}_{name}.mp4"));
+        self.replay_ui.video = Some(VideoJob::spawn(
+            self.render_state.device.clone(),
+            self.render_state.queue.clone(),
+            name,
+            stored.recording,
+            stored.palette,
+            settings,
+            path,
+        ));
+    }
+
+    /// 動画書き出しが終わっていれば結果を status_msg に出して片付ける。開発モードでパネルを
+    /// 閉じていても拾えるよう、毎フレーム ui() から呼ぶ
+    pub(in crate::app) fn poll_video_export(&mut self) {
+        let Some(job) = &mut self.replay_ui.video else {
+            return;
+        };
+        if let Some(result) = job.poll() {
+            self.status_msg = Some(match result {
+                Ok(path) => format!("動画を保存: {}", path.display()),
+                Err(e) => e,
+            });
+            self.replay_ui.video = None;
+        }
     }
 
     /// ビュー(M6): 拡大率の表示・全体表示に戻す・操作ヒント。

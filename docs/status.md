@@ -47,6 +47,7 @@
 | 色ライブラリ | `assets/pigments/*.json`(git 管理) | `pigment::Pigment` 1個 = 1ファイル、保存名 = 顔料名。同梱 24色 |
 | ストローク記録 | `assets/strokes/*.json`(git 管理) | 生ポインタ入力+記録時パレット(`StoredRecording`)。同梱 [two-color-adjacent.json](../assets/strokes/two-color-adjacent.json) |
 | PNG 書き出し | `snapshots/`(git 管理外) | キャンバス全体・無回転で焼く。ファイル名はタイムスタンプ+プリセット名 |
+| リプレイ動画 | `videos/`(git 管理外) | 保存済みストローク記録を裏で再生した MP4(H.264・60fps・キャンバス全体・無回転)。ファイル名はタイムスタンプ+ストローク名。外部の ffmpeg を使う([src/video.rs](../src/video.rs)) |
 | UI スクショ | `screenshots/ui-latest.png`(git 管理外) | 画面全体。`screenshots/request-shot` を書くと実行中アプリが撮影する |
 
 - 保存名はすべて [src/assets.rs](../src/assets.rs) の `sanitize_name` を通し(パス区切り・Windows 禁止文字・制御文字を `_`、予約デバイス名は `_` 前置、空なら保存しない)、`{name}.{ext}.tmp` → rename のアトミック書き込みで保存する
@@ -65,7 +66,7 @@
 - **性能**(Apple Silicon / Metal、headless 計測 [tests/perf_bench.rs](../tests/perf_bench.rs)、1フレーム): 2048² で乾いた紙 2.4ms・一部濡れ(320²)2.6ms・全面計算 16.3ms、表示はキャンバス解像度で 0.45ms(乾燥レイヤーの枚数によらない)。残る乾いた紙のコストは、何もせずに戻るワークグループを全面に起動する分
 - **乾き方**: `evap_rate` 既定 0.0003 = 水量 0.5 の塗りが約1分濡れたまま(60fps 基準)
 - **パラメータ**: `SimParams` は 56 フィールド = 224B(パディングなし)。Rust と common.wgsl の struct の一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検査。Rust と WGSL で共有する定数(MAX_LAYERS・latent 枠・タイル)は [src/gpu/prelude.rs](../src/gpu/prelude.rs) がプレリュードとして生成する
-- **テスト**: `cargo test --workspace` 全62件(kasaneiro crate 25 / km 6 / pigment 6 / paint-core 9 / shader_compile 1 / sim_params_layout 1 / e2e_watercolor 8 / e2e_ui 6)+ `#[ignore]` の計測1件(perf_bench)。e2e は GPU 必須
+- **テスト**: `cargo test --workspace` 全64件(kasaneiro crate 25 / km 6 / pigment 6 / paint-core 9 / shader_compile 1 / sim_params_layout 1 / e2e_watercolor 8 / e2e_ui 6 / e2e_video 2)+ `#[ignore]` の計測1件(perf_bench)。e2e は GPU 必須
 
 ### 1.5 既知の課題・制約
 
@@ -81,6 +82,12 @@
   - GPU の読み戻しが [src/gpu/snapshot.rs](../src/gpu/snapshot.rs)(PNG)と [src/gpu/persist.rs](../src/gpu/persist.rs)(作品保存)に inline で重複している。読み戻し箇所が増える、またはキャンバスサイズの 64 の倍数制限(行バイト数の 256B 整列を保証している)を外すときに `gpu/readback.rs` へ寄せる
 
 ### 1.6 要目視確認
+
+**リプレイの動画書き出し(2026-11-01)**:
+
+- Windows で ffmpeg を PATH に通す / exe の隣に置く / `KASANEIRO_FFMPEG` で指定する、のどれでも書き出せ、コンソールウィンドウが開かない。ffmpeg が無いときは案内がステータスに出る
+- 2048² の書き出し中も画面の描画が引っかからない(キャンバスがもう1枚ぶん GPU メモリを使う)
+- 書き出した動画の色・テンポが画面の再生と同じに見える
 
 **コードレビュー指摘への対応(2026-10-31)で残っているもの**:
 
@@ -141,7 +148,7 @@
 | H2 | パラメータパネル | ✅ 完了 | [crates/paint-core/src/sim.rs](../crates/paint-core/src/sim.rs) の `SimParams` → uniform buffer。スライダーは [src/app/ui/tools.rs](../src/app/ui/tools.rs)(ツール別)と [src/app/ui/tuning.rs](../src/app/ui/tuning.rs)(開発モードの味付け) |
 | H3 | プリセット保存/読込 | ✅ 完了 | [src/preset.rs](../src/preset.rs)(SimParams ⇄ JSON)+ [src/app/ui/file_menu.rs](../src/app/ui/file_menu.rs) の設定プリセットモーダル。同梱 [default.json](../assets/presets/default.json) ほかが全部読めることをテストで検査 |
 | H4 | デバッグ表示切替 | ✅ 完了 | [display.wgsl](../assets/shaders/display.wgsl) の `display_mode` 分岐で8モード(通常 / 水量 / 速度場 / 湿りオーバーレイ / 浮遊顔料 / 沈着顔料 / 紙ハイト / アクティブタイル)。選択は開発モードの「表示・診断」([src/app/ui/tuning.rs](../src/app/ui/tuning.rs)) |
-| H5 | ストローク記録・再生 | ✅ 完了 | モデルは [crates/paint-core/src/replay.rs](../crates/paint-core/src/replay.rs)、永続化は [src/replay.rs](../src/replay.rs)、UI は [src/app/ui/panels.rs](../src/app/ui/panels.rs) の `replay_panel`。補間前の生ポインタ入力(フレーム番号・テクセル座標・筆圧)をストローク単位のツール・顔料スロットと記録時パレットごと保存し、再生はキャンバスをリセットして記録時のテンポで流す。再生中は毎フレーム記録時のツール・スロットで splat を出し、水彩以外のレイヤーを選んでいれば水彩へ切り替える |
+| H5 | ストローク記録・再生 | ✅ 完了 | モデルは [crates/paint-core/src/replay.rs](../crates/paint-core/src/replay.rs)、永続化は [src/replay.rs](../src/replay.rs)、UI は [src/app/ui/panels.rs](../src/app/ui/panels.rs) の `replay_panel`。補間前の生ポインタ入力(フレーム番号・テクセル座標・筆圧)をストローク単位のツール・顔料スロットと記録時パレットごと保存し、再生はキャンバスをリセットして記録時のテンポで流す。再生中は毎フレーム記録時のツール・スロットで splat を出し、水彩以外のレイヤーを選んでいれば水彩へ切り替える。保存済み記録の行の「🎬 動画」で MP4 に書き出せる([src/video.rs](../src/video.rs)。別スレッドの `HeadlessCanvas` で再生して1フレームずつ ffmpeg の stdin へ流す。キャンバスサイズ・パラメータは書き出し開始時の値、パレットは記録時のもの。再生後 2 秒の余韻まで撮る。進捗バーと取り消しあり。画面のキャンバスは変えない) |
 | H6 | シミュレーション制御 | ✅ 完了 | 一時停止 / 1ステップ / 速度倍率 / UI スクショは開発モードの「シミュレーション制御」([src/app/ui/tuning.rs](../src/app/ui/tuning.rs))。PNG 書き出し・全部消すはファイルメニュー。PNG は display と同じシェーダーでオフスクリーンに焼いて読み戻す([src/gpu/snapshot.rs](../src/gpu/snapshot.rs))。UI スクショは egui の `ViewportCommand::Screenshot` で撮り、外部トリガーは `ScreenshotWatcher`([src/gpu/hot_reload.rs](../src/gpu/hot_reload.rs))が `screenshots/request-shot` を監視する |
 
 ## 4. 計画外でやったこと

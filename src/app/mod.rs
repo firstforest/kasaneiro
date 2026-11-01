@@ -293,6 +293,7 @@ impl PaintApp {
                 pending_recording: None,
                 player: None,
                 saved_channel: None,
+                video: None,
             },
             status_msg: None,
             file_modal: None,
@@ -1170,6 +1171,7 @@ impl eframe::App for PaintApp {
         if self.watcher.take_dirty() {
             self.rebuild_shaders();
         }
+        self.poll_video_export();
 
         // M4.5d/M6: 統一 Undo/Redo(Ctrl+Z / Ctrl+Shift+Z)。線画・水彩の両方を振り分ける
         self.handle_undo_shortcuts(ui.ctx());

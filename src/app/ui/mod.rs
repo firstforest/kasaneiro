@@ -150,4 +150,6 @@ pub struct ReplayUi {
     /// 再生開始前に選択していた顔料スロット(再生終了時に戻す)。
     /// Player::advance が params.brush_channel を記録値で上書きするため
     pub saved_channel: Option<u32>,
+    /// 走っている動画書き出し(同時に1本だけ)
+    pub video: Option<crate::video::VideoJob>,
 }

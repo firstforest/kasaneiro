@@ -14,4 +14,5 @@ mod palette_store;
 mod pigment_store;
 mod preset;
 pub mod replay;
+pub mod video;
 mod work;

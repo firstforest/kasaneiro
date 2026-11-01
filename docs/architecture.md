@@ -15,6 +15,7 @@
 | ホットリロード | notify(ファイル監視) |
 | シリアライズ | serde + serde_json(プリセット・パレット・色・ストローク記録・作品メタ) |
 | 画像 | image(PNG 書き出し) |
+| 動画 | 外部の ffmpeg(子プロセス。生 RGBA を stdin に流して MP4 にする。クレート依存なし) |
 | 配布ビルド | include_dir(feature `embed-assets` のときだけ) |
 | テスト | naga(WGSL 検証)/ egui_kittest(UI の e2e) |
 
@@ -67,6 +68,8 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │  ├─ input.rs            PointerSource trait(MouseSource / PenSource = egui Touch)
 │  ├─ preset.rs           SimParams ⇄ JSON
 │  ├─ replay.rs           ストローク記録の永続化(記録時パレット同梱の StoredRecording)
+│  ├─ video.rs            ストローク記録の動画書き出し(HeadlessCanvas で再生 → snapshot → ffmpeg。
+│  │                      VideoJob = 別スレッド実行・進捗・取り消し)
 │  ├─ palette_store.rs    パレット ⇄ JSON
 │  ├─ pigment_store.rs    色単体(顔料1個)⇄ JSON(保存名 = 顔料名)
 │  ├─ work.rs             作品ファイル works/*.kasane の encode / decode
@@ -76,6 +79,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │  ├─ shader_compile.rs     全シェーダーを全キャンバスサイズのプレリュード付きで naga 検証
 │  ├─ sim_params_layout.rs  SimParams の Rust 定義と common.wgsl の struct の一致検査
 │  ├─ e2e_watercolor.rs     headless でストローク再生 → 3要件を色の指標で判定
+│  ├─ e2e_video.rs          記録を MP4 に書き出す・取り消しで書きかけを消す(ffmpeg が無ければ飛ばす)
 │  ├─ e2e_ui.rs             egui_kittest で PaintApp を実入力で操作 → 画面と UI 状態を判定
 │  ├─ perf_bench.rs         GPU の所要時間の計測(#[ignore])
 │  └─ common/mod.rs         e2e の共通部品(テスト用 wgpu・記録の組み立て・色の指標)
@@ -91,7 +95,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 ```
 
 - `replay` は**モデル**(Recorder / Player / Recording)が paint-core、**永続化**が kasaneiro crate
-- パスの基準は `assets::base_dir()` の1か所: 通常ビルドは `CARGO_MANIFEST_DIR`(どこから起動しても効く)、配布ビルドは exe のあるディレクトリ。assets/ works/ snapshots/ screenshots/ はすべてこの直下。works/ snapshots/ screenshots/ は git 管理外
+- パスの基準は `assets::base_dir()` の1か所: 通常ビルドは `CARGO_MANIFEST_DIR`(どこから起動しても効く)、配布ビルドは exe のあるディレクトリ。assets/ works/ snapshots/ videos/ screenshots/ はすべてこの直下。works/ snapshots/ videos/ screenshots/ は git 管理外
 
 ## 3. GPU リソース
 
@@ -271,6 +275,9 @@ paint:
   - 読込時に canvas_size(`CANVAS_SIZES` で検証)が現在と違えば、そのサイズでキャンバスを作り直してから復元する
   - GPU ⇄ f32 配列は `export_state` / `import_state`([src/gpu/persist.rs](../src/gpu/persist.rs))。読み戻しは全テクスチャのコピーを1回の submit にまとめる。parity は保存せず、読込時に `current=0` へ正規化する
   - 線画の Undo 履歴は保存しない(読込直後の Undo と水彩の undo は効かない)
+- **リプレイ動画**(`videos/*.mp4`、[src/video.rs](../src/video.rs)): 画面と同じ Device / Queue で別の `HeadlessCanvas` を作り、別スレッドで `Player` → `encode_frame` → `snapshot` を1フレームずつ回す。読み戻した RGBA8(size²)を ffmpeg(`-f rawvideo -pix_fmt rgba` → libx264 / yuv420p / crf 18)の stdin へ書く。再生が終わってから `TAIL_FRAMES`(2 秒)だけ入力なしで撮り続ける
+  - ffmpeg の場所: 環境変数 `KASANEIRO_FFMPEG` → `base_dir()` 直下の ffmpeg(.exe) → PATH。Windows では `CREATE_NO_WINDOW` で起動する
+  - UI は `VideoJob` の進捗(書き終えたフレーム数 / 再生 + 余韻の予定数)を出す。取り消しは次のフレームの前で打ち切り、ffmpeg を止めて書きかけを消す。完了は `ui()` が毎フレーム `poll_video_export` で拾う(同時に1本)
 
 ## 11. ホットリロードとパラメータ反映
 
@@ -296,6 +303,7 @@ paint:
 | [tests/shader_compile.rs](../tests/shader_compile.rs) | 全シェーダーを全キャンバスサイズのプレリュード付きで naga 検証 |
 | [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) | SimParams の Rust 定義と common.wgsl の struct のフィールド名・順序・型の一致 |
 | [tests/e2e_watercolor.rs](../tests/e2e_watercolor.rs) | `HeadlessCanvas` でストロークを再生し(アプリの再生と同じ `Player` → `encode_frame` 経路)、wet-on-wet / グレージング / 消去 / 削り / ステイニング差 / 同梱ストロークの再生 / アクティブタイルの不変条件を判定 |
+| [tests/e2e_video.rs](../tests/e2e_video.rs) | 記録を MP4 に書き出し、フレーム数と最後のフレームに絵があることを確かめる / 取り消しで書きかけが残らない。ffmpeg が起動できなければ何もせず通す |
 | [tests/e2e_ui.rs](../tests/e2e_ui.rs) | egui_kittest で PaintApp 全体を起動し、マウス・ペン(筆圧付き Touch)・ツールボタン・モーダル・乾かすを実入力で送って描画結果と UI 状態を判定 |
 | [tests/perf_bench.rs](../tests/perf_bench.rs)(ignore) | 512 / 1024 / 2048 で乾いた紙・一部濡れ・全面計算のフレーム時間と、乾燥レイヤー 0 / 8 枚の表示時間を表で出す。`cargo test --test perf_bench -- --ignored --nocapture` |
 
