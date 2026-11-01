@@ -224,7 +224,7 @@ fn tool_button_switches_tool() {
     frames(&mut harness, 2);
     assert!(
         harness
-            .query_by_label("乾いた色を水で戻して薄くする削りツール")
+            .query_by_label("濡らして押さえ、乾いた色を抜いて白に近づける")
             .is_some()
     );
     assert!(
