@@ -5,11 +5,15 @@
 //! bind group、pipeline layout をまとめて確保して `GpuCanvas` を組み立てる。パイプライン本体は
 //! WGSL の実行時ロード(H1)に委ねるため、ここでは `pipelines: None` で始める。
 
-use super::{GpuCanvas, LayerUniform, MAX_LAYERS, PAPER_SEED, SIM_FORMAT, TEX_KINDS, TILE_SIZE, ViewUniform};
+use super::{
+    DRIED_CACHE_FORMAT, GpuCanvas, LayerUniform, MAX_LAYERS, PAPER_SEED, SIM_FORMAT, TEX_KINDS, TILE_SIZE,
+    ViewUniform,
+};
 use paint_core::paper;
 use paint_core::sim::{CANVAS_SIZES, MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::wgpu;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 
 impl GpuCanvas {
     /// `size` = キャンバス1辺(M8。`CANVAS_SIZES` のいずれか)。全テクスチャ・バッファの
@@ -97,7 +101,7 @@ impl GpuCanvas {
                 | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        // 表示用: 全スライスを 2d array で / 焼き込み用: スライスごとの 2d ビュー
+        // 合成キャッシュ用: 全スライスを 2d array で / 焼き込み用: スライスごとの 2d ビュー
         let dried_array_view = dried_texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
@@ -112,6 +116,22 @@ impl GpuCanvas {
                 })
             })
             .collect();
+        // 乾燥レイヤーの合成キャッシュ(display.wgsl の dried_cache_main が焼き、fs_main が読む)
+        let dried_cache_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("dried_cache"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DRIED_CACHE_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        });
+        let dried_cache_view = dried_cache_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let layers_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("dried_layer_uniform"),
             size: std::mem::size_of::<LayerUniform>() as u64,
@@ -278,7 +298,8 @@ impl GpuCanvas {
         // アクティブタイル(M6): タイルごとの計算有効フラグ(u32 × タイル総数)。
         // raw = tilescan の生フラグ、active = tiledilate で1タイル膨張した最終フラグ。
         // シミュ各パス(binding 11)と display(binding 12)が active を読む。
-        // 毎フレーム tilescan が全要素を書き直すので初期値は問わない(zero 初期化のまま)
+        // active の値は TILE_COLD / TILE_COPY / TILE_ACTIVE(prelude.rs)。
+        // シミュが進むフレームは tilescan が全要素を書き直すので初期値は問わない(zero 初期化のまま)
         let tiles_per_side = size / TILE_SIZE;
         let num_tiles = tiles_per_side * tiles_per_side;
         let tile_flags_size = (num_tiles as usize * std::mem::size_of::<u32>()) as u64;
@@ -290,6 +311,15 @@ impl GpuCanvas {
         });
         let active_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("tile_active"),
+            size: tile_flags_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // ping-pong の2枚が食い違っているかもしれないタイル(1=食い違いうる)。tiledilate が読み書きし、
+        // フレーム外で全面を書き替える操作(乾かす・Fast Dry など)の後は CPU が全タイル 1 にする。
+        // 作成直後は2枚ともゼロで一致しているので 0 のまま
+        let tile_dirty_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("tile_dirty"),
             size: tile_flags_size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -387,21 +417,6 @@ impl GpuCanvas {
                     wgpu::BufferBindingType::Uniform,
                 ),
                 sampled_entry(5, wgpu::ShaderStages::FRAGMENT),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                buffer_entry(
-                    7,
-                    wgpu::ShaderStages::FRAGMENT,
-                    wgpu::BufferBindingType::Uniform,
-                ),
                 // 線画(M4.5a): 鉛筆(8)・ペン(9)の r32float。合成で色の上に重ねる
                 sampled_entry(8, wgpu::ShaderStages::FRAGMENT),
                 sampled_entry(9, wgpu::ShaderStages::FRAGMENT),
@@ -419,6 +434,51 @@ impl GpuCanvas {
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::BufferBindingType::Storage { read_only: true },
                 ),
+                // 乾燥レイヤーの合成キャッシュ(dried_cache_main が焼く)
+                sampled_entry(13, wgpu::ShaderStages::FRAGMENT),
+            ],
+        });
+
+        // 乾燥レイヤーの合成キャッシュを焼く compute(display.wgsl の dried_cache_main):
+        // params(3)・latents(4)・乾燥レイヤー(6)・レイヤー構成(7)を読み、キャッシュ(14)へ書く
+        let dried_cache_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("dried_cache_bgl"),
+            entries: &[
+                buffer_entry(
+                    3,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+                buffer_entry(
+                    4,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                buffer_entry(
+                    7,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Uniform,
+                ),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: DRIED_CACHE_FORMAT,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -496,7 +556,7 @@ impl GpuCanvas {
             ],
         });
 
-        // アクティブタイル膨張(M6、tiledilate): raw_active(read)→ active(write)
+        // アクティブタイル膨張(M6、tiledilate): raw_active(read)→ active(write)、dirty(read_write)
         let tiledilate_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("tiledilate_bgl"),
             entries: &[
@@ -515,6 +575,11 @@ impl GpuCanvas {
                     2,
                     wgpu::ShaderStages::COMPUTE,
                     wgpu::BufferBindingType::Uniform,
+                ),
+                buffer_entry(
+                    3,
+                    wgpu::ShaderStages::COMPUTE,
+                    wgpu::BufferBindingType::Storage { read_only: false },
                 ),
             ],
         });
@@ -588,14 +653,6 @@ impl GpuCanvas {
                 resource: wgpu::BindingResource::TextureView(&paper_view),
             });
             entries.push(wgpu::BindGroupEntry {
-                binding: 6,
-                resource: wgpu::BindingResource::TextureView(&dried_array_view),
-            });
-            entries.push(wgpu::BindGroupEntry {
-                binding: 7,
-                resource: layers_buffer.as_entire_binding(),
-            });
-            entries.push(wgpu::BindGroupEntry {
                 binding: 8,
                 resource: wgpu::BindingResource::TextureView(&line_views[0]),
             });
@@ -618,6 +675,10 @@ impl GpuCanvas {
                 binding: 12,
                 resource: active_buffer.as_entire_binding(),
             });
+            entries.push(wgpu::BindGroupEntry {
+                binding: 13,
+                resource: wgpu::BindingResource::TextureView(&dried_cache_view),
+            });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("display_bg"),
                 layout: &display_bgl,
@@ -625,6 +686,33 @@ impl GpuCanvas {
             })
         };
         let display_bind_groups = [make_display_bg(0), make_display_bg(1)];
+
+        let dried_cache_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("dried_cache_bg"),
+            layout: &dried_cache_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: latents_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&dried_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: layers_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 14,
+                    resource: wgpu::BindingResource::TextureView(&dried_cache_view),
+                },
+            ],
+        });
 
         // ラスタ線画(M4.5a): 描画先(鉛筆 / ペン)ごとの bind group。線画は ping-pong しない
         // ので current に依存せず固定。paper_view は鉛筆の粒状変調に使う
@@ -703,6 +791,10 @@ impl GpuCanvas {
                     binding: 2,
                     resource: params_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: tile_dirty_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -714,6 +806,11 @@ impl GpuCanvas {
         let display_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("display_pipeline_layout"),
             bind_group_layouts: &[Some(&display_bgl)],
+            immediate_size: 0,
+        });
+        let dried_cache_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("dried_cache_pipeline_layout"),
+            bind_group_layouts: &[Some(&dried_cache_bgl)],
             immediate_size: 0,
         });
         let bake_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -756,6 +853,10 @@ impl GpuCanvas {
             live_pigment_latents,
             compute_layout,
             display_layout,
+            dried_cache_bind_group,
+            dried_cache_layout,
+            dried_cache_dirty: AtomicBool::new(true),
+            dried_cache_key: None,
             dried_texture,
             dried_slice_views,
             layers_buffer,
@@ -766,6 +867,8 @@ impl GpuCanvas {
             raster_layout,
             tilescan_bind_groups,
             tiledilate_bind_group,
+            tile_dirty_buffer,
+            num_tiles,
             tilescan_layout,
             tiledilate_layout,
             layers: Vec::new(),

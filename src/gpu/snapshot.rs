@@ -5,6 +5,7 @@
 
 use super::{GpuCanvas, ViewUniform};
 use eframe::egui_wgpu::wgpu;
+use std::sync::atomic::Ordering;
 
 impl GpuCanvas {
     /// 現在のキャンバス表示を RGBA8(行連続、size²)で読み戻す(H6 PNG スナップショット)。
@@ -28,27 +29,7 @@ impl GpuCanvas {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("snapshot_encoder"),
             });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("snapshot_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.snapshot_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&pipelines.snapshot);
-            pass.set_bind_group(0, &self.display_bind_groups[self.current], &[]);
-            pass.draw(0..3, 0..1);
-        }
+        self.encode_offscreen_display(&mut encoder, pipelines);
         encoder.copy_texture_to_buffer(
             self.snapshot_texture.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
@@ -85,5 +66,48 @@ impl GpuCanvas {
         let data = slice.get_mapped_range().to_vec();
         self.snapshot_buffer.unmap();
         Ok(data)
+    }
+
+    /// display と同じシェーダーでオフスクリーン(snapshot_texture)に1回描く。読み戻しはしない。
+    /// 表示コストの計測(tests/perf_bench.rs)用で、完了は待たない
+    pub fn render_offscreen(&self, device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), String> {
+        let pipelines = self
+            .pipelines
+            .as_ref()
+            .ok_or("シェーダーが未ビルドです")?;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("offscreen_encoder"),
+        });
+        self.encode_offscreen_display(&mut encoder, pipelines);
+        queue.submit([encoder.finish()]);
+        Ok(())
+    }
+
+    /// オフスクリーン描画を積む。フレームを挟まずに呼ばれる(乾かした直後のスナップショットなど)ので、
+    /// 合成キャッシュが古ければ先に焼く。dirty は下ろさず、次の encode_frame がそのフレームの
+    /// SimParams で焼き直す(params_buffer は rasterize_line が別の値で上書きしていることがある)
+    fn encode_offscreen_display(&self, encoder: &mut wgpu::CommandEncoder, pipelines: &super::Pipelines) {
+        if self.dried_cache_dirty.load(Ordering::Relaxed) {
+            self.encode_dried_cache(encoder, pipelines);
+        }
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("snapshot_pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.snapshot_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&pipelines.snapshot);
+        pass.set_bind_group(0, &self.display_bind_groups[self.current], &[]);
+        pass.draw(0..3, 0..1);
     }
 }

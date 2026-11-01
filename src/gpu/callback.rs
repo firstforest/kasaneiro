@@ -8,6 +8,7 @@
 use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, ViewUniform};
 use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
 use eframe::egui_wgpu::{self, wgpu};
+use std::sync::atomic::Ordering;
 
 /// 1フレーム分の描画データ。src/app/ui/canvas.rs で組み立てて PaintCallback として渡す。
 pub struct CanvasCallback {
@@ -94,6 +95,18 @@ impl GpuCanvas {
         bytes.extend_from_slice(bytemuck::cast_slice(&frame.splats[..splat_count]));
         queue.write_buffer(&canvas.splat_buffer, 0, &bytes);
 
+        // 乾燥レイヤーの合成キャッシュ: レイヤー側が変わったか、キャッシュに効く SimParams が
+        // 変わったフレームだけ焼き直す(display はこのフレームの paint でキャッシュを読む)
+        let cache_key = (frame.params.pigment_density.to_bits(), frame.params.compose_mode);
+        if let Some(pipelines) = &canvas.pipelines
+            && (canvas.dried_cache_dirty.load(Ordering::Relaxed)
+                || canvas.dried_cache_key != Some(cache_key))
+        {
+            canvas.encode_dried_cache(encoder, pipelines);
+            canvas.dried_cache_dirty.store(false, Ordering::Relaxed);
+            canvas.dried_cache_key = Some(cache_key);
+        }
+
         let mut current = canvas.current;
         if let Some(pipelines) = &canvas.pipelines {
             let workgroups = canvas.size.div_ceil(8);
@@ -115,14 +128,21 @@ impl GpuCanvas {
             }
 
             let bind_groups = &canvas.compute_bind_groups;
+            let run_splat = splat_count > 0 && frame.line_target.is_none();
+            // ping-pong するパスが1つもないフレーム(一時停止中で筆も流体へ流さない)は
+            // タイル判定ごと積まない。tiledilate の dirty 更新は「このフレームに少なくとも1パス進む」
+            // ことを前提にしているため(tiledilate.wgsl)。active は前フレームの値が残る
+            if !run_splat && frame.sim_steps == 0 {
+                return;
+            }
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("sim_pass"),
                 timestamp_writes: None,
             });
 
-            // アクティブタイル(M6): シミュ本体より前にタイル有効フラグを作る。
-            // tilescan(濡れ+ブラシ→raw_active)→ tiledilate(1タイル膨張→active)。
-            // 以降の splat / sim 各パスは active を読み、非アクティブなタイルを素通しする。
+            // アクティブタイル(M6): シミュ本体より前にタイルの状態を作る。
+            // tilescan(濡れ+ブラシ→raw_active)→ tiledilate(1タイル膨張+dirty→active)。
+            // 以降の splat / sim 各パスは active を読み、ACTIVE だけ計算・COPY はコピー・COLD は何もしない。
             // active_tiles=0 のときは tilescan が全タイルを有効化するので全面計算に戻る。
             // 同一パス内の storage RAW ハザードは wgpu が自動バリアで解決する(テクスチャ ping-pong と同様)
             let tile_workgroups = canvas.tiles_per_side.div_ceil(8);
@@ -142,7 +162,7 @@ impl GpuCanvas {
             };
 
             // 流体ツールのときだけ splat を流す(ラスタツールは上の line_pass で処理済み)
-            if splat_count > 0 && frame.line_target.is_none() {
+            if run_splat {
                 run(&mut pass, pipelines.compute("splat.wgsl"));
             }
             // 1 ステップ = 速度更新 → 発散緩和 × N → FlowOutward → 移流

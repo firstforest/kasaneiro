@@ -14,7 +14,8 @@
 //       splat(ω/γ)/ transfer(ρ/ω/γ)/ diffuse(μ=分離色のチャンネル別拡散)が読む
 //   10 = 清書ペンの線画テクスチャ(M4.5b、r32float、read only)。ペン濃度から透水率を出して
 //        velocity(速度場・にじみ拡張)/ diffuse(拡散流束)が水の境界として使う。線画パスが書く
-// dst は毎パス全テクセルを書くこと(変更しないテクスチャも素通しで write する。ping-pong のため)
+// dst は計算するタイル(TILE_ACTIVE)とコピーするタイル(TILE_COPY)の全テクセルを書くこと
+// (変更しないテクスチャも素通しで write する。ping-pong のため)。TILE_COLD のタイルは2枚が一致しているので書かない
 // 乾燥レイヤー(M2): rgba32float の texture array(1 スライス = 1 乾燥レイヤー、rgba = 4顔料濃度)。
 // bake.wgsl だけが binding 9 に書き込みスライスを持つ(splats は持たない)。表示側の合成は display.wgsl 参照
 
@@ -80,7 +81,8 @@ struct SimParams {
 
 // アクティブタイル(M6): シミュレーションを「濡れているタイル+ブラシ近傍」だけに絞る土台。
 // tilescan がタイルごとに濡れ/ブラシ有無を判定し、tiledilate が1タイル分ふくらませて
-// active フラグ(binding 11 = array<u32>)を作る。各シミュパスは非アクティブなタイルを素通しする。
+// タイルの状態(binding 11 = array<u32>。TILE_COLD / TILE_COPY / TILE_ACTIVE)を作る。
+// 各シミュパスは ACTIVE だけ計算し、COPY は素通しでコピー、COLD は何も書かない。
 // TILE_SIZE(1タイルの1辺テクセル数)・TILES_PER_SIDE(キャンバス1辺のタイル数。M8 で
 // キャンバスサイズ依存)をはじめ Rust と共有する定数(MAX_LAYERS / LATENT_TOTAL など)は、
 // このファイルではなく Rust 側(src/gpu/prelude.rs の shader_prelude)が const として生成し、

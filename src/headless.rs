@@ -115,6 +115,25 @@ impl HeadlessCanvas {
         self.canvas.layers.len()
     }
 
+    /// display と同じシェーダーでキャンバス全体をオフスクリーンに1回描く(読み戻しなし)。
+    /// 表示コストの計測用。完了を待つなら [`Self::wait_idle`]
+    pub fn render_display(&self) -> Result<(), String> {
+        self.canvas.render_offscreen(&self.device, &self.queue)
+    }
+
+    /// ping-pong の2枚が食い違っているテクセル数([水, 浮遊, 沈着])
+    pub fn pingpong_mismatch(&self) -> Result<[usize; 3], String> {
+        self.canvas.pingpong_mismatch(&self.device, &self.queue)
+    }
+
+    /// 投入済みの GPU 処理が全部終わるまで待つ(計測の区切り)
+    pub fn wait_idle(&self) {
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+    }
+
     /// 現在の見た目を読み戻す
     pub fn snapshot(&self) -> Result<Image, String> {
         // ビュー変換なし(キャンバス全体・無回転)で焼く

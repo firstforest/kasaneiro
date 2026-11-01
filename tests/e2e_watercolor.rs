@@ -270,3 +270,60 @@ fn recorded_strokes_replay() {
         );
     }
 }
+
+/// アクティブタイル: 計算しないタイルの書き込みを省いても、全面計算(active_tiles=0)と同じ絵になる。
+/// 乾かす(bake)・Fast Dry で全面が書き替わった後に ping-pong の2枚がずれていれば、
+/// 古い側が表に出て差が出る
+#[test]
+fn active_tiles_match_full_compute() {
+    let run = |active_tiles: u32| {
+        let mut c = canvas();
+        c.params.active_tiles = active_tiles;
+        c.play(recording(vec![hstroke(WetTool::Paint, YELLOW, 80.0, 220.0, 120.0, 0)]));
+        c.idle(30);
+        c.fast_dry().unwrap();
+        c.play(recording(vec![hstroke(WetTool::Paint, BLUE, 260.0, 420.0, 260.0, 0)]));
+        c.idle(30);
+        c.bake_dry().unwrap();
+        c.idle(3);
+        c.play(recording(vec![hstroke(WetTool::Paint, SIENNA, 80.0, 420.0, 400.0, 0)]));
+        c.idle(30);
+        c.snapshot().unwrap()
+    };
+    let tiled = run(1);
+    let full = run(0);
+    let png = save(&tiled, "active_tiles_tiled");
+    save(&full, "active_tiles_full");
+    let max_diff = tiled
+        .rgba
+        .iter()
+        .zip(&full.rgba)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max()
+        .unwrap();
+    assert!(
+        max_diff <= 2,
+        "アクティブタイルの有無で絵が変わる(最大差 {max_diff}/255)\n{}",
+        png.display()
+    );
+}
+
+/// アクティブタイル: 計算から外れたタイル(書き込みを省くタイル)では ping-pong の2枚が一致している。
+/// 濡れマスクは蒸発では消えないので、タイルが計算から外れるのは Fast Dry・乾かす(bake)の後。
+/// これらは current 側だけを書き替えるので、片方が古いまま残ると後でそのタイルを読むパスに混ざる
+#[test]
+fn inactive_tiles_keep_pingpong_in_sync() {
+    let mut c = canvas();
+    c.play(recording(vec![hstroke(WetTool::Paint, YELLOW, 80.0, 220.0, 120.0, 0)]));
+    c.idle(10);
+    assert_ne!(c.pingpong_mismatch().unwrap(), [0; 3], "濡れている間は2枚が食い違うはず");
+    c.fast_dry().unwrap();
+    c.idle(2);
+    assert_eq!(c.pingpong_mismatch().unwrap(), [0; 3], "Fast Dry の後に2枚がずれている");
+
+    c.play(recording(vec![hstroke(WetTool::Paint, BLUE, 260.0, 420.0, 260.0, 0)]));
+    c.idle(10);
+    c.bake_dry().unwrap();
+    c.idle(2);
+    assert_eq!(c.pingpong_mismatch().unwrap(), [0; 3], "乾かした後に2枚がずれている");
+}

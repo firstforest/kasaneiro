@@ -46,9 +46,12 @@ use shader_error::remap_shader_error_lines;
 use eframe::egui_wgpu::wgpu;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// シミュレーションテクスチャのフォーマット。レイアウトは common.wgsl のコメントと対応。
 const SIM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+/// 乾燥レイヤーの合成キャッシュ。値は 0..1 の反射率・透過率なので半精度で足りる
+const DRIED_CACHE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// ping-pong するテクスチャの種類数(水 / 浮遊顔料 / 沈着顔料)。
 /// 紙ハイト(M1d)は静的なので含まない(paper_texture として別持ち)
@@ -125,6 +128,8 @@ struct Pipelines {
     display: wgpu::RenderPipeline,
     /// display と同じシェーダーを PNG スナップショット用フォーマットで焼くパイプライン(H6)
     snapshot: wgpu::RenderPipeline,
+    /// display.wgsl の dried_cache_main(乾燥レイヤーの合成キャッシュを焼く compute)
+    dried_cache: wgpu::ComputePipeline,
 }
 
 impl Pipelines {
@@ -230,6 +235,15 @@ pub struct GpuCanvas {
     live_pigment_latents: [[f32; 4]; pigment::PIGMENT_LATENTS],
     compute_layout: wgpu::PipelineLayout,
     display_layout: wgpu::PipelineLayout,
+    /// 乾燥レイヤーの合成キャッシュを焼く bind group(キャッシュテクスチャ自体はここが保持する)
+    dried_cache_bind_group: wgpu::BindGroup,
+    dried_cache_layout: wgpu::PipelineLayout,
+    /// 合成キャッシュの作り直しが必要か。乾燥レイヤーの中身・並び・可視性・記録パレット・
+    /// シェーダーが変わったときに立てる。sync_layers が &self なので atomic にしている
+    dried_cache_dirty: AtomicBool,
+    /// 最後にキャッシュを焼いたときの (pigment_density のビット列, compose_mode)。
+    /// SimParams のうちキャッシュに効くのはこの2つ
+    dried_cache_key: Option<(u32, u32)>,
     /// 乾燥レイヤー(M2): スライス = レイヤースロット、rgba = 4顔料濃度。
     /// 作品保存(M7)で全スライスを読み戻し/書き戻しするため実体テクスチャを保持する
     dried_texture: wgpu::Texture,
@@ -249,6 +263,11 @@ pub struct GpuCanvas {
     tilescan_bind_groups: [wgpu::BindGroup; 2],
     /// tiledilate の bind group(raw→active。バッファ固定なので1つ)
     tiledilate_bind_group: wgpu::BindGroup,
+    /// ping-pong の2枚が食い違いうるタイルのフラグ(u32 × num_tiles)。
+    /// 0 のタイルはシミュの各パスが書き込みごと省くので、2枚を揃えずに書き替える操作の後は
+    /// [`GpuCanvas::mark_tiles_dirty`] で全タイル 1 にする
+    tile_dirty_buffer: wgpu::Buffer,
+    num_tiles: u32,
     tilescan_layout: wgpu::PipelineLayout,
     tiledilate_layout: wgpu::PipelineLayout,
     /// 乾燥レイヤーの重ね順とメタ情報(先頭が最下層)。UI(src/app/ui/layers.rs)から直接編集し、
@@ -293,6 +312,7 @@ impl GpuCanvas {
             .chain(self.line_textures.iter())
             .collect();
         self.zero_textures(device, queue, &textures);
+        self.mark_tiles_dirty(queue);
         self.layers.clear();
         self.layer_palettes.clear();
         self.sync_layers(queue);
@@ -361,6 +381,7 @@ impl GpuCanvas {
     /// current に書くので ping-pong の parity に依らず、次フレームの表示・シミュがここから続く
     pub fn restore_wet(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
         self.copy_wet(device, queue, "wet_restore", false);
+        self.mark_tiles_dirty(queue);
     }
 
     /// backup(current→退避)/ restore(退避→current)の共通実装。`backup=true` で退避方向。
@@ -447,6 +468,14 @@ impl GpuCanvas {
         Ok(())
     }
 
+    /// 全タイルを「ping-pong の2枚が食い違いうる」にする。次にシミュが進むフレームで全タイルが
+    /// 一度コピーされて2枚が揃う。current 側だけを書き替える操作(乾かす・Fast Dry・再湿潤・
+    /// 湿レイヤーの undo・作品読込・全部消す)の後に呼ぶ。write_buffer なので次の submit の前に効く
+    pub(crate) fn mark_tiles_dirty(&self, queue: &wgpu::Queue) {
+        let ones = vec![1u32; self.num_tiles as usize];
+        queue.write_buffer(&self.tile_dirty_buffer, 0, bytemuck::cast_slice(&ones));
+    }
+
     /// レイヤーの並び・可視性(self.layers)を display 用 uniform へ反映する(M2)。
     /// レイヤーパネル(src/app/ui/layers.rs)が layers を編集したあとに呼ぶ
     pub fn sync_layers(&self, queue: &wgpu::Queue) {
@@ -463,6 +492,19 @@ impl GpuCanvas {
             }
         }
         queue.write_buffer(&self.layers_buffer, 0, bytemuck::bytes_of(&uniform));
+        self.dried_cache_dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// 乾燥レイヤーの合成キャッシュを焼く compute パスを積む(display.wgsl の dried_cache_main)
+    fn encode_dried_cache(&self, encoder: &mut wgpu::CommandEncoder, pipelines: &Pipelines) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("dried_cache_pass"),
+            timestamp_writes: None,
+        });
+        let workgroups = self.size.div_ceil(8);
+        pass.set_pipeline(&pipelines.dried_cache);
+        pass.set_bind_group(0, &self.dried_cache_bind_group, &[]);
+        pass.dispatch_workgroups(workgroups, workgroups, 1);
     }
 
     /// 現行(live)パレットを GPU へ反映する(M5b)。編集のたびに app から呼ぶ。
@@ -562,6 +604,7 @@ impl GpuCanvas {
         }
         queue.submit([encoder.finish()]);
         self.current = dst;
+        self.mark_tiles_dirty(queue);
 
         self.layers.push(DriedLayer {
             slot: slot as u32,
@@ -607,6 +650,7 @@ impl GpuCanvas {
         }
         queue.submit([encoder.finish()]);
         self.current ^= 1;
+        self.mark_tiles_dirty(queue);
         Ok(())
     }
 
@@ -713,6 +757,14 @@ impl GpuCanvas {
         };
         let display = make_display("display_pipeline", self.target_format);
         let snapshot = make_display("snapshot_pipeline", self.snapshot_format);
+        let dried_cache = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("dried_cache_pipeline"),
+            layout: Some(&self.dried_cache_layout),
+            module: &display_module,
+            entry_point: Some("dried_cache_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
 
         if let Some(error) = pollster::block_on(scope.pop()) {
             // common.wgsl 連結でずれた行番号をシェーダー内の行に補正して表示
@@ -722,7 +774,9 @@ impl GpuCanvas {
             compute,
             display,
             snapshot,
+            dried_cache,
         });
+        self.dried_cache_dirty.store(true, Ordering::Relaxed);
         Ok(())
     }
 }

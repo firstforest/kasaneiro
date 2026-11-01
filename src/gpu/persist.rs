@@ -10,6 +10,7 @@
 
 use super::{GpuCanvas, LATENT_TOTAL, MAX_LAYERS, TEX_KINDS};
 use eframe::egui_wgpu::wgpu;
+use std::sync::atomic::Ordering;
 
 /// エクスポート時に読み戻した全テクスチャ / latent の生データ(f32)。GPU 非依存の中間表現。
 /// 各ブロブは行連続(パディングなし)。キャンバス1辺²(M8 で可変)を単位に並ぶ。
@@ -78,6 +79,35 @@ impl GpuCanvas {
         })
     }
 
+    /// ping-pong の2枚が食い違っているテクセル数を [水, 浮遊, 沈着] ごとに数える(検査用)。
+    /// アクティブタイルが書き込みを省くタイルでは2枚が一致している前提なので、
+    /// シミュが止まった(全部乾いた)状態では全種類 0 になるはず
+    pub fn pingpong_mismatch(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<[usize; TEX_KINDS], String> {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("pingpong_readback_encoder"),
+        });
+        let stagings: Vec<wgpu::Buffer> = (0..TEX_KINDS)
+            .flat_map(|kind| [0, 1].map(|parity| (kind, parity)))
+            .map(|(kind, parity)| {
+                self.copy_texture(device, &mut encoder, &self.textures[kind][parity], 0, RGBA)
+            })
+            .collect();
+        queue.submit([encoder.finish()]);
+        let all: Vec<&wgpu::Buffer> = stagings.iter().collect();
+        let floats = map_read_all(device, &all)?;
+        Ok(std::array::from_fn(|kind| {
+            floats[kind * 2]
+                .chunks(RGBA as usize)
+                .zip(floats[kind * 2 + 1].chunks(RGBA as usize))
+                .filter(|(a, b)| a != b)
+                .count()
+        }))
+    }
+
     /// [`WorkTextures`] をキャンバスへ書き戻す(M7 読込)。全テクスチャを parity 0 側へ書き、
     /// `current = 0` に正規化する。レイヤー構成 / パレットは呼び出し側(app)が別途復元する。
     pub fn import_state(
@@ -101,6 +131,7 @@ impl GpuCanvas {
             self.write_texture(queue, &self.textures[kind][0], 0, RGBA, &work.wet[kind]);
         }
         self.current = 0;
+        self.mark_tiles_dirty(queue);
 
         // 乾燥レイヤー: slot 昇順に書き戻す(export と同順)
         for (slot, data) in work.dried.iter().enumerate() {
@@ -123,6 +154,7 @@ impl GpuCanvas {
             return Err("作品データのパレット latent のサイズが不正です".to_owned());
         }
         queue.write_buffer(&self.latents_buffer, 0, bytemuck::cast_slice(&work.latents));
+        self.dried_cache_dirty.store(true, Ordering::Relaxed);
         Ok(())
     }
 

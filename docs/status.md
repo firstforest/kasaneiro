@@ -2,7 +2,7 @@
 
 マイルストーン M0〜M8・装備(H1〜H6、狙いは [plan.md](plan.md) §1)の現在地。**現在の実装状況の正典**で、書くのは現状だけ。実装の経緯・日付ごとの記録は [changelog.md](changelog.md) に残す。マイルストーン・装備を進めたとき、ツール・UI・ファイル形式・主要な仕組みが変わったとき、要目視確認の項目が増えた/片付いたときに、コード変更と同じコミットで更新する。
 
-最終更新: 2026-10-31
+最終更新: 2026-11-01
 
 ## 1. 現在地
 
@@ -60,10 +60,12 @@
 - **混色・発色**: 層内は mixbox の latent 混合、層間は Kubelka-Munk の R/T 合成(`compose_mode` 既定 1、0 で multiply)。mixbox 依存は `crates/pigment` に隔離
 - **乾燥とレイヤー**: 湿レイヤー1枚 + 乾燥レイヤー最大8枚(顔料濃度のまま保持)。乾かす瞬間のパレットを GPU の latent 枠と CPU の `layer_palettes` に記録するので、後でパレットを変えても乾いた層の色は変わらない
 - **紙**: 紙ハイト(値ノイズ4成分)はあるが、シミュ側の紙の質感(`paper_amp` / `paper_gran` / `paper_wet`)は既定 0。鉛筆の粒状感(`pencil_gran`)とリフトの紙凸部変調は紙ハイトを使う
-- **計算範囲**: アクティブタイル(16×16 テクセル単位)で、濡れたセルがあるタイルと流体 splat の近傍だけを計算する(`active_tiles`=0 で全面計算)。キャンバスは 512 / 1024 / 2048 の正方形
+- **計算範囲**: アクティブタイル(16×16 テクセル単位)で、濡れたセルがあるタイルと流体 splat の近傍だけを計算する(`active_tiles`=0 で全面計算)。計算しないタイルは ping-pong の2枚が揃っていれば書き込みも省く(タイルの3状態 COLD / COPY / ACTIVE と dirty フラグ)。濡れマスクは蒸発では消えないので、一度濡れたタイルは Fast Dry・乾かすまで計算され続ける。キャンバスは 512 / 1024 / 2048 の正方形
+- **表示**: 乾燥レイヤーの合成(multiply / KM)はキャッシュ(rgba16float 1枚)に焼いておき、毎フレームは湿レイヤーだけを発色して重ねる。焼き直すのは乾燥レイヤー・並び・可視性・`pigment_density`・`compose_mode` が変わったときだけ
+- **性能**(Apple Silicon / Metal、headless 計測 [tests/perf_bench.rs](../tests/perf_bench.rs)、1フレーム): 2048² で乾いた紙 2.4ms・一部濡れ(320²)2.6ms・全面計算 16.3ms、表示はキャンバス解像度で 0.45ms(乾燥レイヤーの枚数によらない)。残る乾いた紙のコストは、何もせずに戻るワークグループを全面に起動する分
 - **乾き方**: `evap_rate` 既定 0.0003 = 水量 0.5 の塗りが約1分濡れたまま(60fps 基準)
 - **パラメータ**: `SimParams` は 56 フィールド = 224B(パディングなし)。Rust と common.wgsl の struct の一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検査。Rust と WGSL で共有する定数(MAX_LAYERS・latent 枠・タイル)は [src/gpu/prelude.rs](../src/gpu/prelude.rs) がプレリュードとして生成する
-- **テスト**: `cargo test --workspace` 全60件(kasaneiro crate 25 / km 6 / pigment 6 / paint-core 9 / shader_compile 1 / sim_params_layout 1 / e2e_watercolor 6 / e2e_ui 6)。e2e は GPU 必須
+- **テスト**: `cargo test --workspace` 全62件(kasaneiro crate 25 / km 6 / pigment 6 / paint-core 9 / shader_compile 1 / sim_params_layout 1 / e2e_watercolor 8 / e2e_ui 6)+ `#[ignore]` の計測1件(perf_bench)。e2e は GPU 必須
 
 ### 1.5 既知の課題・制約
 
@@ -88,6 +90,13 @@
 - 作品読込・記録の再生開始で初回ガイドが消える
 - 線画レイヤーで描いて、左上の元に戻す/やり直しで戻る
 - アクティブタイル表示(診断モード7)で、Fast Dry 後に計算範囲が消える / 線画ツールで描いても水彩側のタイルが立たない / 筆を離したフレームでブラシ近傍のタイルが消える
+
+**性能改善(2026-11-01)で残っているもの**:
+
+- 2048² で描き続けても表示が乱れない。Fast Dry・乾かす・水彩の Undo・作品読込の直後に、消したはずの色や水が一瞬戻らない
+- 診断モード7で、Fast Dry・乾かすの直後の1フレームだけ全面が青(コピーだけ)になり、その後は暗く(何もしない)戻る
+- 乾燥レイヤーの表示切替・並べ替え・`compose_mode` / `pigment_density` の変更がすぐ画面に反映される。強く拡大したとき乾燥レイヤーの境目の見え方が以前と変わらない(キャッシュをテクセル単位で焼いてから補間するため)
+- Windows(DX12 / Vulkan)で 2048² の体感が 60fps に収まる
 - Windows(DX12 / Vulkan)で起動でき、「全部消す」・線画 Undo が正しく消える(`CLEAR_TEXTURE` 対応・非対応の両経路)
 - ストローク中に I・スペース・Ctrl+Alt を押す、または乾いた層へ切り替える → 筆が止まって色水が出続けない。線画はその後 Undo で消せる
 - 消すでなでた芯が完全に白へ戻り、後から色がにじみ出ない
@@ -142,6 +151,7 @@
 - WGSL 共通定義の連結ロード: SimParams / Splat の struct を [assets/shaders/common.wgsl](../assets/shaders/common.wgsl) に1箇所化し、各シェーダーの先頭に連結してコンパイルする。さらに前に Rust と共有する定数のプレリュード([src/gpu/prelude.rs](../src/gpu/prelude.rs))を足す
 - WGSL コンパイル可能性テスト: naga でパース+検証する [tests/shader_compile.rs](../tests/shader_compile.rs)(assets/shaders を走査し、全キャンバスサイズのプレリュードで検証)
 - SimParams のレイアウト検査: [tests/sim_params_layout.rs](../tests/sim_params_layout.rs)(Rust 定義と common.wgsl の struct の名前・順序・型の一致)
+- 性能の計測: [tests/perf_bench.rs](../tests/perf_bench.rs)(`#[ignore]`。`cargo test --test perf_bench -- --ignored --nocapture` で 512/1024/2048 のフレーム時間と表示時間を表で出す)
 - e2e テスト(体験の回帰検知): [tests/e2e_watercolor.rs](../tests/e2e_watercolor.rs) = ウィンドウなしの `HeadlessCanvas`([src/headless.rs](../src/headless.rs)。H5 の再生と同じ `Player` → `GpuCanvas::encode_frame` 経路)でストロークを再生し、wet-on-wet・グレージング・消去・削り・ステイニング差・同梱ストロークを色相/明度の帯で判定 / [tests/e2e_ui.rs](../tests/e2e_ui.rs) = egui_kittest で PaintApp 全体を起動し、マウス・ペン(筆圧)・ボタン・スウォッチのダブルクリック・乾かすを実入力で判定。要素はキャンバスと色スウォッチに付けた AccessKit 名(「キャンバス」「塗る色 N: 顔料名」)とボタン文字で引く。結果画像は `target/tmp/e2e/*.png`
 - 通常/開発モードの二層化: 通常は描くための UI だけを出し、味付け・診断・記録再生・シェーダー状態は開発モードのトグルの裏に置く
 - 配布ビルド(feature `embed-assets`): WGSL と既定 JSON を埋め込んだ exe 単体配布。「かさねいろについて」でライセンス一覧([assets/licenses/third-party.txt](../assets/licenses/third-party.txt))を表示する

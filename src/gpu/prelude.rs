@@ -28,6 +28,14 @@ pub const LATENT_TOTAL: usize =
 /// アクティブタイル(M6): 1タイルの1辺テクセル数
 pub const TILE_SIZE: u32 = 16;
 
+/// タイルの状態(tiledilate が active 配列に書く値)。
+/// COLD = ping-pong の2枚が一致していて計算も不要 → シミュの各パスは何も書かずに戻る。
+/// COPY = 計算は不要だが2枚が食い違いうる → 3テクスチャを素通しでコピーして2枚を揃える。
+/// ACTIVE = 濡れている/ブラシが触れる → 計算する
+pub const TILE_COLD: u32 = 0;
+pub const TILE_COPY: u32 = 1;
+pub const TILE_ACTIVE: u32 = 2;
+
 /// 各シェーダーの先頭(common.wgsl より前)に連結する WGSL の const 定義。
 /// TILES_PER_SIDE はキャンバス1辺から決まる(M8)ので、ファイル(ホットリロード対象)でなく
 /// Rust が生成する
@@ -35,6 +43,9 @@ pub fn shader_prelude(size: u32) -> String {
     format!(
         "const TILE_SIZE: u32 = {TILE_SIZE}u;\n\
          const TILES_PER_SIDE: u32 = {tiles}u;\n\
+         const TILE_COLD: u32 = {TILE_COLD}u;\n\
+         const TILE_COPY: u32 = {TILE_COPY}u;\n\
+         const TILE_ACTIVE: u32 = {TILE_ACTIVE}u;\n\
          const MAX_LAYERS: u32 = {MAX_LAYERS}u;\n\
          const LAYER_ORDER_VEC4S: u32 = {order}u;\n\
          const GLOBAL_LATENTS: u32 = {global}u;\n\

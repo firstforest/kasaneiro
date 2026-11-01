@@ -7,7 +7,7 @@
 //   4 = 浮遊顔料ヒートマップ(4チャンネル合計)
 //   5 = 沈着顔料ヒートマップ(4チャンネル合計)
 //   6 = 紙ハイト(グレースケール。白=山 / 黒=谷)
-//   7 = アクティブタイル(M6。計算中のタイル=緑 / 素通しのタイル=暗く + タイル格子)
+//   7 = アクティブタイル(M6。計算中のタイル=緑 / コピーだけのタイル=青 / 何もしないタイル=暗く + タイル格子)
 // 先頭に common.wgsl が連結される。
 //
 // 通常表示の混色(M1c): 4顔料の濃度(浮遊+沈着)と紙を mixbox の latent 空間で
@@ -21,6 +21,11 @@
 //       を導き(crates/km/src/lib.rs の簡約)、紙を最下層に下から光学合成する。上に薄い層を重ねるほど下が透ける
 //       「内側から光る」グレーズ挙動になる。計算はリニア色空間で行い最後に sRGB へ戻す(note 03 §3)。
 // どちらも層「内」の混色は mixbox の latent 混合(render_conc)を通す(黄+青が濁らない M1c の芯)。
+//
+// 乾燥レイヤーの合成は湿レイヤーと無関係で、乾かす・レイヤーの並びや可視性を変える・
+// compose_mode / pigment_density を変えるときにしか変わらない。そこで compute の入口
+// dried_cache_main がキャンバス解像度の合成結果(multiply = 透過率の積 / KM = 紙+乾燥層のリニア反射率)を
+// dried_cache へ焼き、fs_main はそれを読むだけにする(作り直す時機は gpu/callback.rs の encode_frame)。
 
 struct VsOut {
     @builtin(position) pos: vec4f,
@@ -52,7 +57,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 // パレット pal の顔料ブロック先頭(latents 内の vec4 インデックス)
 fn pal_base(pal: u32) -> u32 { return GLOBAL_LATENTS + pal * PIGMENT_LATENTS; }
 @group(0) @binding(5) var paper_tex: texture_2d<f32>;
-// 乾燥レイヤー(M2): スライス = レイヤースロット、rgba = 4顔料濃度
+// 乾燥レイヤー(M2): スライス = レイヤースロット、rgba = 4顔料濃度(dried_cache_main だけが読む)
 @group(0) @binding(6) var dried_tex: texture_2d_array<f32>;
 // src/gpu/mod.rs の LayerUniform と同レイアウト。
 // order[k] = 下から k 番目のレイヤーのスロット番号 / visible_mask の bit k = 下から k 番目の可視性
@@ -65,6 +70,11 @@ struct LayerUniform {
     order: array<vec4u, LAYER_ORDER_VEC4S>,
 };
 @group(0) @binding(7) var<uniform> layers: LayerUniform;
+// 乾燥レイヤーの合成キャッシュ(rgba16float、キャンバス解像度。rgb のみ使う)。
+// compose_mode=0 は可視な乾燥レイヤーの multiply 係数、1 は紙+乾燥層の KM 反射率(リニア)。
+// fs_main は 13 で読み、dried_cache_main は 14 へ書く(別の bind group)
+@group(0) @binding(13) var dried_cache: texture_2d<f32>;
+@group(0) @binding(14) var dried_cache_out: texture_storage_2d<rgba16float, write>;
 // 線画(M4.5a): r32float ×2。r = インク濃度 0..1(0=線なし)。色より上に合成する
 @group(0) @binding(8) var pencil_tex: texture_2d<f32>;
 @group(0) @binding(9) var pen_tex: texture_2d<f32>;
@@ -88,7 +98,7 @@ struct ViewUniform {
 // キャンバス外(回転・パンではみ出した領域)を塗る背景色(紙の周りの机)
 const BG_COLOR: vec3f = vec3f(0.16, 0.16, 0.17);
 @group(0) @binding(11) var<uniform> view: ViewUniform;
-// アクティブタイル(M6): 各タイルの計算有効フラグ(1=計算中)。表示モード 7 の可視化に使う
+// アクティブタイル(M6): 各タイルの状態(TILE_COLD / TILE_COPY / TILE_ACTIVE)。表示モード 7 の可視化に使う
 @group(0) @binding(12) var<storage, read> tile_active: array<u32>;
 
 // 黒 → 青 → シアン → 白 のヒートマップ
@@ -183,38 +193,9 @@ fn render_paper(water: f32, susp: vec4f, dep: vec4f) -> vec3f {
     return color;
 }
 
-// 乾燥レイヤー用の load_bilinear(texture_2d_array 版)
-fn load_clamped_layer(t: texture_2d_array<f32>, p: vec2i, layer: u32) -> vec4f {
-    let dims = vec2i(textureDimensions(t));
-    return textureLoad(t, clamp(p, vec2i(0), dims - 1), layer, 0);
-}
-
-fn load_bilinear_layer(t: texture_2d_array<f32>, p: vec2f, layer: u32) -> vec4f {
-    let q = p - 0.5;
-    let base = floor(q);
-    let f = q - base;
-    let i = vec2i(base);
-    let c00 = load_clamped_layer(t, i, layer);
-    let c10 = load_clamped_layer(t, i + vec2i(1, 0), layer);
-    let c01 = load_clamped_layer(t, i + vec2i(0, 1), layer);
-    let c11 = load_clamped_layer(t, i + vec2i(1, 1), layer);
-    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
-}
-
-// 可視な乾燥レイヤー(M2)の multiply 係数: 各レイヤーを白地に置いた透過率の積。
-// 顔料なしのテクセルは白(=1)なので積に影響しない
+// 可視な乾燥レイヤー(M2)の multiply 係数(キャッシュから)。顔料なしのテクセルは白(=1)
 fn dried_factor(p: vec2f) -> vec3f {
-    var factor = vec3f(1.0);
-    for (var k = 0u; k < min(layers.count, MAX_LAYERS); k++) {
-        if ((layers.visible_mask & (1u << k)) == 0u) {
-            continue;
-        }
-        let slot = layers.order[k >> 2u][k & 3u];
-        let conc = load_bilinear_layer(dried_tex, p, slot);
-        // 白地(latents[2],[3])に置いた透過率。色はこのレイヤーの記録スロット(slot)の顔料で
-        factor *= render_conc(conc, latents[2], latents[3], slot);
-    }
-    return factor;
+    return load_bilinear(dried_cache, p).rgb;
 }
 
 // ---- KM 合成(M3): 層間の光学スタック。計算はリニア色空間 ----
@@ -244,17 +225,9 @@ fn km_over_conc(conc: vec4f, r_below: vec3f, pal: u32) -> vec3f {
 }
 
 // 紙(最下層)→ 乾燥レイヤー(下から)→ 湿レイヤー(最上)を KM で光学合成した最終色(sRGB)。
+// 紙+乾燥レイヤーまでの反射率はキャッシュ(dried_cache_main)から読む
 fn km_composite(water: f32, susp: vec4f, dep: vec4f, p: vec2f) -> vec3f {
-    // 下地 = 紙の反射率(リニア)。render_conc(0,紙) は紙色そのもの(pal は濃度0なので不問)
-    var r = srgb_to_linear(render_conc(vec4f(0.0), latents[0], latents[1], LIVE_PALETTE));
-    for (var k = 0u; k < min(layers.count, MAX_LAYERS); k++) {
-        if ((layers.visible_mask & (1u << k)) == 0u) {
-            continue;
-        }
-        let slot = layers.order[k >> 2u][k & 3u];
-        let conc = load_bilinear_layer(dried_tex, p, slot);
-        r = km_over_conc(conc, r, slot);
-    }
+    var r = load_bilinear(dried_cache, p).rgb;
     // 湿レイヤーを最上に重ねる(現行パレット)
     r = km_over_conc(susp + dep, r, LIVE_PALETTE);
     var color = linear_to_srgb(r);
@@ -284,6 +257,38 @@ fn apply_lines(color_in: vec3f, p: vec2f) -> vec3f {
     let hi = load_bilinear(highlight_tex, p).r;
     color = mix(color, vec3f(1.0), clamp(hi, 0.0, 1.0) * f32(params.show_highlight));
     return color;
+}
+
+// 乾燥レイヤーの合成キャッシュを焼く(1 invocation = 1 テクセル)。
+// compose_mode=0: 可視な各レイヤーを白地に置いた透過率の積(色はレイヤーの記録スロットの顔料)。
+// compose_mode=1: 紙の反射率(リニア)から下の層順に KM で重ねた反射率
+@compute @workgroup_size(8, 8)
+fn dried_cache_main(@builtin(global_invocation_id) gid: vec3u) {
+    let dims = textureDimensions(dried_cache_out);
+    if (gid.x >= dims.x || gid.y >= dims.y) {
+        return;
+    }
+    let ip = vec2i(gid.xy);
+    let km = params.compose_mode == 1u;
+    // KM の下地 = 紙の反射率。render_conc(0,紙) は紙色そのもの(pal は濃度0なので不問)
+    var acc = vec3f(1.0);
+    if (km) {
+        acc = srgb_to_linear(render_conc(vec4f(0.0), latents[0], latents[1], LIVE_PALETTE));
+    }
+    for (var k = 0u; k < min(layers.count, MAX_LAYERS); k++) {
+        if ((layers.visible_mask & (1u << k)) == 0u) {
+            continue;
+        }
+        let slot = layers.order[k >> 2u][k & 3u];
+        let conc = textureLoad(dried_tex, ip, slot, 0);
+        if (km) {
+            acc = km_over_conc(conc, acc, slot);
+        } else {
+            // 白地(latents[2],[3])に置いた透過率
+            acc *= render_conc(conc, latents[2], latents[3], slot);
+        }
+    }
+    textureStore(dried_cache_out, ip, vec4f(acc, 1.0));
 }
 
 @fragment
@@ -339,12 +344,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         }
         case 7u: {
             // アクティブタイル(M6): 通常表示にタイル格子を重ね、計算中のタイルを緑、
-            // 素通し(非アクティブ)のタイルを暗く沈める。コストが濡れ面積比例かを目視できる
+            // コピーだけのタイルを青、何もしないタイルを暗く沈める。コストが濡れ面積比例かを目視できる
             color = apply_lines(compose(water, susp, dep, p), p);
             let tp = vec2u(clamp(p, vec2f(0.0), dims - 1.0));
-            let on = tile_active[tile_index_of(tp)] != 0u;
-            if (on) {
+            let tile = tile_active[tile_index_of(tp)];
+            if (tile == TILE_ACTIVE) {
                 color = mix(color, vec3f(0.15, 0.95, 0.30), 0.22);
+            } else if (tile == TILE_COPY) {
+                color = mix(color * 0.6, vec3f(0.15, 0.35, 0.95), 0.25);
             } else {
                 color *= 0.45;
             }

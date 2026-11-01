@@ -38,7 +38,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 ├─ src/                   kasaneiro crate(egui / wgpu / naga はここだけ)
 │  ├─ main.rs             eframe 起動(lib の app::PaintApp を走らせるだけ)
 │  ├─ lib.rs              ライブラリ部のルート(e2e テストが同じモジュールをウィンドウなしで駆動する)
-│  ├─ headless.rs         ウィンドウなしの GPU 駆動(HeadlessCanvas: 記録再生 → encode_frame → snapshot。e2e 用)
+│  ├─ headless.rs         ウィンドウなしの GPU 駆動(HeadlessCanvas: 記録再生 → encode_frame → snapshot。e2e・計測用)
 │  ├─ app/                egui UI
 │  │  ├─ mod.rs           PaintApp の状態・ライフサイクル・二層ディスパッチャ tool_panel・App::ui/save
 │  │  │                   (App::ui のパネル順: Panel::top("menu_bar") → left("tools") → right("layers") → CentralPanel → file_modals)
@@ -62,8 +62,9 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │  │  ├─ init.rs          GpuCanvas::new(テクスチャ・バッファ・bind group の生成)
 │  │  ├─ callback.rs      CanvasCallback(egui の prepare/paint)と GpuCanvas::encode_frame
 │  │  │                   (1フレームの compute。パス実行順の正典。headless 駆動も同じ経路)
-│  │  ├─ snapshot.rs      GpuCanvas::snapshot(PNG・スポイト用の読み戻し。H6)
-│  │  ├─ persist.rs       GpuCanvas::export_state / import_state(作品保存の GPU 読み戻し/書き戻し。M7)
+│  │  ├─ snapshot.rs      GpuCanvas::snapshot(PNG・スポイト用の読み戻し。H6)/ render_offscreen(表示の計測用)
+│  │  ├─ persist.rs       GpuCanvas::export_state / import_state(作品保存の GPU 読み戻し/書き戻し。M7)/
+│  │  │                   pingpong_mismatch(ping-pong の2枚の食い違いを数える検査用)
 │  │  ├─ prelude.rs       Rust と WGSL で共有する定数(MAX_LAYERS / LATENT_TOTAL / TILE_SIZE 等)と
 │  │  │                   それを WGSL の const にする shader_prelude(tests/shader_compile.rs も #[path] で共用)
 │  │  ├─ shader_error.rs  WGSL コンパイルエラーの行番号補正の純関数+テスト
@@ -85,6 +86,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │  ├─ sim_params_layout.rs  SimParams の Rust 定義と common.wgsl の struct の一致検査
 │  ├─ e2e_watercolor.rs     水彩シミュの e2e(headless でストローク再生 → 3要件を色の指標で判定)
 │  ├─ e2e_ui.rs             UI 込みの e2e(egui_kittest で PaintApp を操作 → 画面と UI 状態を判定)
+│  ├─ perf_bench.rs         GPU の所要時間の計測(#[ignore]。フレーム時間と表示時間を表で出す)
 │  └─ common/mod.rs         e2e の共通部品(テスト用 wgpu・記録の組み立て・色の指標)
 └─ assets/
    ├─ shaders/*.wgsl      実行時ロード(通常ビルドは埋め込まない。配布用 embed-assets のみ埋め込み)
@@ -110,24 +112,26 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 | 浮遊顔料 | rgba32float × 2 | rgba 各チャンネル = 顔料1種(PIGMENTS と 1:1)。水の流れで移流する |
 | 沈着顔料 | rgba32float × 2 | 同上。紙に定着した分で移流しない |
 | 紙ハイト | r32float × 1(静的) | r = 高さ 0..1(0=谷 / 1=山)。起動時に CPU 生成、ping-pong しない |
-| 乾燥レイヤー | rgba32float texture array(最大8スライス) | 1スライス = 1乾燥レイヤー、rgba = 4顔料濃度。RGB に潰さず顔料濃度のまま焼くので表示は毎フレーム latent で発色できる |
+| 乾燥レイヤー | rgba32float texture array(最大8スライス) | 1スライス = 1乾燥レイヤー、rgba = 4顔料濃度。RGB に潰さず顔料濃度のまま焼くので、パレット枠や合成方式を変えても latent で発色し直せる |
+| 乾燥レイヤーの合成キャッシュ | rgba16float × 1 | 可視な乾燥レイヤーを合成した結果(compose_mode=0 は透過率の積、1 は紙+乾燥層の KM 反射率(リニア))。display.wgsl の compute 入口 `dried_cache_main` が焼き、fs_main は湿レイヤーをこの上に重ねるだけ。焼き直すのは乾燥レイヤーの中身・並び・可視性・記録パレット・シェーダー(`dried_cache_dirty`)か `pigment_density` / `compose_mode` が変わったフレームだけ(`encode_frame`)。フレームを挟まない snapshot は dirty なら自分で焼く |
 | 線画(M4.5a/c) | r32float × 3(鉛筆・ペン・ハイライト、静的な read_write) | r = インク濃度/不透明度 0..1。ping-pong せず `linesplat.wgsl` が read_write storage で直接蓄積。display は sampled で読み色の上に合成。清書ペンは compute 側も binding 10 で読む(M4.5b の透水率境界) |
 | 湿レイヤー退避(M6) | rgba32float × 3(水・浮遊・沈着、COPY のみ) | 水彩ストローク開始時に `current` の3テクスチャを GPU 間コピーで退避。Ctrl+Z(水彩=1段 undo)で `current` へ書き戻す。bind せずコピーの読み元/書き先にしかならない。最新1本ぶんだけ保持 |
 
-アクティブタイル(M6)は**テクスチャでなく storage バッファ**を2本持つ: `raw_active` / `active`(いずれも `array<u32>`、要素数 = (size/16)²。512²で1024個・2048²で16384個)。tilescan がタイルごとの生フラグを raw に書き、tiledilate が1タイル膨張して active を確定する。バッファ実体は bind group が保持する(GpuCanvas のフィールドには持たない)。
+アクティブタイル(M6)は**テクスチャでなく storage バッファ**を3本持つ: `raw_active` / `active` / `tile_dirty`(いずれも `array<u32>`、要素数 = (size/16)²。512²で1024個・2048²で16384個)。tilescan がタイルごとの生フラグを raw に書き、tiledilate が1タイル膨張と dirty から active(`TILE_COLD` / `TILE_COPY` / `TILE_ACTIVE`)を確定し、dirty を更新する(§6.6)。raw / active の実体は bind group が保持し、dirty は CPU が全タイル 1 に書くため `GpuCanvas::tile_dirty_buffer` にも持つ。
 
 **作品保存の読み戻し用途(M7)**: 全状態を1ファイルに焼くため、乾燥レイヤー array・線画3枚・顔料 latent uniform に `COPY_SRC`(読み戻し)/ `COPY_DST`(書き戻し)を付けてある(湿レイヤーは undo 退避のため COPY 付き)。`copy_texture_to_buffer` に実体が要るため、乾燥レイヤーはスライスビューとは別に実体テクスチャを `dried_texture` として保持する。保存の読み戻しは全テクスチャのコピーを1回の submit にまとめ、完了待ちも1回。`export_state`/`import_state`([src/gpu/persist.rs](../src/gpu/persist.rs))が「GPU ⇄ f32 配列」を担い、parity は保存せず読込時に `current=0` へ正規化する(次フレームの sim が 0 を読んで 1 へ書くので ping-pong の一貫性は保たれる)。
 
-**ping-pong は3テクスチャまとめて単一の `current`** で管理する。各 compute パスは3枚の src を読み、3枚の dst を必ず全テクセル書いて(変更しない分は素通し)反転する。パスごとに index を分けるより単純で、素通しコストはアクティブタイル(M6)が濡れ面積比例に絞る。線画テクスチャ(M4.5a/c)は ping-pong せず read_write で自己更新するため `current` に依存しない。
+**ping-pong は3テクスチャまとめて単一の `current`** で管理する。各 compute パスは3枚の src を読み、3枚の dst を書いて(変更しない分は素通し)反転する。書くのは計算するタイルと2枚が食い違いうるタイルだけで、2枚が一致しているタイルは書かない(アクティブタイル §6.6)。パスごとに index を分けるより単純で、素通しコストは濡れ面積比例に収まる。線画テクスチャ(M4.5a/c)は ping-pong せず read_write で自己更新するため `current` に依存しない。
 
 compute の binding は種別ごとに5レイアウト(`ComputeLayout`):
-- **共通**(splat 系ほか、[assets/shaders/common.wgsl](../assets/shaders/common.wgsl)): `0/1` 水 src/dst、`2/3` 浮遊 src/dst、`4/5` 沈着 src/dst、`6` SimParams uniform、`7` splat storage、`8` 紙ハイト、`9` 顔料個性 uniform、`10` 清書ペンの線画(M4.5b、透水率境界。読むのは velocity/diffuse だけで他パスは宣言せず素通し)、`11` アクティブタイル有効フラグ(M6、storage read。splat/velocity/relax/flowout/advect/diffuse/transfer が読み、非アクティブなタイルを素通しする。fastdry/rewet は宣言せず全面計算)
+- **共通**(splat 系ほか、[assets/shaders/common.wgsl](../assets/shaders/common.wgsl)): `0/1` 水 src/dst、`2/3` 浮遊 src/dst、`4/5` 沈着 src/dst、`6` SimParams uniform、`7` splat storage、`8` 紙ハイト、`9` 顔料個性 uniform、`10` 清書ペンの線画(M4.5b、透水率境界。読むのは velocity/diffuse だけで他パスは宣言せず素通し)、`11` アクティブタイルの状態(M6、storage read。splat/velocity/relax/flowout/advect/diffuse/transfer が読み、ACTIVE だけ計算・COPY は素通しでコピー・COLD は何も書かない。fastdry/rewet は宣言せず全面計算)
 - **bake**: 共通の `0..6, 8` + `9` = 乾燥レイヤーの書き込みスライス(splats なし)
 - **raster**(M4.5a/c、linesplat.wgsl): `0` 対象の線画テクスチャ(read_write r32float)、`1` SimParams、`2` splat storage、`3` 紙ハイト。描画先(鉛筆/ペン/ハイライト)は bind group を差し替えて選ぶ(パイプラインは1本)。ライブ描画は流体パスがペン線を sampled で読むため `linesplat` を専用 compute パスに分ける(同一パス内で read_write と sampled を兼ねると使用範囲が衝突するため)
 - **tilescan**(M6、tilescan.wgsl): `0` 水(read。current 側を parity 別 bind group で)、`3` SimParams、`4` splat storage、`5` raw_active(write)
-- **tiledilate**(M6、tiledilate.wgsl): `0` raw_active(read)、`1` active(write)、`2` SimParams(common.wgsl の pressure_curve が参照するため束ねるだけ・未使用)
+- **tiledilate**(M6、tiledilate.wgsl): `0` raw_active(read)、`1` active(write)、`2` SimParams(common.wgsl の pressure_curve が参照するため束ねるだけ・未使用)、`3` tile_dirty(read_write)
+- **dried_cache**(display.wgsl の `dried_cache_main`): `3` SimParams、`4` 顔料 latent、`6` 乾燥レイヤー array、`7` LayerUniform、`14` 合成キャッシュ(write-only storage、rgba16float)
 
-display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 latent、`5` 紙ハイト、`6` 乾燥レイヤー array、`7` LayerUniform、`8/9` 線画(鉛筆/ペン、M4.5a)、`10` ハイライト(M4.5c)、`11` ViewUniform(M6、パン/ズーム/回転)、`12` アクティブタイル有効フラグ(M6、storage read。表示モード7の可視化)。
+display の binding: `0/1/2` 水/浮遊/沈着、`3` SimParams、`4` 顔料 latent、`5` 紙ハイト、`8/9` 線画(鉛筆/ペン、M4.5a)、`10` ハイライト(M4.5c)、`11` ViewUniform(M6、パン/ズーム/回転)、`12` アクティブタイルの状態(M6、storage read。表示モード7の可視化)、`13` 乾燥レイヤーの合成キャッシュ。乾燥レイヤー array(6)と LayerUniform(7)は同じファイルの `dried_cache_main` だけが読む。
 
 **ビューポート変換(binding 11、M6)**: `ViewUniform { center: vec2f, span: f32, cos_t: f32, sin_t: f32, _pad×3 }`(32B。WGSL の末尾パディングは vec3f だと align 16 で 48B に膨らむため f32×3 で詰めて Rust 側と一致させる)。fs_main が画面 uv → キャンバス uv を `canvas_uv = center + R(θ)·(画面uv − 0.5)·span`(`span = 1/zoom`、`R(θ)` は表示中心まわりの回転)で写してからサンプルするため、拡大/パン/**回転**が全サンプル(水/浮遊/沈着/紙/乾燥/線画)に一括で効く。SimParams とは分けた display 専用 uniform で(プリセット H3・記録 H5 を汚さない)、`CanvasCallback` がフレームごとに `write_buffer`。app 側で `zoom ∈ [1, 32]`。**回転で窓の隅がキャンバス外に出るぶん(`canvas_uv` が [0,1] の外)は `BG_COLOR`(紙の周りの机)で塗る**。クランプは回転なしなら窓をキャンバス内に(`center` を各軸 `[half, 1−half]`)、回転時は `center` のみ `[0,1]` に留める。ポインタ→テクセル変換(描画・スポイト)も同じ写像 `PaintApp::screen_to_texel`(逆回転込み)を通す。**スポイト(M5e)の snapshot 読み戻しは画面 uv で索引する**(`GpuCanvas::snapshot` はビュー変換を引数に取り、スポイトは画面と同じビューで焼くため。テクセル索引では拡大・回転時にズレる)。PNG 書き出し(H6)は `ViewUniform::default()`(全体・無回転)で焼くので、ズーム・回転中でもキャンバス全体が出る。snapshot が書いた view_buffer は次フレームの `CanvasCallback` が表示用に書き直す。回転操作は Shift+ホイールで15°刻み・「ビュー」パネルのスライダーで自由角。パン は中ボタンまたはスペース+左ドラッグ。
 
@@ -145,15 +149,17 @@ prepare(毎フレーム)= encode_frame:
   ブラシ入力パス:
     ラスタツール(M4.5a/c、line_target=Some)→ 専用 line_pass で linesplat.wgsl(対象の線画テクスチャへ直描き。水は注入しない)
     流体ツール → sim_pass 先頭で splat.wgsl(水+初速+顔料の注入。tool で分岐)
+  乾燥レイヤーの合成キャッシュ: dirty か pigment_density / compose_mode が変わったフレームだけ dried_cache_main
+  (ping-pong するパスが1つもないフレーム = 一時停止中で流体へ筆を流さない、はここで終わり)
   アクティブタイル(M6): sim_pass 先頭(splat より前)で tilescan → tiledilate。
-    濡れ面積+ブラシから active フラグを作り、以降の splat/sim 各パスが非アクティブなタイルを素通し。
+    濡れ面積+ブラシ+dirty からタイルの状態を作り、以降の splat/sim 各パスは ACTIVE だけ計算・COPY はコピー・COLD は何もしない。
     active_tiles=0 なら tilescan が全タイルを有効化=全面計算に戻る
   sim_steps 回(H6 の速度倍率):
     速度更新(velocity。ペン線で速度/にじみ拡張に透水率 M4.5b) → 発散緩和(relax)× relax_iters
     → FlowOutward(edge_eta > 0 のときだけ) → 移流(advect: 水+浮遊顔料)
     → 顔料+水の拡散(diffuse。水は毛細管拡散 note/05。ペン線で隣接流束に透水率 M4.5b)× diffuse_iters → 吸着/脱着+蒸発(transfer)
 paint:
-  display.wgsl でフルスクリーン三角形を描画(合成・発色・デバッグ表示)
+  display.wgsl でフルスクリーン三角形を描画(湿レイヤーの発色を合成キャッシュの上に重ねる・線画・デバッグ表示)
 ```
 
 ボタン駆動の単発パス: **bake**(乾かす=焼き込み)/ **fastdry**(水だけ除去)/ **rewet**(全面再湿潤)。PNG スナップショット(H6)は display と同じシェーダーでオフスクリーンに焼いて読み戻す(ビュー変換なし=キャンバス全体)。**UI スクショ(H6、AI レビュー用)**は GPU でなく egui 経路: `ViewportCommand::Screenshot` で画面全体(パネル込み)の撮影を要求し、eframe が次フレーム以降に返す `Event::Screenshot`(`Arc<ColorImage>`)を `poll_ui_screenshot`([app/mod.rs](../src/app/mod.rs))が受け取って固定パス `screenshots/ui-latest.png` へ上書き保存する。AI が同じパスから最新 UI を読めるようにするのが目的で、キャンバス PNG(タイムスタンプ命名)と別物。撮影のトリガーは2経路 — UI ボタンと、**外部ファイル監視**(`ScreenshotWatcher`([gpu/hot_reload.rs](../src/gpu/hot_reload.rs))が `screenshots/request-shot` の作成/変更を notify で拾う。AI が Bash からこのファイルを書けば実行中アプリに撮影させられる。自身が書く `ui-latest.png` はファイル名で除外し撮影ループを防ぐ)。
@@ -177,8 +183,8 @@ paint:
 | rewet.wgsl | Wet the Layer(全面マスク=1+rewet_water。沈着は既存の脱着で再浮遊) |
 | linesplat.wgsl | ラスタ線画(M4.5a/c)。鉛筆/ペン/ハイライトを対象の r32float テクスチャへ直描き(line_mode で視覚分岐、line_eraser で減算)。流体を通らない |
 | tilescan.wgsl | アクティブタイル(M6)第1段。タイル(16²)ごとに濡れマスクとブラシ近傍(流体へ流す splat)の有無を走査し raw_active に 0/1 を書く。active_tiles=0 で全タイル有効 |
-| tiledilate.wgsl | アクティブタイル(M6)第2段。raw_active を3×3で膨張(1タイルの余裕)して active を確定する |
-| display.wgsl | 表示: 層内発色(mixbox latent)→ レイヤー合成(multiply / KM)→ 線画合成(鉛筆→ペン→ハイライト、M4.5a/c)→ sRGB。デバッグ表示 H4 の分岐もここ(モード7=アクティブタイル可視化) |
+| tiledilate.wgsl | アクティブタイル(M6)第2段。raw_active を3×3で膨張(1タイルの余裕)し、dirty と合わせて active(COLD / COPY / ACTIVE)を確定する |
+| display.wgsl | 表示: 層内発色(mixbox latent)→ レイヤー合成(multiply / KM)→ 線画合成(鉛筆→ペン→ハイライト、M4.5a/c)→ sRGB。デバッグ表示 H4 の分岐もここ(モード7=アクティブタイル可視化)。乾燥レイヤーの合成は compute 入口 `dried_cache_main` がキャッシュへ焼き、fs_main は湿レイヤーだけを毎フレーム発色する(色の関数を1ファイルで共有するため同じモジュールに置く) |
 
 ## 5. 混色・発色のアーキテクチャ(2段構え)
 
@@ -191,7 +197,7 @@ paint:
 ## 6. 乾燥とレイヤー
 
 - 湿レイヤーは常に1枚。「乾かす」= bake パスで `(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を texture array の新スライスへ書き、湿レイヤーを全ゼロに
-- レイヤーの重ね順・可視性は `LayerUniform`(order + visible_mask)で display へ渡す。UI の並べ替えがそのまま KM 合成順になる
+- レイヤーの重ね順・可視性は `LayerUniform`(order + visible_mask)で display.wgsl の `dried_cache_main` へ渡す。UI の並べ替えがそのまま KM 合成順になる。`sync_layers` が合成キャッシュの焼き直しを予約する
 - 焼き込みは一方通行(乾燥レイヤーの再編集はしない)。Fast Dry / Wet the Layer が「焼かずに止める / 濡らし直す」の中間操作を提供する
 
 ## 6.5 線画(M4.5)
@@ -207,12 +213,14 @@ paint:
 
 ## 6.6 アクティブタイル(M6)
 
-シミュレーションコストを「紙の広さ」比例から「濡れ面積」比例へ絞る土台(M8 の 2048² 化の前提)。**タイル早期リターン方式**で、ping-pong 構造を崩さずに実装している。
+シミュレーションコストを「紙の広さ」比例から「濡れ面積」比例へ絞る土台(M8 の 2048² 化の前提)。**タイル早期リターン方式**で、ping-pong 構造を崩さずに実装している。濡れマスクは蒸発では消えないので、一度濡れたタイルは Fast Dry・乾かす・全部消すまで計算され続ける。
 
 - **2段のタイル判定**: `tilescan.wgsl` がタイル(16×16 テクセル)ごとに、タイル内に濡れたセル(濡れマスク a > 0.5)があるかと、このフレームのブラシ(流体へ流す splat の位置)の近傍かを走査して生フラグ `raw_active` を作る。乾いたセルは各シミュパスが素通しにするので、顔料が載っているだけ(Fast Dry 後など)のタイルは立てない。splat バッファのヘッダは毎フレーム書き(0 個でも)、`fluid_count` は線画ツールのフレームで 0 になる(線画の splat で流体のタイルを立てない)。`tiledilate.wgsl` が 3×3 で膨張(1タイル=16px の余裕)して `active` を確定する。膨張は「濡れ前線が1フレームに進む距離 < TILE_SIZE」を保証するための halo(既定 vel_max×sim_steps ≪ 16px)
-- **ゲート**: 各シミュパス(splat/velocity/relax/flowout/advect/diffuse/transfer)は共通レイアウトの binding 11 で `active` を読み、**非アクティブなタイルは水/浮遊/沈着の3テクスチャを src→dst に素通しして return**(ping-pong の両バッファを常に一致させるため、計算を省いても必ず書く)。`tile_index_of`(common.wgsl)でテクセル→タイル添字に写す
+- **タイルの3状態**: tiledilate が active に書く値は `TILE_ACTIVE`(膨張後に有効)/ `TILE_COPY`(有効でないが dirty)/ `TILE_COLD`(どちらでもない)。定数は gpu/prelude.rs が正典
+- **ゲート**: 各シミュパス(splat/velocity/relax/flowout/advect/diffuse/transfer)は共通レイアウトの binding 11 で `active` を読み、ACTIVE は計算、**COPY は水/浮遊/沈着の3テクスチャを src→dst に素通しでコピー、COLD は何も書かずに return** する。`tile_index_of`(common.wgsl)でテクセル→タイル添字に写す
+- **dirty(ping-pong の2枚が食い違いうるタイル)**: COLD で書き込みを省いてよいのは2枚が一致しているタイルだけ。計算したタイルはフレームの最後のパスで2枚が食い違うので、tiledilate が `dirty = 今フレーム有効か` を残し、次にシミュが進むフレームで有効でなければ COPY として全パスでコピーされて揃う。この更新は「そのフレームに少なくとも1パス進む」前提なので、ping-pong するパスが1つもないフレームは tilescan / tiledilate ごと積まない。current 側だけを書き替えるフレーム外の操作(乾かす・Fast Dry・再湿潤・湿レイヤーの undo・作品読込・全部消す)の後は `GpuCanvas::mark_tiles_dirty` が全タイルを dirty にする。不変条件は e2e の `inactive_tiles_keep_pingpong_in_sync`(2枚を読み戻して比較)と `active_tiles_match_full_compute` が検査する
 - **実行順とハザード**: sim_pass の先頭で tilescan → tiledilate → splat → sim ループを同一 compute パスに積む。tiledilate が書いた `active` を後続パスが読む storage RAW は、テクスチャ ping-pong と同様に wgpu が自動バリアで解決する
-- **退避と可視化**: `active_tiles=0` で tilescan が全タイルを有効化=全面計算(A/B・不具合時の退避)。display のモード7が `active` を可視化(計算中=緑 / 素通し=暗く + タイル格子)して「コストが濡れ面積比例か」を目視できる
+- **退避と可視化**: `active_tiles=0` で tilescan が全タイルを有効化=全面計算(A/B・不具合時の退避)。display のモード7が `active` を可視化(計算中=緑 / コピーだけ=青 / 何もしない=暗く + タイル格子)して「コストが濡れ面積比例か」を目視できる
 - **SimParams とは別に view(パン/ズーム)を持つのと同じく、これは表示でなく計算範囲のノブ**。TILE_SIZE / TILES_PER_SIDE の WGSL 定数はキャンバスサイズ依存(M8)のため、gpu/prelude.rs の `shader_prelude` が生成して連結する(Rust 側定義が唯一の正典)
 
 ## 7. 入力の経路
@@ -239,7 +247,7 @@ paint:
 
 ## 9. テスト戦略
 
-`cargo test --workspace` で全60件(e2e 12件は GPU 必須):
+`cargo test --workspace` で全62件(e2e 14件は GPU 必須)。ほかに `#[ignore]` の計測が1件:
 
 | 対象 | 件数 | 内容 |
 |---|---|---|
@@ -249,8 +257,9 @@ paint:
 | kasaneiro crate | 25 | 保存名の正規化(5)・JSON ストア往復、シェーダーエラー行番号補正(3)、プリセット・パレット・色・ストロークの往復と同梱分の読込、同梱 default パレットとコード既定値の一致、作品ファイルの往復と破損・層数不一致・レイヤー構成不正・末尾余剰の拒否 |
 | [tests/shader_compile.rs](../tests/shader_compile.rs) | 1 | WGSL コンパイル可能性。実行時ロードのため cargo build では壊れた WGSL を検出できない。naga(wgpu と同バージョン)で assets/shaders の全シェーダーを、全キャンバスサイズのプレリュード付きでパース+検証 |
 | [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) | 1 | SimParams の Rust 定義と common.wgsl の struct のフィールド名・順序・型の一致 |
-| [tests/e2e_watercolor.rs](../tests/e2e_watercolor.rs) | 6 | `headless::HeadlessCanvas` でストロークを再生(アプリの H5 再生と同じ `Player` → `encode_frame` 経路)し、wet-on-wet(黄+青の境界が緑のグラデーション)/ グレージング(乾いた下層が不変・交差部が濃い緑)/ 消去(紙の白へ)/ 削り(リフト→吸い取りで薄くなる)/ ステイニング差(ω の強い顔料ほど削れ残る)/ 同梱ストロークの再生 |
+| [tests/e2e_watercolor.rs](../tests/e2e_watercolor.rs) | 8 | `headless::HeadlessCanvas` でストロークを再生(アプリの H5 再生と同じ `Player` → `encode_frame` 経路)し、wet-on-wet(黄+青の境界が緑のグラデーション)/ グレージング(乾いた下層が不変・交差部が濃い緑)/ 消去(紙の白へ)/ 削り(リフト→吸い取りで薄くなる)/ ステイニング差(ω の強い顔料ほど削れ残る)/ 同梱ストロークの再生 / アクティブタイル(全面計算と同じ絵になる・計算から外れたタイルで ping-pong の2枚が一致する) |
 | [tests/e2e_ui.rs](../tests/e2e_ui.rs) | 6 | egui_kittest で PaintApp 全体を起動し、マウスドラッグ・ペン(筆圧付き Touch)・ツールボタン・スウォッチのダブルクリック→モーダル・乾かすを実入力イベントで送り、描画結果と UI 状態を判定 |
+| [tests/perf_bench.rs](../tests/perf_bench.rs) | 1(ignore) | GPU の所要時間の計測(回帰判定はしない)。512/1024/2048 で、乾いた紙・一部濡れ・全面計算のフレーム時間と、乾燥レイヤー 0/8 枚の表示時間を表で出す。`cargo test --test perf_bench -- --ignored --nocapture` |
 
 - CPU 純粋部(km / pigment / paint-core)は wgpu をリンクしないので `cargo test -p <crate>` が数秒で回る
 - **e2e は体験の回帰検知**: 流体シェーダーの数値は固定しない(見た目の調整で動いてよい)が、「目で見て判定する体験」が壊れていないかは色相・明度の帯で機械判定する。結果画像は `target/tmp/e2e/*.png` に書き出し、落ちたらまず画像を見る
