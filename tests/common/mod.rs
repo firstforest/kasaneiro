@@ -7,12 +7,32 @@ use kasaneiro::replay::{RecordedStroke, Recording, TimedPoint};
 use paint_core::tool::WetTool;
 use std::path::PathBuf;
 
-/// テスト用の wgpu render state(egui_kittest の既定セットアップ = ウィンドウなし)
+/// テスト用の wgpu render state(ウィンドウなし)。
+///
+/// egui_kittest の既定セットアップは CPU アダプタ(Windows では DX12 WARP)を優先するが、
+/// 流体シミュレーションを CPU で回すと e2e が数十倍遅くなるので実 GPU を選ぶ。
+/// `KASANEIRO_TEST_ADAPTER=cpu` で既定(ソフトウェアラスタライザ優先)に戻せる
 pub fn render_state() -> egui_wgpu::RenderState {
-    egui_kittest::wgpu::create_render_state(
-        egui_kittest::wgpu::default_wgpu_setup(),
-        egui_wgpu::RendererOptions::PREDICTABLE,
-    )
+    let mut setup = egui_kittest::wgpu::default_wgpu_setup();
+    let use_cpu = std::env::var("KASANEIRO_TEST_ADAPTER").is_ok_and(|v| v == "cpu");
+    if let egui_wgpu::WgpuSetup::CreateNew(create) = &mut setup
+        && !use_cpu
+    {
+        create.native_adapter_selector = Some(std::sync::Arc::new(|adapters, _surface| {
+            adapters
+                .iter()
+                .min_by_key(|a| match a.get_info().device_type {
+                    egui_wgpu::wgpu::DeviceType::DiscreteGpu => 0,
+                    egui_wgpu::wgpu::DeviceType::IntegratedGpu => 1,
+                    egui_wgpu::wgpu::DeviceType::VirtualGpu => 2,
+                    egui_wgpu::wgpu::DeviceType::Other => 3,
+                    egui_wgpu::wgpu::DeviceType::Cpu => 4,
+                })
+                .cloned()
+                .ok_or_else(|| "wgpu アダプタが見つからない".to_owned())
+        }));
+    }
+    egui_kittest::wgpu::create_render_state(setup, egui_wgpu::RendererOptions::PREDICTABLE)
 }
 
 /// 既定パレット・既定パラメータの 512² 白紙キャンバス

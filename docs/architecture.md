@@ -327,4 +327,4 @@ paint:
 
 - e2e の結果画像は `target/tmp/e2e/*.png`。落ちたらまず画像を見て、体験として正しければ閾値側を直す
 - UI 要素は AccessKit の名前(キャンバス・「塗る色 N: 顔料名」・ボタン文字)で引く。キャンバスのシミュは prepare で進むので毎フレーム `render()` する。step_dt は実機と同じ 1/60 秒
-- テスト用 wgpu デバイスは egui_kittest の `create_render_state`(ウィンドウなし)
+- テスト用 wgpu デバイスは egui_kittest の `create_render_state`(ウィンドウなし)で、アダプタは実 GPU(ディスクリート → 内蔵の順)を選ぶ([tests/common/mod.rs](../tests/common/mod.rs) の `render_state`)。`KASANEIRO_TEST_ADAPTER=cpu` で egui_kittest 既定のソフトウェアラスタライザ優先(Windows では DX12 WARP)に戻る
