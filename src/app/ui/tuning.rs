@@ -116,6 +116,10 @@ impl PaintApp {
                     egui::Slider::new(&mut self.params.vel_max, 0.1..=2.0).text("速度上限 (CFL)"),
                 );
                 ui.add(
+                    egui::Slider::new(&mut self.params.advect_sharp, 0.0..=1.0)
+                        .text("移流の補正(0=ぼける / 1=MacCormack)"),
+                );
+                ui.add(
                     egui::Slider::new(&mut self.params.wet_expand, 0.0..=0.5)
                         .text("にじみ拡張(0=固定マスク)"),
                 );

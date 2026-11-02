@@ -48,8 +48,8 @@ pub const SAT_RATIO: f32 = 4.3;
 /// フィールドを足したら: ①ここに1行 ②src/app/ui/ の該当パネルにスライダー1行 ③common.wgsl の struct に1行
 /// (名前・順序・型の一致は tests/sim_params_layout.rs が検査する)。
 /// メモリレイアウトは WGSL の uniform 規則(16 バイト整列)に合わせること。
-/// 全体サイズは 16 の倍数を保つ(59 フィールド+末尾の _pad_brush: [f32; 1] = 240B。次に足すときは
-/// _pad_brush を1つずつ実フィールドへ置き換え、使い切ったら末尾に新しい _pad を置いて 16B 境界を保つ。
+/// 全体サイズは 16 の倍数を保つ(60 フィールド = 240B、パディングなし。次に足すときは末尾に
+/// _pad: [f32; 3] を置き、以降は1つずつ実フィールドへ置き換えて 16B 境界を保つ。
 /// _pad は WGSL 側には書かない。手順は docs/parameters.md §11)。
 /// serde(default): プリセット(H3)にないフィールドは Default 値で埋める
 /// (パラメータを増やしても古い JSON が読めるように)。
@@ -223,8 +223,9 @@ pub struct SimParams {
     /// 紙テクスチャの g, b(paper.rs の generate_mottle)を顔料ごとに違う組み合わせで使うので、
     /// 混ぜた色の比率が場所で揺れる。濡れている間に効き、乾くと止まる
     pub mix_mottle: f32,
-    #[serde(skip)]
-    pub _pad_brush: [f32; 1],
+    /// 移流の補正(MacCormack): 0 = セミラグランジアン(毎ステップ少しぼける)/ 1 = 誤差補正つき
+    /// (流れが作った筋をぼかさない)。間の値は補正を割合で掛ける(advect.wgsl)
+    pub advect_sharp: f32,
 }
 
 impl SimParams {
@@ -272,10 +273,11 @@ impl Default for SimParams {
         Self {
             brush_radius: 16.0,
             brush_water: 0.5,
-            brush_velocity: 0.5,
+            // 筆の勢いと速度減衰: 筆で押した色が流れて、筆の跡がうっすら帯として残る程度
+            brush_velocity: 1.0,
             dt: 0.5,
             accel: 1.0,
-            damping: 0.05,
+            damping: 0.02,
             xi: 0.1,
             relax_iters: 16,
             vel_max: 1.0,
@@ -290,11 +292,11 @@ impl Default for SimParams {
             // 水量 0.5 の塗りが約1分保つ値(0.0003×dt0.5×60刻み/秒 ≈ 0.009/秒)。
             // ステップは固定刻み(paint_core::clock)で回るので、モニタの Hz には依らない
             evap_rate: 0.0003,
-            // 実効 0.1(0.2×dt0.5)= WGSL 安定上限 0.2 の半分。約1分濡れたままの乾き方で
-            // 混ざりすぎないための値。乾きかけで混ざらないのは水依存カーブ
+            // 実効 0.05(0.1×dt0.5)。流れが作った筆の跡を均しきらず、置いた境目は馴染む値。
+            // 乾きかけで混ざらないのは水依存カーブ
             // (diffuse.wgsl の DIFFUSE_GAMMA)が担う。水の毛細管拡散(WATER_DIFFUSE)は
             // この値に依存しない=置いた色水の届く距離は変わらない
-            pigment_diffuse: 0.2,
+            pigment_diffuse: 0.1,
             diffuse_iters: 12,
             brush_channel: 0,
             pigment_density: 1.0,
@@ -339,7 +341,7 @@ impl Default for SimParams {
             // 濡れている間の顔料の寄り(diffuse.wgsl)。混ぜた色にうっすら色むらが残る程度
             paper_drift: 1.0,
             mix_mottle: 0.3,
-            _pad_brush: [0.0; 1],
+            advect_sharp: 1.0,
         }
     }
 }

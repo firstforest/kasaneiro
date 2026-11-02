@@ -218,7 +218,7 @@ paint:
 | velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率を速度場・にじみ拡張に掛ける |
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
 | flowout.wgsl | FlowOutward(縁の水を抜く)。既定オフ(edge_eta 0 で dispatch ごと省略) |
-| advect.wgsl | セミラグランジアン移流(水+浮遊顔料) |
+| advect.wgsl | セミラグランジアン移流(水量・速度・浮遊顔料)に MacCormack 補正を `advect_sharp` の割合で掛ける。補正に要る逆向きの値は、戻り先を囲む4格子点でその場で前進移流して求める(1パス・追加テクスチャなし) |
 | diffuse.wgsl | 浮遊顔料+水の拡散(陽解法・濡れセル間のみ・保存則あり)。顔料は粒の細かさ μ で per-channel に拡散倍率が変わり、溜まりやすさ φ(紙の谷への寄り `paper_drift`×γ + 混ざりムラ `mix_mottle`)の差で流束が偏る。水は毛細管拡散([note/05](note/05-wet-spreading.md))。ペン線を挟む流束に透水率を掛ける |
 | transfer.wgsl | 吸着 / 脱着(ρ/ω で per-channel 変調)+蒸発 |
 | bake.wgsl | 乾かす = 乾燥レイヤーへの焼き込み+湿レイヤー全ゼロ |
