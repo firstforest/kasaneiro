@@ -60,7 +60,9 @@
 | `xi` | 0.1 | 0〜0.5 | 発散緩和の係数 ξ(δ = −ξ·div。Curtis 1997 の既定は 0.1) |
 | `relax_iters` | 16 | 1〜50 | 発散緩和の反復回数/ステップ(安全弁の上限 64) |
 | `vel_max` | 1.0 | 0.1〜2 | 速度上限(セル/ステップ)。CFL 的制約として 1.0 以下を推奨 |
-| `wet_expand` | 0.0 | 0〜0.5 | にじみ拡張率: 乾いたセルのマスクが濡れた隣の水量に比例して育つ速さ(0.5 超で濡れに昇格)。0 = 筆が通った領域に固定 |
+| `wet_expand` | 0.2 | 0〜0.5 | にじみ拡張率: 乾いたセルのマスクが濡れた隣の水量に比例して育つ速さ(0.5 超で濡れに昇格)。0 = 筆が通った領域に固定。実効の速さは下の `wick_bare` / `wick_ref` で、そのセルの沈着顔料の量によって変わる。既定では乾いた色の上に置いた色が 30〜40px 先まで遠いほど薄く馴染む。0.05 では前線が数 px で止まり、その内側で色が均されて前線に段が残る |
+| `wick_bare` | 0.0 | 0〜1 | 白い紙への染み込み: 沈着顔料のない乾いたセルで `wet_expand` に掛ける倍率。0 = 白い紙へは濡れ前線が進まず、色のある所へだけ染みる / 1 = 顔料の有無で差をつけない |
+| `wick_ref` | 0.05 | 0.005〜0.5(log) | 染み込みが最大になる沈着量(4ch の和)。乾いたセルの沈着量がこれに達すると `wet_expand` そのままの速さで、少ないと `wick_bare` との間を smoothstep で補間する。0.05 ≈ 被覆率 5% の薄塗り |
 | `advect_sharp` | 1.0 | 0〜1 | 移流の MacCormack 補正の割合。0 = セミラグランジアン(バイリニア補間で毎ステップぼける)/ 1 = 往復の誤差を半分戻し、前進サンプルの4タップの範囲に収める |
 
 ## 4. 顔料の輸送(diffuse / transfer)
@@ -216,7 +218,7 @@ GPU へ渡す前に `physics_uniform()` が ρ・μ を 0 以上、ω・γ を 0
 2. [src/app/ui/](../src/app/ui/) の該当パネルにスライダー1行
 3. [assets/shaders/common.wgsl](../assets/shaders/common.wgsl) の `struct SimParams` に1行(Rust 側と同レイアウト。名前・順序・型の不一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検出する)
 
-**現在のレイアウト**: `SimParams` は 60 フィールド・パディングなし(全て f32 / u32 の 4 バイト)= 240 バイト(16×15)。`Splat` は 32 バイト(`pos`・`vel`・`pressure`・`feed`・`scale`・`_pad`)。筆の中身 `BrushState` は 64 バイト(穂先の `tip_water`・`_pad`×3・`tip_pigment: [f32; 4]`、腹の `belly_water`・`_pad`×3・`belly_pigment: [f32; 4]`)。
+**現在のレイアウト**: `SimParams` は 62 フィールド+末尾の `_pad: [f32; 2]`(全て f32 / u32 の 4 バイト)= 256 バイト(16×16)。`Splat` は 32 バイト(`pos`・`vel`・`pressure`・`feed`・`scale`・`_pad`)。筆の中身 `BrushState` は 64 バイト(穂先の `tip_water`・`_pad`×3・`tip_pigment: [f32; 4]`、腹の `belly_water`・`_pad`×3・`belly_pigment: [f32; 4]`)。
 
 **16 バイト整列の保ち方**: uniform buffer は Rust の構造体を bytemuck で生バイトのまま渡すので、全体サイズを 16 の倍数に保つ(`params_size_aligned` テスト)。次にフィールドを足すとき 16 の倍数から外れるなら、Rust 側の末尾に `#[serde(skip)]` のパディング(例: 1個足すなら `_pad: [f32; 3]`)を置き、以降はそのパディングを1つずつ実フィールドへ置き換えていく。パディングは WGSL 側の struct には書かない([tests/sim_params_layout.rs](../tests/sim_params_layout.rs) は直列化されるフィールドの名前・順序・型を common.wgsl と突き合わせ、直列化されない末尾 16 バイト未満だけをパディングとして許す)。
 

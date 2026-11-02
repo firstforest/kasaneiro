@@ -69,11 +69,12 @@
 - **性能**(Apple Silicon / Metal、headless 計測 [tests/perf_bench.rs](../tests/perf_bench.rs)、1フレーム): 2048² で乾いた紙 2.4ms・一部濡れ(320²)2.7ms・全面計算 16.7ms・全面を濡らして蒸発し切った後 2.8ms、表示はキャンバス解像度で 0.45ms(乾燥レイヤーの枚数によらない)。残る乾いた紙のコストは、何もせずに戻るワークグループを全面に起動する分
 - **時間**: シミュは 1/60 秒の固定刻みで進む(`paint_core::clock::SimClock` がフレームの経過時間を刻み数に変え、1フレーム最大4刻み)。1刻みのステップ数が速度倍率。ストローク記録の時刻も刻み単位なので、乾く速さ・再生のテンポはモニタのリフレッシュレートに依らない。headless は1フレーム=1刻み
 - **乾き方**: `evap_rate` 既定 0.0003 = 水量 0.5 の塗りが約1分濡れたまま
-- **パラメータ**: `SimParams` は 57 フィールド+末尾パディング3 = 240B。
-- **テスト**: `cargo test --workspace` 全95件(kasaneiro crate 27 / km 6 / pigment 7 / paint-core 29 / shader_compile 1 / sim_params_layout 1 / e2e_watercolor 14 / e2e_ui 8 / e2e_video 2)+ `#[ignore]` の計測1件(perf_bench)。e2e は GPU 必須
+- **パラメータ**: `SimParams` は 62 フィールド+末尾パディング2 = 256B。
+- **テスト**: `cargo test --workspace` 全99件(kasaneiro crate 27 / km 6 / pigment 7 / paint-core 30 / shader_compile 1 / sim_params_layout 1 / e2e_watercolor 17 / e2e_ui 8 / e2e_video 2)+ `#[ignore]` の計測1件(perf_bench)。e2e は GPU 必須
 
 ### 1.5 既知の課題・制約
 
+- e2e `wet_on_wet_blends_into_green_gradient` が落ちる: 黄 → 緑 → 青の移りはなめらかだが、色相の隣の行との最大の段が 48°(閾値 45°)。main(857a9f4)の時点から落ちている。画像で体験が正しければ閾値を直す
 - エッジダークニング(`dry_edge`)は効きが弱い。濃い塗りでは被覆率が飽和して縁が目立たない(重要度が低いので許容。強めるなら縁バンドへ内側から顔料を移す質量保存つき再分配)
 - FlowOutward(`edge_eta`)は既定 0 でパスごと省略している(顔料が縁でなく中心へ寄る定式化のまま)
 - 紙の水は表面にだけあり蒸発でしか減らないので、塗り重ねた所や同じ所の往復では筆がほとんど減らない(紙が筆と同じくらい濡れると受け渡しが止まる)。紙が水を吸い込む仕組みは先送り(design.md §4)
@@ -88,6 +89,13 @@
 ### 1.6 要目視確認
 
 変更で目視確認が要るものが出たら、ここに日付つきのまとまりで足し、確かめたら消す。
+
+**乾いた色の上に置いた色が境界なく馴染む(2026-11-02)**
+
+- 乾いた色(自然乾燥か Fast Dry。湿レイヤーに残っている沈着顔料)の上に別の色を置くと、水が色の上へ染みて、置いた色が遠いほど薄く下の色へ馴染み、筆跡の縁に境界が出ないか。白い紙の側の縁はくっきりしたままか(既定 `wet_expand` 0.2 / `wick_bare` 0 / `wick_ref` 0.05)
+- 馴染む距離(headless で 30〜40px)が広すぎる・狭すぎるときは `wet_expand` で調整する。0.05 では前線に段が残る
+- 下の色の範囲いっぱいまで染みたとき、色の端(下の色と白い紙の境)に置いた色が溜まって見えないか
+- 「乾かす」で焼き込んだ乾燥レイヤーの色の上では馴染まず、グレージングどおり重なる(ユーザーの判断で湿レイヤー上の色だけを対象にした)
 
 **筆の流れで混ぜる(2026-11-02)**
 
@@ -132,7 +140,7 @@
 | マイルストーン | 状態 | 現状の仕組み |
 |---|---|---|
 | M0 実験ハーネス | ✅ 完了 | eframe + egui-wgpu の `PaintCallback` でキャンバスを描き、H1(WGSL ホットリロード)と H2(SimParams → uniform)で駆動する |
-| M1a 水の浅水層 | ✅ 完了 | 水テクスチャ(rgba32float: 水量・速度・濡れマスク)を splat → 速度更新([velocity.wgsl](../assets/shaders/velocity.wgsl))→ 発散緩和 × `relax_iters`([relax.wgsl](../assets/shaders/relax.wgsl))→ セミラグランジアン移流([advect.wgsl](../assets/shaders/advect.wgsl))で ping-pong 更新。水と顔料が動くのは濡れマスク内だけで、乾いた紙との境界は壁(Neumann)。`wet_expand` で前線を育てられる(既定 0) |
+| M1a 水の浅水層 | ✅ 完了 | 水テクスチャ(rgba32float: 水量・速度・濡れマスク)を splat → 速度更新([velocity.wgsl](../assets/shaders/velocity.wgsl))→ 発散緩和 × `relax_iters`([relax.wgsl](../assets/shaders/relax.wgsl))→ セミラグランジアン移流([advect.wgsl](../assets/shaders/advect.wgsl))で ping-pong 更新。水と顔料が動くのは濡れマスク内だけで、乾いた紙との境界は壁(Neumann)。濡れ前線は `wet_expand` で育ち、乾いた色の上へだけ染みて白い紙へは進まない(`wick_bare` 0)。乾いた色の上に置いた色は下の色へ境界なく馴染む |
 | M1b 顔料層 | ✅ 完了 | 浮遊・沈着の rgba32float ペア。浮遊顔料は水と同じく移流し、[diffuse.wgsl](../assets/shaders/diffuse.wgsl) で水依存の重み付き拡散(× `diffuse_iters`)、[transfer.wgsl](../assets/shaders/transfer.wgsl) で吸着/脱着+蒸発。同じ diffuse パスで水自身も毛細管拡散する |
 | M1c Mixbox 混色 | ✅ 完了 | rgba 4チャンネル = 4顔料スロット。CPU([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs))が顔料・紙の latent を計算して uniform で渡し、[display.wgsl](../assets/shaders/display.wgsl) が濃度比で latent を線形混合 → latent→RGB 多項式で発色する |
 | M1d 紙ハイト(+FlowOutward) | ✅ 完了(FlowOutward は先送り) | 紙は [crates/paint-core/src/paper.rs](../crates/paint-core/src/paper.rs) が起動時に生成する rgba32float(r = 紙ハイト = 値ノイズ4成分、g, b = 混ざりムラの場)。顔料の寄り(`paper_drift` / `mix_mottle`、diffuse.wgsl)は既定で効かせ、速度勾配(`paper_amp`)・にじみ拡張(`paper_wet`)・吸着(`paper_gran`)の変調は既定 0。FlowOutward([flowout.wgsl](../assets/shaders/flowout.wgsl))は `edge_eta`=0 で dispatch ごと省略 |

@@ -215,7 +215,7 @@ paint:
 | common.wgsl | 共通定義(SimParams / Splat / Brush / BrushIntake 構造体、濡れ判定、バイリニア補間、`tile_index_of`)。各シェーダーの先頭に連結する(§11) |
 | splat.wgsl | ブラシ入力。tool(描画 / リフト / 消去 / 吸い取り)で分岐。描画は穂先と紙が濡れ具合の差で水を受け渡す(穂先の濡れ具合 = 穂先の水 × `Splat.scale`(置く時点の残りの予測)、紙の濡れ具合 = 水位 ÷ (`brush_water` × `SAT_RATIO`))。出るときは穂先の濃さ、入るときは紙の浮遊顔料の濃さで顔料も動き、受け渡した量を集計へ atomic で足す。出た水は筆の速度(`brush_velocity` × 穂先の濡れ具合 × 進行方向)を持ち、紙の水と運動量で混ぜる。置いたままの splat(`feed`)は初速なし・溶かし戻し弱め |
 | brush.wgsl | 塗る筆の中身の更新(1スレッド)。受け渡しの集計を穂先の容量で割って穂先に足し引き → 腹が穂先より濡れていれば `brush_dt` / `brush_refill_time` で腹から穂先へ補充(一方向、顔料は腹の濃さ)。室の容量は「満タンの室だけで乾いた紙をこの長さ塗ると半分」の長さ(`brush_tip` / `brush_hold`)から。集計は 0 に戻す |
-| velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率を速度場・にじみ拡張に掛ける |
+| velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率を速度場・にじみ拡張に掛ける。にじみ拡張は乾いたセルの沈着顔料の量でも変える(白い紙は `wick_bare` 倍) |
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
 | flowout.wgsl | FlowOutward(縁の水を抜く)。既定オフ(edge_eta 0 で dispatch ごと省略) |
 | advect.wgsl | セミラグランジアン移流(水量・速度・浮遊顔料)に MacCormack 補正を `advect_sharp` の割合で掛ける。補正に要る逆向きの値は、戻り先を囲む4格子点でその場で前進移流して求める(1パス・追加テクスチャなし) |
@@ -302,7 +302,7 @@ paint:
 - WGSL は `assets/shaders/` から実行時ロード。notify で監視し、保存で `rebuild_pipelines()`。コンパイルエラー時は描画をスキップしてエラーオーバーレイを出し、直前の正常なパイプラインで続行する
 - **シェーダーの連結は3段**: `shader_prelude`(Rust と共有する const: TILE_SIZE / TILES_PER_SIDE / MAX_LAYERS / LAYER_ORDER_VEC4S / GLOBAL_LATENTS / PIGMENT_LATENTS / LIVE_PALETTE / LATENT_TOTAL)+ common.wgsl + 本体。エラーの行番号は連結分ずれるので `remap_shader_error_lines` で補正して表示する
 - compute パイプラインは `COMPUTE_SHADERS` の表(WGSL ファイル名 → レイアウト種別)から作る。参照は名前引き `Pipelines::compute("splat.wgsl")`、実行順は `encode_frame()` のハードコード
-- `SimParams` は毎フレーム uniform へ書く(スライダー即時反映)。WGSL の uniform 規則(16 バイト整列)に合わせ、現在は 57 フィールド+末尾パディング3 = 240B。足すときの手順は [parameters.md](parameters.md) §11
+- `SimParams` は毎フレーム uniform へ書く(スライダー即時反映)。WGSL の uniform 規則(16 バイト整列)に合わせ、現在は 62 フィールド+末尾パディング2 = 256B。足すときの手順は [parameters.md](parameters.md) §11
 - **配布ビルド**(`cargo build --release --features embed-assets`):
   1. `assets/shaders/` を `include_dir!` で埋め込む(取得元の分岐は `GpuCanvas::shader_source` の1か所。ファイル監視は無効)
   2. 既定 JSON(pigments / palettes / presets / strokes)も埋め込み、初回起動時に `assets::seed_default_assets()` が exe 隣へ書き出す(ディレクトリ単位で「無ければ書く」— ユーザーの編集・削除を復活させない)

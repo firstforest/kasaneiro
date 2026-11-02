@@ -48,8 +48,8 @@ pub const SAT_RATIO: f32 = 4.3;
 /// フィールドを足したら: ①ここに1行 ②src/app/ui/ の該当パネルにスライダー1行 ③common.wgsl の struct に1行
 /// (名前・順序・型の一致は tests/sim_params_layout.rs が検査する)。
 /// メモリレイアウトは WGSL の uniform 規則(16 バイト整列)に合わせること。
-/// 全体サイズは 16 の倍数を保つ(60 フィールド = 240B、パディングなし。次に足すときは末尾に
-/// _pad: [f32; 3] を置き、以降は1つずつ実フィールドへ置き換えて 16B 境界を保つ。
+/// 全体サイズは 16 の倍数を保つ(62 フィールド+末尾の _pad: [f32; 2] = 256B。次に足すときは
+/// _pad を1つずつ実フィールドへ置き換え、使い切ったら末尾に新しい _pad を置いて 16B 境界を保つ。
 /// _pad は WGSL 側には書かない。手順は docs/parameters.md §11)。
 /// serde(default): プリセット(H3)にないフィールドは Default 値で埋める
 /// (パラメータを増やしても古い JSON が読めるように)。
@@ -82,7 +82,8 @@ pub struct SimParams {
     pub display_mode: u32,
     /// デバッグ表示の輝度スケール
     pub display_gain: f32,
-    /// にじみ拡張率: 濡れた隣の水量に比例して乾いたセルのマスクが育つ速さ(0=固定マスク)
+    /// にじみ拡張率: 濡れた隣の水量に比例して乾いたセルのマスクが育つ速さ(0=固定マスク)。
+    /// そのセルの沈着顔料の量で変わる(wick_bare / wick_ref)
     pub wet_expand: f32,
     /// 1 splat あたりに置く顔料量(標準の1回分を含んだ満タンの筆のとき。0 = 水だけのブラシ)
     pub brush_pigment: f32,
@@ -226,6 +227,14 @@ pub struct SimParams {
     /// 移流の補正(MacCormack): 0 = セミラグランジアン(毎ステップ少しぼける)/ 1 = 誤差補正つき
     /// (流れが作った筋をぼかさない)。間の値は補正を割合で掛ける(advect.wgsl)
     pub advect_sharp: f32,
+    /// 白い紙への染み込みやすさ: 沈着顔料のない乾いたセルで、にじみ拡張(wet_expand)に掛ける倍率。
+    /// 0 = 白い紙へは濡れ前線が進まない / 1 = 顔料の有無で差をつけない(velocity.wgsl)
+    pub wick_bare: f32,
+    /// 染み込みが最大になる沈着量: 乾いたセルの沈着顔料(4ch の和)がこの量に達すると、
+    /// にじみ拡張が wet_expand そのままの速さになる。これより少ないと wick_bare との間を補間する
+    pub wick_ref: f32,
+    #[serde(skip)]
+    pub _pad: [f32; 2],
 }
 
 impl SimParams {
@@ -283,7 +292,6 @@ impl Default for SimParams {
             vel_max: 1.0,
             display_mode: 0,
             display_gain: 1.0,
-            wet_expand: 0.0,
             brush_pigment: 0.11,
             deposit_rate: 0.05,
             // 毛細管モデル(note/05)では既存色が新しい塗りへ戻る経路が再浮遊→拡散だけなので
@@ -342,6 +350,14 @@ impl Default for SimParams {
             paper_drift: 1.0,
             mix_mottle: 0.3,
             advect_sharp: 1.0,
+            // 乾いた紙の上で、色を塗った所へだけ水がじわじわ染みていく。白い紙へは広がらない。
+            // 0.05 では前線が数 px で止まり、その内側で色が均されて前線に段が残る。0.2 なら
+            // 前線が 30〜40px 先まで進み、置いた色が遠いほど薄くなって下の色へ境界なく馴染む
+            wet_expand: 0.2,
+            wick_bare: 0.0,
+            // 薄塗り(被覆率 5% 程度)でも十分に染みる量
+            wick_ref: 0.05,
+            _pad: [0.0; 2],
         }
     }
 }

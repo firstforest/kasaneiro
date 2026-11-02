@@ -123,6 +123,15 @@ impl PaintApp {
                     egui::Slider::new(&mut self.params.wet_expand, 0.0..=0.5)
                         .text("にじみ拡張(0=固定マスク)"),
                 );
+                ui.add(
+                    egui::Slider::new(&mut self.params.wick_bare, 0.0..=1.0)
+                        .text("白い紙への染み込み(0=色のある所だけ)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.params.wick_ref, 0.005..=0.5)
+                        .logarithmic(true)
+                        .text("染み込みが最大になる沈着量"),
+                );
 
                 ui.separator();
                 ui.heading("顔料 (M1b)");

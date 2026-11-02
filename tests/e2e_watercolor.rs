@@ -793,3 +793,87 @@ fn light_pressure_paints_thin_lines() {
     assert!(p[2].0 * 4 <= p[0].0, "弱い筆圧の線が十分細くない: {ctx}");
     assert!(p[2].1 > p[0].1 * 0.7, "弱い筆圧の線が薄すぎる: {ctx}");
 }
+
+/// 乾いた色の上に別の色を置くと、水が色の上へ染みて置いた色が下の色へ境界なく馴染み、
+/// 白い紙へは広がらない(wet_expand × 沈着量の門)。乾いたシエナの横帯を濡れた青の縦線で横切り、
+/// 帯に沿って明度を取る。比較の基準は同じ手順をにじみ拡張なし(wet_expand = 0)で再生したキャンバス
+#[test]
+fn color_blends_over_dried_paint_but_not_onto_bare_paper() {
+    let run = |wet_expand: Option<f32>, name: &str| {
+        let mut c = canvas();
+        if let Some(w) = wet_expand {
+            c.params.wet_expand = w;
+        }
+        c.play(recording(vec![hstroke(
+            WetTool::Paint,
+            SIENNA,
+            60.0,
+            450.0,
+            250.0,
+            0,
+        )]));
+        c.idle(120);
+        c.fast_dry().unwrap();
+        c.play(recording(vec![stroke(
+            WetTool::Paint,
+            BLUE,
+            [200.0, 130.0],
+            [200.0, 370.0],
+            0,
+        )]));
+        c.idle(600);
+        c.fast_dry().unwrap();
+        let img = c.snapshot().unwrap();
+        let png = save(&img, name);
+        (img, png)
+    };
+    let (on, png) = run(None, "blend_over_paint_on");
+    let (off, _) = run(Some(0.0), "blend_over_paint_off");
+
+    // 帯(y ≈ 234..266)の中心を、青の筆跡の中心(x = 200)から右へ 6px ごとに取った明度。
+    // 隣どうしの差の最大 = 境界の段の高さ
+    let profile = |img: &Image| -> Vec<f32> {
+        (0..17)
+            .map(|k| lightness(img.mean_rgb(204 + k * 6, 246, 207 + k * 6, 254)))
+            .collect()
+    };
+    let max_step = |p: &[f32]| {
+        p.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0f32, f32::max)
+    };
+    let (p_on, p_off) = (profile(&on), profile(&off));
+    let far_on = on.mean_rgb(320, 244, 340, 256);
+    let far_off = off.mean_rgb(320, 244, 340, 256);
+    let bare_on = on.mean_rgb(218, 164, 226, 176);
+    let bare_off = off.mean_rgb(218, 164, 226, 176);
+    let paper = on.mean_rgb(0, 0, 32, 32);
+    let fmt = |p: &[f32]| {
+        p.iter()
+            .map(|v| format!("{v:.3}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let ctx = format!(
+        "{}\n帯の明度 馴染む  {}\n帯の明度 馴染まない {}\n帯の遠く 馴染む={far_on:?} 馴染まない={far_off:?}\n白い紙 馴染む={bare_on:?} 馴染まない={bare_off:?} 紙={paper:?}",
+        png.display(),
+        fmt(&p_on),
+        fmt(&p_off),
+    );
+    assert!(
+        max_step(&p_off) > 0.04,
+        "基準(にじみ拡張なし)で筆跡の縁に段が出ていない(測る位置がずれた)\n{ctx}"
+    );
+    assert!(
+        max_step(&p_on) < 0.025,
+        "乾いた色の上で置いた色の縁に段が残った\n{ctx}"
+    );
+    assert!(
+        dist(far_on, far_off) < 0.01,
+        "乾いた色の上を水が一気に走った\n{ctx}"
+    );
+    assert!(
+        dist(bare_on, bare_off) < 0.01 && dist(bare_on, paper) < 0.02,
+        "白い紙へ水と青が広がった\n{ctx}"
+    );
+}

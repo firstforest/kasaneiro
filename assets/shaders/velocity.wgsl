@@ -56,7 +56,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
     // 乾いたセルは水が動かない(wet-area mask)。速度ゼロで素通し。
     // にじみ拡張(wet_expand > 0): 濡れた隣の水量に比例してマスク値を蓄積し、
-    // is_wet の閾値 0.5 を超えたら「濡れ」に昇格する(水が多い縁ほど速く外へ育つ)
+    // is_wet の閾値 0.5 を超えたら「濡れ」に昇格する(水が多い縁ほど速く外へ育つ)。
+    // 白い紙はサイジングで水をはじき、乾いた絵具の層(アラビアガム)は水を吸うので、
+    // 拡張の速さをそのセルの沈着顔料の量で変える(白い紙は wick_bare 倍)
     if (!is_wet(cell)) {
         var seep = 0.0;
         let n_l = load_clamped(src_water, ip + vec2i(-1, 0));
@@ -71,7 +73,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let h = textureLoad(paper_tex, ip, 0).r;
         let seep_scale = mix(1.0, 2.0 * (1.0 - h), params.paper_wet);
         // 透水率(M4.5b): ペン線の乾いたセルへは濡れ前線が染み込みにくい
-        let mask = min(cell.a + params.wet_expand * params.dt * seep * seep_scale * perm, 1.0);
+        let dep_sum = dot(textureLoad(src_dep, ip, 0), vec4f(1.0));
+        let wick = mix(params.wick_bare, 1.0, smoothstep(0.0, max(params.wick_ref, 1e-6), dep_sum));
+        let mask = min(cell.a + params.wet_expand * params.dt * seep * seep_scale * perm * wick, 1.0);
         textureStore(dst_water, ip, vec4f(cell.r, 0.0, 0.0, mask));
         return;
     }
