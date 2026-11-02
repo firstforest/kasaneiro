@@ -184,6 +184,37 @@ fn brush_load_controls_density() {
     );
 }
 
+/// 色スウォッチの押下は持ち替え(筆を洗ってその色だけにする)、Shift+押下は今の色に足す(筆の中で混ざる)。
+/// 黄 → 青と押した筆の線は青のまま、そこへ Shift+黄を足した筆の線は緑寄りになる
+#[test]
+fn swatch_switches_color_and_shift_mixes() {
+    let mut harness = app();
+    harness.get_by_label_contains("塗る色 1:").click(); // ハンザイエロー
+    harness.get_by_label_contains("塗る色 2:").click(); // フタロブルー
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.2, 0.8, 0.3);
+    harness
+        .get_by_label_contains("塗る色 1:")
+        .click_modifiers(egui::Modifiers::SHIFT);
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.2, 0.8, 0.7);
+    frames(&mut harness, 60);
+    let colors = canvas_color(&mut harness, "switch-mix", &[(0.5, 0.3), (0.5, 0.7)]);
+    let (switched, mixed) = (hsv(colors[0]), hsv(colors[1]));
+    let ctx = format!(
+        "持ち替え {:?} {switched:?} / 足す {:?} {mixed:?}",
+        colors[0], colors[1]
+    );
+    assert!(
+        (190.0..260.0).contains(&switched.0) && switched.1 > 0.15,
+        "持ち替えた筆に前の黄が残っている: {ctx}"
+    );
+    assert!(
+        mixed.0 < switched.0 - 15.0 && mixed.1 > 0.15,
+        "Shift で足した黄が混ざっていない: {ctx}"
+    );
+}
+
 /// ペンの筆圧が線の濃さ・太さに効く(弱い筆圧の線は強い筆圧の線より細く薄い)
 #[test]
 fn pen_pressure_changes_stroke() {

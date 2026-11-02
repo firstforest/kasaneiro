@@ -110,7 +110,8 @@ impl PaintApp {
                 (
                     egui::Color32::from_rgb(p.rgb[0], p.rgb[1], p.rgb[2]),
                     format!(
-                        "{}を筆に取る(押している間、取り続けて濃くなる。筆の中で今の色と混ざる)\n\
+                        "{}に持ち替える(筆を洗ってからこの色を取る。押している間、取り続けて濃くなる)\n\
+                         Shift+押す: 今の筆の色に足す(筆の中で混ざる)\n\
                          沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2} / 粒の細かさ {:.2}\n\
                          ダブルクリック: 色をつくる / 右クリック: ライブラリ保存",
                         p.name, p.density, p.staining, p.granulation, p.mobility
@@ -122,7 +123,7 @@ impl PaintApp {
         let now = ui.input(|i| i.time);
         let painting_tool = self.tool == Tool::Wet(WetTool::Paint);
         ui.horizontal_wrapped(|ui| {
-            // 色スウォッチ: 押した瞬間に1回分、押している間も取り続ける。
+            // 色スウォッチ: 押した瞬間に筆を洗ってその色を1回分(Shift なら洗わずに足す)、押している間も取り続ける。
             // F17: 筆に入っている色はアクセント色の太枠で明示(角丸のスウォッチ)
             for (i, (color, hover)) in swatches.iter().enumerate() {
                 let selected = painting_tool && self.brush_load.pigment[i] > 0.0;
@@ -146,7 +147,13 @@ impl PaintApp {
                             self.sync_brush();
                             self.swatch_undo = Some((i, now, self.brush_load));
                         }
-                        self.edit_brush(|b| b.take_pigment(i as u32, load::TAKE_DOSE));
+                        let mix = ui.input(|inp| inp.modifiers.shift);
+                        self.edit_brush(|b| {
+                            if !mix {
+                                b.wash();
+                            }
+                            b.take_pigment(i as u32, load::TAKE_DOSE)
+                        });
                         self.after_brush_take();
                         self.params.brush_channel = i as u32;
                     }
