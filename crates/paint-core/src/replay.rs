@@ -11,7 +11,7 @@
 
 use crate::brush::StrokeState;
 use crate::load::{BrushFrame, BrushLoad};
-use crate::sim::{SPLAT_SPACING, SimParams, Splat};
+use crate::sim::{SimParams, Splat};
 use crate::tool::WetTool;
 use serde::{Deserialize, Serialize};
 
@@ -177,7 +177,7 @@ impl Player {
                 }
             }
             // サンプル間隔は筆圧を反映した実効半径から(ライブ描画 src/app/mod.rs と同じ式)
-            let spacing = (params.radius_at(point.pressure) * SPLAT_SPACING).max(1.0);
+            let spacing = params.splat_spacing(params.brush_radius, point.pressure);
             let start = out.len();
             self.stroke_state
                 .add_motion(point.pos, point.pressure, spacing, out);

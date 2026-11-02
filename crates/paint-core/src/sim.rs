@@ -228,7 +228,14 @@ impl SimParams {
         (base * factor).max(0.5)
     }
 
-    /// 水ブラシの実効半径。CPU 側ではストローク補間のサンプル間隔の算出に使う(brush.rs / replay.rs)
+    /// ストローク補間のサンプル間隔(実効半径 × SPLAT_SPACING)。細い線でも1セルを筆が
+    /// 太い線と同じくらいの回数なぞるよう下限は 1 テクセルより細かく取る(粗いと紙が穂先の
+    /// 濡れ具合まで濡れきらず、細い線だけ薄くなる)
+    pub fn splat_spacing(&self, base: f32, pressure: f32) -> f32 {
+        (self.radius_at_base(base, pressure) * SPLAT_SPACING).max(0.25)
+    }
+
+    /// 水ブラシの実効半径
     pub fn radius_at(&self, pressure: f32) -> f32 {
         self.radius_at_base(self.brush_radius, pressure)
     }
@@ -289,9 +296,9 @@ impl Default for SimParams {
             paper_wet: 0.0,
             edge_eta: 0.0,
             edge_radius: 4,
-            pressure_radius: 0.6,
-            pressure_water: 0.3,
-            pressure_pigment: 0.7,
+            pressure_radius: 1.0,
+            pressure_water: 0.0,
+            pressure_pigment: 0.0,
             pressure_gamma: 1.0,
             dry_shift: 1.0,
             dry_gran: 0.0,

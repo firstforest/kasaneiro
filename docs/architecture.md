@@ -273,7 +273,7 @@ paint:
 ```
 ペン → Windows Ink(WM_POINTER)→ winit(GetPointerPenInfo で筆圧)→ egui::Event::Touch{force}
   → input.rs PenSource → PointerEvent(論理ピクセル+筆圧 0..1)
-  → paint_core::brush(ストローク補間。サンプル間隔は筆圧反映後の実効半径 SimParams::radius_at)
+  → paint_core::brush(ストローク補間。サンプル間隔は筆圧反映後の実効半径から SimParams::splat_spacing)
   → 塗る筆なら paint_core::load::BrushFrame::drag(各 splat に置く時点の穂先の残りの予測を載せる。乾いた紙に置いた場合 = 最も減る場合)
   → Splat 列 + BrushFrame → splat storage buffer → splat.wgsl(穂先と紙の受け渡しを集計)→ brush.wgsl
 ```

@@ -90,6 +90,12 @@
 
 変更で目視確認が要るものが出たら、ここに日付つきのまとまりで足し、確かめたら消す。
 
+**筆圧で細く塗る(2026-11-02)**
+
+- ペンの軽いタッチで細部を塗れる細さになるか(既定で筆圧に完全比例。筆圧 0.1 で基準半径の 1/10)。細くなりすぎる・強く押さないと太くならないと感じたら「筆圧→半径の効き」を下げるか γ を 1 未満に
+- 筆圧で線の濃さがほぼ変わらないか(水量・顔料量の効きは既定 0。筆圧 0.1 の細い線は中心で筆圧 1.0 の約 8 割の濃さ)
+- 細い線で splat が増えて(間隔の下限 0.25px)速いストロークが重くならないか
+
 **筆の勢いを出た水の運動量に(2026-11-02)**
 
 - 乾きかけの筆で濡れた色を吸って運ぶ長さが短くなった(以前は筆が溜まりの水を前へ押し寄せて、それを吸っていた)。運び足りなければ「穂先の大きさ」
@@ -114,7 +120,7 @@
 | M1b 顔料層 | ✅ 完了 | 浮遊・沈着の rgba32float ペア。浮遊顔料は水と同じく移流し、[diffuse.wgsl](../assets/shaders/diffuse.wgsl) で水依存の重み付き拡散(× `diffuse_iters`)、[transfer.wgsl](../assets/shaders/transfer.wgsl) で吸着/脱着+蒸発。同じ diffuse パスで水自身も毛細管拡散する |
 | M1c Mixbox 混色 | ✅ 完了 | rgba 4チャンネル = 4顔料スロット。CPU([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs))が顔料・紙の latent を計算して uniform で渡し、[display.wgsl](../assets/shaders/display.wgsl) が濃度比で latent を線形混合 → latent→RGB 多項式で発色する |
 | M1d 紙ハイト(+FlowOutward) | ✅ 完了(FlowOutward は先送り) | 紙ハイトは [crates/paint-core/src/paper.rs](../crates/paint-core/src/paper.rs) が起動時に生成する r32float(値ノイズ4成分)。速度勾配(`paper_amp`)・にじみ拡張(`paper_wet`)・吸着(`paper_gran`)の3箇所を変調するが、いずれも既定 0。FlowOutward([flowout.wgsl](../assets/shaders/flowout.wgsl))は `edge_eta`=0 で dispatch ごと省略 |
-| M1.5 筆圧 | ✅ 完了 | [src/input.rs](../src/input.rs) の `PointerSource`(マウス / ペン = egui Touch)。筆圧は Windows Ink → winit → egui Touch の標準経路で取り、`実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に掛ける。ペン接地中はマウス入力を無視する |
+| M1.5 筆圧 | ✅ 完了 | [src/input.rs](../src/input.rs) の `PointerSource`(マウス / ペン = egui Touch)。筆圧は Windows Ink → winit → egui Touch の標準経路で取り、`実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に掛ける。既定は半径だけ完全比例(軽いタッチで細部を塗れる細さまで細くなる)で、水量・顔料量には効かせない(筆圧で濃さを変えない)。ペン接地中はマウス入力を無視する |
 | M2 乾燥とレイヤー | ✅ 完了 | 乾燥レイヤーは rgba32float texture array(最大8枚、顔料濃度のまま)。下の層は下地(`GpuCanvas::merge_into_base`)へ統合して枠を空けられる。「乾かす」= [bake.wgsl](../assets/shaders/bake.wgsl) で `(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を新スライスへ焼き、湿レイヤーをゼロに。Fast Dry([fastdry.wgsl](../assets/shaders/fastdry.wgsl))・Wet the Layer([rewet.wgsl](../assets/shaders/rewet.wgsl))で焼かずに止める/濡らし直す。焼き込みは一方通行 |
 | M3 削り・顔料個性・KM 合成 | ✅ 完了 | 削り = リフト(`lift_strength` × (1−ω) × 紙凸ゲートで浮かせ、`lift_blot` で吸い取る)と消す(完全消去)の2ツール。顔料個性は physics uniform(binding 9)で吸着・脱着・拡散を per-channel に変調。合成は KM: 各層を白地/黒地に置いた発色から `R=R_b`、`T²=(R_w−R_b)(1−R_b)` を導いて下から光学合成(CPU 参照実装は [crates/km/src/lib.rs](../crates/km/src/lib.rs)) |
 | M4 仕上げ | ✅ 完了 | 吸い取り(tool=3。`absorb_rate`)。先濡らし・ぼかしは水だけの筆で塗る(`paint_pickup` の溶かし戻し) |

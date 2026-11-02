@@ -26,7 +26,7 @@ use linehist::{LineHistory, stroke_splats};
 use paint_core::brush::StrokeState;
 use paint_core::clock::SimClock;
 use paint_core::load::{BrushClock, BrushFrame, BrushLoad};
-use paint_core::sim::{DEFAULT_CANVAS_SIZE, SPLAT_SPACING, SimParams, Splat};
+use paint_core::sim::{DEFAULT_CANVAS_SIZE, SimParams, Splat};
 use paint_core::tool::{RasterTool, Tool, WetTool};
 use std::path::PathBuf;
 use ui::{NamedStore, PaletteUi, PresetUi, ReplayUi, WorkUi};
@@ -922,7 +922,7 @@ impl PaintApp {
             // サンプル間隔は筆圧を反映した実効半径から(細い筆入れでも隙間を作らない)。
             // ラスタ線画は鉛筆/ペン/ハイライトの独立半径を使う(brush_radius と切り離す)
             let base = self.active_base_radius();
-            let spacing = (self.params.radius_at_base(base, ev.pressure) * SPLAT_SPACING).max(1.0);
+            let spacing = self.params.splat_spacing(base, ev.pressure);
             let start = splats.len();
             self.stroke
                 .add_motion([px.x, px.y], ev.pressure, spacing, splats);

@@ -45,9 +45,9 @@
 
 | パラメータ | 既定値 | UI 範囲 | 意味 |
 |---|---|---|---|
-| `pressure_radius` | 0.6 | 0〜1 | 筆圧→半径の効き(0=筆圧無効 / 1=完全比例) |
-| `pressure_water` | 0.3 | 0〜1 | 筆圧→水量の効き |
-| `pressure_pigment` | 0.7 | 0〜1 | 筆圧→顔料量の効き |
+| `pressure_radius` | 1.0 | 0〜1 | 筆圧→半径の効き(0=筆圧無効 / 1=完全比例)。既定は完全比例で、軽いタッチほど細部を塗れる細さになる(実効半径の下限 0.5px) |
+| `pressure_water` | 0.0 | 0〜1 | 筆圧→水量の効き。既定 0 = 筆圧で濃さを変えない(水が減ると紙が濡れきらず線が薄くなる) |
+| `pressure_pigment` | 0.0 | 0〜1 | 筆圧→顔料量の効き。既定 0 = 筆圧で濃さを変えない |
 | `pressure_gamma` | 1.0 | 0.25〜4 | 応答カーブ γ(筆圧^γ)。1=線形、>1 で軽いタッチがより細く弱くなる |
 
 ## 3. 水の流体(velocity / relax / advect)
@@ -93,7 +93,7 @@ transfer.wgsl の実効式(per-channel、M3):
 | `FOOTPRINT_RATIO` | 0.648 | [sim.rs](../crates/paint-core/src/sim.rs)(プレリュードで WGSL へ) | 筆跡1つの被覆の面積 ÷ πr²(coverage = 1 − smoothstep(0.6r, r, d) の円の積分)。CPU の「乾いた紙での減りの上限」の予測に使う |
 | `CROSS_RATIO` | 1.6 | [sim.rs](../crates/paint-core/src/sim.rs)(プレリュードで WGSL へ) | 筆跡1つの被覆を中心線に沿って積分した長さ ÷ r(= 1回なぞって濡れる帯の実効の幅 ÷ r)。穂先・腹の容量の式に使う |
 | `SAT_RATIO` | 4.3 | [sim.rs](../crates/paint-core/src/sim.rs)(プレリュードで WGSL へ) | 紙が満タンに濡れた水位 = `brush_water` × これ。満タンの筆で乾いた紙を1回なぞり、筆跡の幅の中で均された後の水位の計測値([memo](memo/2026-11-01-brush-exchange.md) §6) |
-| `SPLAT_SPACING` | 0.25 | [sim.rs](../crates/paint-core/src/sim.rs) | splat の間隔 = 実効半径 × これ(下限 1px)。ライブ描画と記録の再生のストローク補間が使う |
+| `SPLAT_SPACING` | 0.25 | [sim.rs](../crates/paint-core/src/sim.rs) | splat の間隔 = 実効半径 × これ(下限 0.25px。`SimParams::splat_spacing`)。ライブ描画・記録の再生・ラスタ線画の履歴のストローク補間が使う。下限を 1px にすると細い線ほど1セルをなぞる回数が減り、紙が穂先の濡れ具合まで濡れきらず線だけ薄くなる |
 | `DEPOSIT_WET_FLOOR` | 0.1 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 水膜がある間(w ≥ DRY_POINT)の吸着倍率。0 にすると濡れている間は全く沈まない |
 | `DEPOSIT_DRY_POINT` | 0.35 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 吸着が立ち上がる水量しきい値(=水膜が切れる点)。上げるほど早く沈み始め、下げるほど流れている間は浮遊し続ける |
 

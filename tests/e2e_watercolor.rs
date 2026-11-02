@@ -702,22 +702,31 @@ fn washed_brush_lifts_wet_paint() {
 fn washed_brush_trail_has_no_beads() {
     let stored = kasaneiro::replay::load("washed-brush-over-dense").unwrap();
     let last = stored.recording.strokes.last().unwrap();
-    let a = last.points.first().unwrap().pos;
-    let b = last.points.last().unwrap().pos;
+    let path: Vec<[f32; 2]> = last.points.iter().map(|p| p.pos).collect();
     let mut c = canvas();
     c.set_palette(stored.palette.clone());
     c.play(stored.recording.clone());
     let img = c.snapshot().unwrap();
     let png = save(&img, "washed_brush_trail");
 
-    let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
-    let dir = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+    // 記録した軌跡そのものに沿って弧長 t の位置を取る(軌跡は曲がっているので、始点と終点を
+    // 結ぶ直線で取ると細い筋の縁を拾い、縁の段差を揺れとして数えてしまう)
     let along = |t: f32| {
-        let x = (a[0] + dir[0] * t) as u32;
-        let y = (a[1] + dir[1] * t) as u32;
-        lightness(img.rgb(x, y))
+        let mut rest = t;
+        let mut pos = *path.last().unwrap();
+        for seg in path.windows(2) {
+            let d = [seg[1][0] - seg[0][0], seg[1][1] - seg[0][1]];
+            let len = (d[0] * d[0] + d[1] * d[1]).sqrt();
+            if rest <= len {
+                let k = if len > 0.0 { rest / len } else { 0.0 };
+                pos = [seg[0][0] + d[0] * k, seg[0][1] + d[1] * k];
+                break;
+            }
+            rest -= len;
+        }
+        lightness(img.rgb(pos[0] as u32, pos[1] as u32))
     };
-    // 溜まりを出た先(始点から 120〜200px。溜まりの縁の段差は含めない)
+    // 溜まりを出た先(軌跡に沿って始点から 120〜200px。溜まりの縁の段差は含めない)
     const WINDOW: i32 = 15;
     let ripple: Vec<f32> = (120..200)
         .map(|t| {
@@ -734,4 +743,53 @@ fn washed_brush_trail_has_no_beads() {
         "なぞった筋が段々になっている(移動平均からの揺れ RMS {rms:.4})\n{}",
         png.display()
     );
+}
+
+/// 筆圧が弱いほど線が細くなり(細部を塗れる)、濃さはほぼ変わらない。
+/// 筆圧 1.0 / 0.3 / 0.1 の水平線を引き、縦断面で幅と中心の濃さを比べる
+#[test]
+fn light_pressure_paints_thin_lines() {
+    const YS: [f32; 3] = [120.0, 250.0, 380.0];
+    const PRESSURES: [f32; 3] = [1.0, 0.3, 0.1];
+    let mut c = canvas();
+    let strokes = YS
+        .iter()
+        .zip(PRESSURES)
+        .enumerate()
+        .map(|(k, (&y, p))| {
+            let mut s = hstroke(WetTool::Paint, SIENNA, 100.0, 412.0, y, k as u32 * 80);
+            for pt in &mut s.points {
+                pt.pressure = p;
+            }
+            s
+        })
+        .collect();
+    c.play(recording(strokes));
+    c.idle(120);
+    let img = c.snapshot().unwrap();
+    let png = save(&img, "light_pressure_thin");
+    let paper = img.mean_rgb(0, 0, 32, 32);
+
+    // x=200..312 で平均した縦断面から、紙より目に見えて暗い行の数(幅)と中心の濃さ
+    let profile = |y: f32| -> (u32, f32) {
+        let ink = |row: u32| lightness(paper) - lightness(img.mean_rgb(200, row, 312, row + 1));
+        let rows = (y as u32 - 40)..(y as u32 + 40);
+        let width = rows.filter(|&r| ink(r) > 0.02).count() as u32;
+        let center = (y as u32 - 1..=y as u32 + 1).map(ink).fold(0.0, f32::max);
+        (width, center)
+    };
+    let p: Vec<(u32, f32)> = YS.iter().map(|&y| profile(y)).collect();
+    let ctx = format!(
+        "(幅, 中心の濃さ) 筆圧1.0={:?} 0.3={:?} 0.1={:?}\n{}",
+        p[0],
+        p[1],
+        p[2],
+        png.display()
+    );
+    assert!(
+        p[0].0 > p[1].0 && p[1].0 > p[2].0,
+        "筆圧で幅が変わらない: {ctx}"
+    );
+    assert!(p[2].0 * 4 <= p[0].0, "弱い筆圧の線が十分細くない: {ctx}");
+    assert!(p[2].1 > p[0].1 * 0.7, "弱い筆圧の線が薄すぎる: {ctx}");
 }
