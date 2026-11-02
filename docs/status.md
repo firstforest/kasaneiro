@@ -2,7 +2,7 @@
 
 マイルストーン M0〜M8・装備(H1〜H6、狙いは [design.md](design.md) §2)の現在地。**現在の実装状況の正典**で、書くのは現状だけ。実装の経緯・日付ごとの記録は [changelog.md](changelog.md) に残す。マイルストーン・装備を進めたとき、ツール・UI・ファイル形式・主要な仕組みが変わったとき、要目視確認の項目が増えた/片付いたときに、コード変更と同じコミットで更新する。
 
-最終更新: 2026-11-01
+最終更新: 2026-11-02
 
 ## 1. 現在地
 
@@ -62,7 +62,7 @@
 - **混色・発色**: 層内は mixbox の latent 混合、層間は Kubelka-Munk の R/T 合成(`compose_mode` 既定 1、0 で multiply)。mixbox 依存は `crates/pigment` に隔離
 - **乾燥とレイヤー**: 湿レイヤー1枚 + 乾燥レイヤー最大8枚(顔料濃度のまま保持)。乾かす瞬間のパレットを GPU の latent 枠と CPU の `layer_palettes` に記録するので、後でパレットを変えても乾いた層の色は変わらない。8枚に達したら、下の層を**下地**(乗算・KM 両方式の合成結果を焼いた rgba16float 2スライス)へ統合して枠を空ける。見た目は変わらないが、統合した層の並べ替え・表示切替・色の取り込み・濃さの変更はできなくなり、紙色・`pigment_density`・層ごとの濃度倍率もそのときの値で固まる
 - **乾いた層の濃さ**: 層ごとの濃度倍率(`DriedLayer::density`、既定 1)を合成時に顔料濃度へ掛ける。テクスチャは書き換えないのでいつでも戻せる。KM 合成では薄くするほど下が透ける。作品のレイヤー構成に保存する
-- **紙**: 紙ハイト(値ノイズ4成分)はあるが、シミュ側の紙の質感(`paper_amp` / `paper_gran` / `paper_wet`)は既定 0。鉛筆の粒状感(`pencil_gran`)とリフトの紙凸部変調は紙ハイトを使う
+- **紙**: 紙テクスチャ(r = 紙ハイト、g, b = 混ざりムラの場)。濡れている間、浮遊顔料は紙の谷(`paper_drift` × γ、粒状感)と数十 px 規模の斑(`mix_mottle`、全顔料で顔料ごとに別の場)へ寄るので、混ぜた色に色むらが残る。それ以外のシミュ側の紙の質感(`paper_amp` / `paper_gran` / `paper_wet`)は既定 0。鉛筆の粒状感(`pencil_gran`)とリフトの紙凸部変調は紙ハイトを使う
 - **計算範囲**: アクティブタイル(16×16 テクセル単位)で、まだ動きうる濡れたセル(水・速度・浮遊顔料のどれかが残る)があるタイルと流体 splat の近傍だけを計算する(`active_tiles`=0 で全面計算)。蒸発で水が尽きたタイルは、浮遊顔料が沈み切った数秒後に計算から外れる(濡れマスクは残るが、そのセルは全パスで不動点なので結果は全面計算と同じ)。計算しないタイルは ping-pong の2枚が揃っていれば書き込みも省く(タイルの3状態 COLD / COPY / ACTIVE と dirty フラグ)。キャンバスは 512 / 1024 / 2048 の正方形
 - **表示**: 乾燥レイヤーの合成(multiply / KM)はキャッシュ(rgba16float 1枚)に焼いておき、毎フレームは湿レイヤーだけを発色して重ねる。焼き直すのは乾燥レイヤー・並び・可視性・濃度倍率・`pigment_density`・`compose_mode` が変わったときだけ
 - **性能**(Apple Silicon / Metal、headless 計測 [tests/perf_bench.rs](../tests/perf_bench.rs)、1フレーム): 2048² で乾いた紙 2.4ms・一部濡れ(320²)2.7ms・全面計算 16.7ms・全面を濡らして蒸発し切った後 2.8ms、表示はキャンバス解像度で 0.45ms(乾燥レイヤーの枚数によらない)。残る乾いた紙のコストは、何もせずに戻るワークグループを全面に起動する分
@@ -75,7 +75,6 @@
 
 - エッジダークニング(`dry_edge`)は効きが弱い。濃い塗りでは被覆率が飽和して縁が目立たない(重要度が低いので許容。強めるなら縁バンドへ内側から顔料を移す質量保存つき再分配)
 - FlowOutward(`edge_eta`)は既定 0 でパスごと省略している(顔料が縁でなく中心へ寄る定式化のまま)
-- 顔料個性 γ(粒状感)が見た目に効かない。`paper_gran` は沈着の速さを変えるだけで、乾くまでに浮遊顔料はすべて沈み、乾きかけでは顔料が紙の谷へ移らないので、最終的な濃さの分布は変わらない(2 まで上げても帯の明度のばらつきはほぼ同じ)。効かせるには、乾かすときに γ に比例して紙目の濃淡をつける(`dry_gran` を顔料ごとに)・表示で紙目の濃淡をつける・顔料を紙の谷へ寄せる、のいずれかの仕組みが要る
 - 紙の水は表面にだけあり蒸発でしか減らないので、塗り重ねた所や同じ所の往復では筆がほとんど減らない(紙が筆と同じくらい濡れると受け渡しが止まる)。紙が水を吸い込む仕組みは先送り(design.md §4)
 - 塗る筆を置いたまま動かさない間の流れ出し(置いたままの splat)は、生ポインタ点を記録するストローク記録(H5)では再現されない
 - 筆と紙の受け渡しは紙が筆の濡れ具合まで濡れたところで止まり、筆跡の重なりで顔料が積み上がらないので、受け渡しの式にする前より全体に色が薄い(同じ操作でおよそ半分の濃さ)。いったん薄いままにしている。戻すなら `brush_pigment` の既定値を上げる
@@ -88,6 +87,13 @@
 ### 1.6 要目視確認
 
 変更で目視確認が要るものが出たら、ここに日付つきのまとまりで足し、確かめたら消す。
+
+**混ぜた色の色むら(2026-11-02)**
+
+- 2色を混ぜた筆で塗ったとき・wet-on-wet で隣り合わせたとき、混ざった色の中に数十 px の斑でうっすら色の偏りが出るか(既定 `mix_mottle` 0.3。1 で黄寄り・青寄りが見て分かる程度、2 ではっきり、4 では色が分かれて白い隙間ができる)
+- バーントシェンナのような γ の高い顔料が紙目のざらつきとして見えるか(既定 `paper_drift` 1)。フタロ・キナクリドンなど γ の低い顔料はほぼ均一のまま
+- 斑の模様が紙の同じ場所に出る(紙に固定)ことが、塗り重ねたときに気にならないか
+- 1色だけを広く塗ったときにも濃淡の斑が出る。平塗りがしにくいと感じないか
 
 **筆圧で細く塗る(2026-11-02)**
 
@@ -118,7 +124,7 @@
 | M1a 水の浅水層 | ✅ 完了 | 水テクスチャ(rgba32float: 水量・速度・濡れマスク)を splat → 速度更新([velocity.wgsl](../assets/shaders/velocity.wgsl))→ 発散緩和 × `relax_iters`([relax.wgsl](../assets/shaders/relax.wgsl))→ セミラグランジアン移流([advect.wgsl](../assets/shaders/advect.wgsl))で ping-pong 更新。水と顔料が動くのは濡れマスク内だけで、乾いた紙との境界は壁(Neumann)。`wet_expand` で前線を育てられる(既定 0) |
 | M1b 顔料層 | ✅ 完了 | 浮遊・沈着の rgba32float ペア。浮遊顔料は水と同じく移流し、[diffuse.wgsl](../assets/shaders/diffuse.wgsl) で水依存の重み付き拡散(× `diffuse_iters`)、[transfer.wgsl](../assets/shaders/transfer.wgsl) で吸着/脱着+蒸発。同じ diffuse パスで水自身も毛細管拡散する |
 | M1c Mixbox 混色 | ✅ 完了 | rgba 4チャンネル = 4顔料スロット。CPU([crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs))が顔料・紙の latent を計算して uniform で渡し、[display.wgsl](../assets/shaders/display.wgsl) が濃度比で latent を線形混合 → latent→RGB 多項式で発色する |
-| M1d 紙ハイト(+FlowOutward) | ✅ 完了(FlowOutward は先送り) | 紙ハイトは [crates/paint-core/src/paper.rs](../crates/paint-core/src/paper.rs) が起動時に生成する r32float(値ノイズ4成分)。速度勾配(`paper_amp`)・にじみ拡張(`paper_wet`)・吸着(`paper_gran`)の3箇所を変調するが、いずれも既定 0。FlowOutward([flowout.wgsl](../assets/shaders/flowout.wgsl))は `edge_eta`=0 で dispatch ごと省略 |
+| M1d 紙ハイト(+FlowOutward) | ✅ 完了(FlowOutward は先送り) | 紙は [crates/paint-core/src/paper.rs](../crates/paint-core/src/paper.rs) が起動時に生成する rgba32float(r = 紙ハイト = 値ノイズ4成分、g, b = 混ざりムラの場)。顔料の寄り(`paper_drift` / `mix_mottle`、diffuse.wgsl)は既定で効かせ、速度勾配(`paper_amp`)・にじみ拡張(`paper_wet`)・吸着(`paper_gran`)の変調は既定 0。FlowOutward([flowout.wgsl](../assets/shaders/flowout.wgsl))は `edge_eta`=0 で dispatch ごと省略 |
 | M1.5 筆圧 | ✅ 完了 | [src/input.rs](../src/input.rs) の `PointerSource`(マウス / ペン = egui Touch)。筆圧は Windows Ink → winit → egui Touch の標準経路で取り、`実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に掛ける。既定は半径だけ完全比例(軽いタッチで細部を塗れる細さまで細くなる)で、水量・顔料量には効かせない(筆圧で濃さを変えない)。ペン接地中はマウス入力を無視する |
 | M2 乾燥とレイヤー | ✅ 完了 | 乾燥レイヤーは rgba32float texture array(最大8枚、顔料濃度のまま)。下の層は下地(`GpuCanvas::merge_into_base`)へ統合して枠を空けられる。「乾かす」= [bake.wgsl](../assets/shaders/bake.wgsl) で `(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を新スライスへ焼き、湿レイヤーをゼロに。Fast Dry([fastdry.wgsl](../assets/shaders/fastdry.wgsl))・Wet the Layer([rewet.wgsl](../assets/shaders/rewet.wgsl))で焼かずに止める/濡らし直す。焼き込みは一方通行 |
 | M3 削り・顔料個性・KM 合成 | ✅ 完了 | 削り = リフト(`lift_strength` × (1−ω) × 紙凸ゲートで浮かせ、`lift_blot` で吸い取る)と消す(完全消去)の2ツール。顔料個性は physics uniform(binding 9)で吸着・脱着・拡散を per-channel に変調。合成は KM: 各層を白地/黒地に置いた発色から `R=R_b`、`T²=(R_w−R_b)(1−R_b)` を導いて下から光学合成(CPU 参照実装は [crates/km/src/lib.rs](../crates/km/src/lib.rs)) |

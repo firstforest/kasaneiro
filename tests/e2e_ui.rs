@@ -215,7 +215,8 @@ fn swatch_switches_color_and_shift_mixes() {
     );
 }
 
-/// ペンの筆圧が線の濃さ・太さに効く(弱い筆圧の線は強い筆圧の線より細く薄い)
+/// ペンの筆圧が線の太さに効く(弱い筆圧の線は強い筆圧の線より細い)。濃さは筆圧でほぼ変わらず、
+/// 線の中心の1点は混ざりムラ(mix_mottle)で揺れるので比べない
 #[test]
 fn pen_pressure_changes_stroke() {
     let mut harness = app();
@@ -225,20 +226,14 @@ fn pen_pressure_changes_stroke() {
     frames(&mut harness, 5);
     pen_stroke(&mut harness, 0.2, 0.8, 0.7, 0.15);
     frames(&mut harness, 60);
-    // 線の中心と、中心から少し外した位置(太さの差が出る)
-    let colors = canvas_color(
-        &mut harness,
-        "pen",
-        &[(0.5, 0.3), (0.5, 0.7), (0.5, 0.33), (0.5, 0.73)],
-    );
+    // 中心から少し外した位置: 強い線の幅の内側で、弱い線の幅の外側
+    let colors = canvas_color(&mut harness, "pen", &[(0.5, 0.33), (0.5, 0.73)]);
     let ink = |c: [f32; 3]| 1.0 - lightness(c);
     assert!(
-        ink(colors[0]) > ink(colors[1]) && ink(colors[2]) > ink(colors[3]),
-        "筆圧の差が線に出ていない: 強 中心={:?} 外={:?} / 弱 中心={:?} 外={:?}",
+        ink(colors[0]) > ink(colors[1]) + 0.1,
+        "筆圧の差が線の太さに出ていない: 強={:?} 弱={:?}",
         colors[0],
-        colors[2],
-        colors[1],
-        colors[3]
+        colors[1]
     );
 }
 

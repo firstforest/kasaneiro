@@ -166,7 +166,8 @@ impl GpuCanvas {
             mapped_at_creation: false,
         });
 
-        // 紙ハイト(M1d): CPU 生成の静的テクスチャ。ping-pong せず全パスから読み専用
+        // 紙(M1d): CPU 生成の静的テクスチャ。ping-pong せず全パスから読み専用。
+        // r = 紙ハイト / g, b = 混ざりムラの場2枚(diffuse.wgsl の mix_mottle)/ a = 未使用
         let paper_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("paper_height"),
             size: wgpu::Extent3d {
@@ -177,12 +178,16 @@ impl GpuCanvas {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R32Float,
+            format: wgpu::TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
         // ノイズはテクセル座標基準なので、サイズを変えても紙目の細かさは不変(M8 の「広い紙」)
-        let heights = paper::generate(size, PAPER_SEED);
+        let texels: Vec<[f32; 4]> = paper::generate(size, PAPER_SEED)
+            .into_iter()
+            .zip(paper::generate_mottle(size, PAPER_SEED))
+            .map(|(h, m)| [h, m[0], m[1], 0.0])
+            .collect();
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &paper_texture,
@@ -190,10 +195,10 @@ impl GpuCanvas {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            bytemuck::cast_slice(&heights),
+            bytemuck::cast_slice(&texels),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(size * 4),
+                bytes_per_row: Some(size * 16),
                 rows_per_image: None,
             },
             wgpu::Extent3d {

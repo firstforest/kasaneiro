@@ -167,6 +167,14 @@ impl PaintApp {
                         .text("にじみ縁の紙目変調"),
                 );
                 ui.add(
+                    egui::Slider::new(&mut self.params.paper_drift, 0.0..=8.0)
+                        .text("紙の谷への寄り(γ と乗算)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.params.mix_mottle, 0.0..=4.0)
+                        .text("混ざりムラ(全顔料)"),
+                );
+                ui.add(
                     egui::Slider::new(&mut self.params.edge_eta, 0.0..=0.2)
                         .text("エッジダークニング η(0=無効)"),
                 );

@@ -10,6 +10,10 @@
 //! - 異方性: 横方向に引き伸ばした繊維ストリーク
 //!
 //! 実紙スキャンへの差し替え(M4)はこの生成関数をロード関数に置き換えるだけ。
+//!
+//! 紙ハイトとは別に、混ざりムラ(diffuse.wgsl の `mix_mottle`)用の大きな規模のノイズ2枚
+//! ([`generate_mottle`])も作る。紙の凹凸ではなく「紙のどこに顔料が溜まりやすいか」の場で、
+//! 顔料ごとに2枚の組み合わせを変えて、混ぜた色の比率を場所で揺らす。
 
 /// 整数格子点 → [0,1) の決定的ハッシュ
 fn hash(x: i32, y: i32, seed: u32) -> f32 {
@@ -60,6 +64,58 @@ pub fn generate(size: u32, seed: u32) -> Vec<f32> {
     heights
 }
 
+/// グラディエントノイズ(Perlin 型、おおよそ [-0.5, 0.5])。格子点に乱数の向きの勾配を置いて
+/// 5次の補間でつなぐ。値ノイズと違い格子の四角い形が出にくいので、強めて使う混ざりムラの場に使う
+fn gradient_noise(x: f32, y: f32, seed: u32) -> f32 {
+    let x0 = x.floor();
+    let y0 = y.floor();
+    let fx = x - x0;
+    let fy = y - y0;
+    let (ix, iy) = (x0 as i32, y0 as i32);
+    let dot = |gx: i32, gy: i32, dx: f32, dy: f32| {
+        let a = hash(gx, gy, seed) * std::f32::consts::TAU;
+        a.cos() * dx + a.sin() * dy
+    };
+    let fade = |t: f32| t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+    let (sx, sy) = (fade(fx), fade(fy));
+    let n00 = dot(ix, iy, fx, fy);
+    let n10 = dot(ix + 1, iy, fx - 1.0, fy);
+    let n01 = dot(ix, iy + 1, fx, fy - 1.0);
+    let n11 = dot(ix + 1, iy + 1, fx - 1.0, fy - 1.0);
+    let a = n00 + (n10 - n00) * sx;
+    let b = n01 + (n11 - n01) * sx;
+    a + (b - a) * sy
+}
+
+/// size×size の混ざりムラの場2枚(行優先、各 [0,1])を生成する。数十テクセル規模の
+/// なめらかな斑で、紙ハイトとは独立な seed から作る。オクターブごとに座標を回して
+/// 格子の向きを散らす
+pub fn generate_mottle(size: u32, seed: u32) -> Vec<[f32; 2]> {
+    // (周期 px, 重み, 回転角)
+    const OCTAVES: [(f32, f32, f32); 3] = [(48.0, 0.55, 0.0), (21.0, 0.3, 0.9), (9.0, 0.15, 2.1)];
+    let field = |fx: f32, fy: f32, s: u32| {
+        let mut v = 0.0;
+        for (k, &(period, weight, angle)) in OCTAVES.iter().enumerate() {
+            let (sa, ca) = angle.sin_cos();
+            let rx = (ca * fx - sa * fy) / period;
+            let ry = (sa * fx + ca * fy) / period;
+            v += weight * gradient_noise(rx, ry, s.wrapping_add(k as u32));
+        }
+        (0.5 + v).clamp(0.0, 1.0)
+    };
+    let mut out = Vec::with_capacity((size * size) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let (fx, fy) = (x as f32, y as f32);
+            out.push([
+                field(fx, fy, seed.wrapping_add(10)),
+                field(fx, fy, seed.wrapping_add(20)),
+            ]);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +136,18 @@ mod tests {
     fn deterministic_by_seed() {
         assert_eq!(generate(32, 7), generate(32, 7));
         assert_ne!(generate(32, 7), generate(32, 8));
+    }
+
+    /// 混ざりムラの2枚は値域 [0,1] で、互いに別の斑になっている
+    #[test]
+    fn mottle_fields_in_range_and_independent() {
+        let m = generate_mottle(128, 0);
+        assert_eq!(m.len(), 128 * 128);
+        assert!(
+            m.iter()
+                .all(|v| (0.0..=1.0).contains(&v[0]) && (0.0..=1.0).contains(&v[1]))
+        );
+        let diff = m.iter().map(|v| (v[0] - v[1]).abs()).sum::<f32>() / m.len() as f32;
+        assert!(diff > 0.05, "2枚がほぼ同じ斑です: 平均差 {diff}");
     }
 }

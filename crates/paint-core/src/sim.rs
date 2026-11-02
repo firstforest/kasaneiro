@@ -48,7 +48,7 @@ pub const SAT_RATIO: f32 = 4.3;
 /// フィールドを足したら: ①ここに1行 ②src/app/ui/ の該当パネルにスライダー1行 ③common.wgsl の struct に1行
 /// (名前・順序・型の一致は tests/sim_params_layout.rs が検査する)。
 /// メモリレイアウトは WGSL の uniform 規則(16 バイト整列)に合わせること。
-/// 全体サイズは 16 の倍数を保つ(57 フィールド+末尾の _pad_brush: [f32; 3] = 240B。次に足すときは
+/// 全体サイズは 16 の倍数を保つ(59 フィールド+末尾の _pad_brush: [f32; 1] = 240B。次に足すときは
 /// _pad_brush を1つずつ実フィールドへ置き換え、使い切ったら末尾に新しい _pad を置いて 16B 境界を保つ。
 /// _pad は WGSL 側には書かない。手順は docs/parameters.md §11)。
 /// serde(default): プリセット(H3)にないフィールドは Default 値で埋める
@@ -215,8 +215,16 @@ pub struct SimParams {
     /// 腹から穂先へ送る時定数(秒): 腹が穂先より濡れていれば、濡れ具合の差をこの時間で約 63% 詰める。
     /// 一方向(穂先 → 腹へは戻さない)ので、吸った色は穂先にとどまる
     pub brush_refill_time: f32,
+    /// 紙の谷への寄り: 浮遊顔料が水の中で紙の谷へ集まる強さ(顔料の γ と乗算。0=寄らない)。
+    /// diffuse.wgsl の拡散流束に紙ハイトの差によるドリフトを足し、濡れている間に濃度が
+    /// exp(−paper_drift×γ×紙ハイト) に向かう。γ の違う顔料を混ぜると、混ぜた色の比率が紙目で揺れる
+    pub paper_drift: f32,
+    /// 混ざりムラ: 浮遊顔料が水の中で数十 px 規模の斑へ集まる強さ(全顔料。0=ムラなし)。
+    /// 紙テクスチャの g, b(paper.rs の generate_mottle)を顔料ごとに違う組み合わせで使うので、
+    /// 混ぜた色の比率が場所で揺れる。濡れている間に効き、乾くと止まる
+    pub mix_mottle: f32,
     #[serde(skip)]
-    pub _pad_brush: [f32; 3],
+    pub _pad_brush: [f32; 1],
 }
 
 impl SimParams {
@@ -328,7 +336,10 @@ impl Default for SimParams {
             lift_blot: 0.5,      // 削り: 吸い取りツールと同じ強さで押さえる
             brush_tip: 80.0,     // 吸った色を 100px ほど運ぶ
             brush_refill_time: 0.05, // ふつうの速さ(300px/秒)で描いても穂先が 9 割近くを保つ
-            _pad_brush: [0.0; 3],
+            // 濡れている間の顔料の寄り(diffuse.wgsl)。混ぜた色にうっすら色むらが残る程度
+            paper_drift: 1.0,
+            mix_mottle: 0.3,
+            _pad_brush: [0.0; 1],
         }
     }
 }

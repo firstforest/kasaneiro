@@ -80,6 +80,17 @@ transfer.wgsl の実効式(per-channel、M3):
 脱着 = lift_rate × dt × 水量 × (1−ω)
 ```
 
+diffuse.wgsl の顔料の流束(per-channel、隣 n から自セルへ):
+
+```
+流束 = (水量平均)^DIFFUSE_GAMMA × 透水率 × (c_n × (1+d) − c × (1−d))
+       d = clamp(½ × (φ_n − φ), ±DRIFT_MAX)
+       φ = paper_drift × γ × 紙ハイト + mix_mottle × (斑の場 g, b を顔料ごとの向きで組み合わせた値)
+係数 = min(pigment_diffuse × dt × μ, 0.2)
+```
+
+濡れている間、顔料は c ∝ exp(−φ) の分布へ向かう(φ が小さい所に溜まる)。乾くと重みが消えて止まる。
+
 ### 調整済みの WGSL 定数(SimParams ではない)
 
 作画中に変えない「シミュの性格」は SimParams ではなく各シェーダーの `const` に置く(理由と調整ガイドは [note/05](note/05-wet-spreading.md) §6)。再調整はホットリロード(H1)でシェーダーを直接編集する(SimParams のレイアウトが変わらないので再起動不要):
@@ -96,18 +107,22 @@ transfer.wgsl の実効式(per-channel、M3):
 | `SPLAT_SPACING` | 0.25 | [sim.rs](../crates/paint-core/src/sim.rs) | splat の間隔 = 実効半径 × これ(下限 0.25px。`SimParams::splat_spacing`)。ライブ描画・記録の再生・ラスタ線画の履歴のストローク補間が使う。下限を 1px にすると細い線ほど1セルをなぞる回数が減り、紙が穂先の濡れ具合まで濡れきらず線だけ薄くなる |
 | `DEPOSIT_WET_FLOOR` | 0.1 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 水膜がある間(w ≥ DRY_POINT)の吸着倍率。0 にすると濡れている間は全く沈まない |
 | `DEPOSIT_DRY_POINT` | 0.35 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 吸着が立ち上がる水量しきい値(=水膜が切れる点)。上げるほど早く沈み始め、下げるほど流れている間は浮遊し続ける |
+| `DRIFT_MAX` | 0.25 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 顔料の寄り(φ の差)による流束の偏り d の上限。陽解法の安定条件(4 近傍 × 0.2 × (1+d) ≦ 1)から決まる |
+| `MOTTLE_MIX` | 0°/90°/45°/135° | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 混ざりムラの場2枚 (g, b) を顔料スロットごとに組み合わせる向き。どの2顔料も向きが違うので混ぜた色の比率が揺れる |
 
-## 5. 紙([crates/paint-core/src/paper.rs](../crates/paint-core/src/paper.rs) / 3箇所適用)
+## 5. 紙([crates/paint-core/src/paper.rs](../crates/paint-core/src/paper.rs))
 
-紙ハイトは起動時に CPU 生成する静的テクスチャ(値ノイズ4成分: 低周波の沈殿ムラ+中周波の紙目+微細なざらつき+横方向の繊維ストリーク)。
+紙は起動時に CPU 生成する静的な rgba32float テクスチャ。r = 紙ハイト(値ノイズ4成分: 低周波の沈殿ムラ+中周波の紙目+微細なざらつき+横方向の繊維ストリーク)、g, b = 混ざりムラの場2枚(グラディエントノイズ3オクターブ、周期 48 / 21 / 9px、オクターブごとに座標を回して格子の向きを散らす)。
 
-**シミュ側の紙の質感再現は既定オフ(全て 0)**。機構はあるのでスライダー(開発モードの「紙・エッジ」)で値を上げれば効く。線画の鉛筆粒状感(`pencil_gran`、§10)と、リフトの紙凸部変調(顔料 γ 依存、splat.wgsl)は対象外でそのまま。
+濡れている間の顔料の寄り(`paper_drift` / `mix_mottle`、diffuse.wgsl、式は §4)は既定で効かせている。それ以外の紙の質感(`paper_amp` / `paper_gran` / `paper_wet`)は既定 0 で、スライダー(開発モードの「紙・エッジ」)で値を上げれば効く。線画の鉛筆粒状感(`pencil_gran`、§10)と、リフトの紙凸部変調(顔料 γ 依存、splat.wgsl)は紙ハイトをそのまま使う。
 
 | パラメータ | 既定値 | UI 範囲 | 意味 |
 |---|---|---|---|
 | `paper_amp` | 0.0 | 0〜1 | 紙ハイトの振幅: 水面勾配に足す凹凸の強さ(水が谷へ流れる → ストリーク) |
-| `paper_gran` | 0.0 | 0〜1 | 粒状化: 紙の凹部で吸着が強まる度合い(顔料の γ と乗算。0=紙目の影響なし)。**0 だと顔料個性 γ(粒状感)はほぼ効かなくなる** |
+| `paper_gran` | 0.0 | 0〜1 | 粒状化: 紙の凹部で吸着が強まる度合い(顔料の γ と乗算。0=紙目の影響なし)。沈着の速さを変えるだけで、乾いた後の濃さの分布はほぼ変わらない(γ を見た目に効かせるのは `paper_drift`) |
 | `paper_wet` | 0.0 | 0〜1 | にじみ拡張の紙目変調: 濡れ前線が谷を選んで進む度合い(縁が不規則に。0=一様) |
+| `paper_drift` | 1.0 | 0〜8 | 紙の谷への寄り: 濡れている間に浮遊顔料が紙ハイトの谷へ集まる強さ(顔料の γ と乗算)。紙目の細かさの粒状感になり、γ の高い顔料(バーントシェンナ等)だけが谷に溜まるので、混ぜると色が紙目で分かれる |
+| `mix_mottle` | 0.3 | 0〜4 | 混ざりムラ: 濡れている間に浮遊顔料が数十 px 規模の斑へ集まる強さ(全顔料)。顔料ごとに斑の場の組み合わせが違うので、混ぜた色の比率が場所で揺れる。効きは指数的で、2 ではっきり、4 では色が分かれて白い隙間ができる |
 
 ## 6. エッジダークニング
 
@@ -200,7 +215,7 @@ GPU へ渡す前に `physics_uniform()` が ρ・μ を 0 以上、ω・γ を 0
 2. [src/app/ui/](../src/app/ui/) の該当パネルにスライダー1行
 3. [assets/shaders/common.wgsl](../assets/shaders/common.wgsl) の `struct SimParams` に1行(Rust 側と同レイアウト。名前・順序・型の不一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検出する)
 
-**現在のレイアウト**: `SimParams` は 57 フィールド+末尾パディング3(`_pad_brush: [f32; 3]`、serde skip。WGSL には書かない)(全て f32 / u32 の 4 バイト)= 240 バイト(16×15)。`Splat` は 32 バイト(`pos`・`vel`・`pressure`・`feed`・`scale`・`_pad`)。筆の中身 `BrushState` は 64 バイト(穂先の `tip_water`・`_pad`×3・`tip_pigment: [f32; 4]`、腹の `belly_water`・`_pad`×3・`belly_pigment: [f32; 4]`)。
+**現在のレイアウト**: `SimParams` は 59 フィールド+末尾パディング1(`_pad_brush: [f32; 1]`、serde skip。WGSL には書かない)(全て f32 / u32 の 4 バイト)= 240 バイト(16×15)。`Splat` は 32 バイト(`pos`・`vel`・`pressure`・`feed`・`scale`・`_pad`)。筆の中身 `BrushState` は 64 バイト(穂先の `tip_water`・`_pad`×3・`tip_pigment: [f32; 4]`、腹の `belly_water`・`_pad`×3・`belly_pigment: [f32; 4]`)。
 
 **16 バイト整列の保ち方**: uniform buffer は Rust の構造体を bytemuck で生バイトのまま渡すので、全体サイズを 16 の倍数に保つ(`params_size_aligned` テスト)。次にフィールドを足すとき 16 の倍数から外れるなら、Rust 側の末尾に `#[serde(skip)]` のパディング(例: 1個足すなら `_pad: [f32; 3]`)を置き、以降はそのパディングを1つずつ実フィールドへ置き換えていく。パディングは WGSL 側の struct には書かない([tests/sim_params_layout.rs](../tests/sim_params_layout.rs) は直列化されるフィールドの名前・順序・型を common.wgsl と突き合わせ、直列化されない末尾 16 バイト未満だけをパディングとして許す)。
 

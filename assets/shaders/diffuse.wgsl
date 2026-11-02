@@ -15,7 +15,9 @@
 @group(0) @binding(5) var dst_dep: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(6) var<uniform> params: SimParams;
 @group(0) @binding(7) var<storage, read> splat_buf: SplatBuffer;
-// 顔料個性: [i] = (密度 ρ, ステイニング ω, 粒状感 γ, 粒の細かさ μ)。ここでは μ だけ読む
+// 紙(paper.rs): r = 紙ハイト(paper_drift)/ g, b = 混ざりムラの場2枚(mix_mottle)
+@group(0) @binding(8) var paper_tex: texture_2d<f32>;
+// 顔料個性: [i] = (密度 ρ, ステイニング ω, 粒状感 γ, 粒の細かさ μ)。ここでは γ と μ を読む
 @group(0) @binding(9) var<uniform> pigment: array<vec4f, 4>;
 // 清書ペンの線画(M4.5b): 隣接流束の透水率境界。ペン線を挟む2セル間は顔料が拡散しにくい
 @group(0) @binding(10) var pen_line_tex: texture_2d<f32>;
@@ -37,6 +39,38 @@ const DIFFUSE_GAMMA: f32 = 4.0;
 
 fn wet_weight(a: f32, b: f32) -> f32 {
     return pow(clamp(0.5 * (a + b), 0.0, 1.0), DIFFUSE_GAMMA);
+}
+
+// 顔料の溜まりやすさのポテンシャル φ(顔料ごと、小さいほど溜まる)による、隣接2セル間の流束のドリフト。
+// 隣から自セルへの流束 = 重み × (c_隣 × (1+d) − c_自 × (1−d))、d = ½ × (φ_隣 − φ_自)。
+// d は隣から見ると符号が反転するので流束は対称で顔料の総量は保存され、d=0 でただの拡散に戻る。
+// 流束 0 になるのは c ∝ (1−d)/(1+d) ≈ exp(−φ) のときで、濡れている間はこの分布へ向かう。
+// φ は2つの規模の和(potential):
+// - 紙の谷への寄り: paper_drift × γ × 紙ハイト。紙目の細かさで、粒状感 γ の高い顔料だけが谷に溜まる
+// - 混ざりムラ: mix_mottle × 斑の場。数十 px 規模で全顔料に効き、顔料ごとに場の組み合わせを
+//   変えるので混ぜた色の比率が揺れる(同じ場だと濃淡だけ揃って揺れ、色は揺れない)
+// d を ±DRIFT_MAX に収めるのは陽解法の安定条件のため: 自セルの係数の合計は
+// 4 近傍 × 0.2 × (1 + DRIFT_MAX) ≦ 1、隣の係数 (1+d) は正のまま
+const DRIFT_MAX: f32 = 0.25;
+
+// 混ざりムラの場を顔料ごとに作る: 2枚の場 (g, b) を 0°/90°/45°/135° の向きで組み合わせる。
+// どの2顔料も組み合わせが違うので、どの混色でも比率が揺れる
+const MOTTLE_MIX: mat4x2f = mat4x2f(
+    vec2f(1.0, 0.0),
+    vec2f(0.0, 1.0),
+    vec2f(0.70710677, 0.70710677),
+    vec2f(0.70710677, -0.70710677),
+);
+
+fn potential(at: vec2i, gran: vec4f) -> vec4f {
+    let p = load_clamped(paper_tex, at);
+    let m = p.gb * MOTTLE_MIX;  // 成分 i = dot(場, MOTTLE_MIX[i])
+    return params.paper_drift * gran * p.r + params.mix_mottle * m;
+}
+
+fn pigment_flux(w: f32, c_n: vec4f, c: vec4f, dphi: vec4f) -> vec4f {
+    let d = clamp(0.5 * dphi, vec4f(-DRIFT_MAX), vec4f(DRIFT_MAX));
+    return w * (c_n * (1.0 + d) - c * (1.0 - d));
 }
 
 // 水の毛細管拡散(note/05): 濡れマスク内で水量そのものを拡散させる(簡易 Richards)。
@@ -95,30 +129,36 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let n_d = load_clamped(src_water, ip + vec2i(0, 1));
     // 透水率(M4.5b): 自セルのペン濃度と各隣接の max で流束を絞る(線を挟むと拡散しない)
     let pen_c = textureLoad(pen_line_tex, ip, 0).r;
+    let gran = vec4f(pigment[0].z, pigment[1].z, pigment[2].z, pigment[3].z);
+    let phi_c = potential(ip, gran);
     var flux = vec4f(0.0);
     var wflux = 0.0;
     if (is_wet(n_l)) {
         let perm = edge_perm(pen_c, ip + vec2i(-1, 0));
-        flux += wet_weight(cell.r, n_l.r) * perm
-            * (load_clamped(src_susp, ip + vec2i(-1, 0)) - susp);
+        flux += pigment_flux(wet_weight(cell.r, n_l.r) * perm,
+            load_clamped(src_susp, ip + vec2i(-1, 0)), susp,
+            potential(ip + vec2i(-1, 0), gran) - phi_c);
         wflux += cap_weight(cell.r, n_l.r) * perm * (n_l.r - cell.r);
     }
     if (is_wet(n_r)) {
         let perm = edge_perm(pen_c, ip + vec2i(1, 0));
-        flux += wet_weight(cell.r, n_r.r) * perm
-            * (load_clamped(src_susp, ip + vec2i(1, 0)) - susp);
+        flux += pigment_flux(wet_weight(cell.r, n_r.r) * perm,
+            load_clamped(src_susp, ip + vec2i(1, 0)), susp,
+            potential(ip + vec2i(1, 0), gran) - phi_c);
         wflux += cap_weight(cell.r, n_r.r) * perm * (n_r.r - cell.r);
     }
     if (is_wet(n_u)) {
         let perm = edge_perm(pen_c, ip + vec2i(0, -1));
-        flux += wet_weight(cell.r, n_u.r) * perm
-            * (load_clamped(src_susp, ip + vec2i(0, -1)) - susp);
+        flux += pigment_flux(wet_weight(cell.r, n_u.r) * perm,
+            load_clamped(src_susp, ip + vec2i(0, -1)), susp,
+            potential(ip + vec2i(0, -1), gran) - phi_c);
         wflux += cap_weight(cell.r, n_u.r) * perm * (n_u.r - cell.r);
     }
     if (is_wet(n_d)) {
         let perm = edge_perm(pen_c, ip + vec2i(0, 1));
-        flux += wet_weight(cell.r, n_d.r) * perm
-            * (load_clamped(src_susp, ip + vec2i(0, 1)) - susp);
+        flux += pigment_flux(wet_weight(cell.r, n_d.r) * perm,
+            load_clamped(src_susp, ip + vec2i(0, 1)), susp,
+            potential(ip + vec2i(0, 1), gran) - phi_c);
         wflux += cap_weight(cell.r, n_d.r) * perm * (n_d.r - cell.r);
     }
     // 粒の細かさ μ(分離色): 顔料ごとの拡散倍率。細かい顔料(μ>1)は水に乗って遠くまで

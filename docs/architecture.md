@@ -37,7 +37,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │        ├─ brush.rs      ストローク → splat 列(位置補間、筆圧の線形補間)
 │        ├─ load.rs       筆の中身 BrushLoad(穂先と腹の2室。取る・浸す・洗う)・GPU 筆バッファのレイアウト BrushState・
 │        │                フレームごとの筆への指示 BrushFrame(置き換え・穂先の残りの予測・補充の時間)・BrushClock
-│        ├─ paper.rs      紙ハイトテクスチャの CPU 生成(値ノイズ4成分)
+│        ├─ paper.rs      紙テクスチャの CPU 生成(紙ハイト = 値ノイズ4成分、混ざりムラの場2枚 = グラディエントノイズ)
 │        ├─ replay.rs     ストローク記録・再生モデル(Recorder / Player)
 │        └─ tool.rs       ツールの階層 enum(Tool = Wet / Raster、gpu_id、ToolInfo)
 ├─ src/                   kasaneiro crate(egui / wgpu はここだけ)
@@ -117,7 +117,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 | 水 | rgba32float × ping-pong 2枚 | r=水量 / g=速度x / b=速度y / a=濡れマスク |
 | 浮遊顔料 | rgba32float × 2 | rgba 各チャンネル = 顔料1種(パレットのスロットと 1:1)。水の流れで移流する |
 | 沈着顔料 | rgba32float × 2 | 同上。紙に定着した分で移流しない |
-| 紙ハイト | r32float × 1(静的) | r = 高さ 0..1(0=谷 / 1=山)。起動時に CPU 生成 |
+| 紙 | rgba32float × 1(静的) | r = 紙ハイト 0..1(0=谷 / 1=山)、g, b = 混ざりムラの場2枚 0..1、a = 未使用。起動時に CPU 生成 |
 | 乾燥レイヤー | rgba32float texture array(最大8スライス) | 1スライス = 1乾燥レイヤー、rgba = 4顔料濃度 |
 | 乾燥レイヤーの合成キャッシュ | rgba16float × 1 | 可視な乾燥レイヤーを合成した結果(compose_mode=0 は透過率の積、1 は紙+乾燥層の KM 反射率(リニア))。§5 |
 | 下地 | rgba16float texture array(2スライス) | 下の乾燥レイヤーを焼き固めた合成結果(0 = 乗算の透過率の積 / 1 = KM 反射率)。`has_base` の間だけ合成の出発点になる。§6 |
@@ -145,7 +145,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 
 compute は種別ごとに5レイアウト(`ComputeLayout`)+ dried_cache:
 
-- **共通**(splat と流体パス。[common.wgsl](../assets/shaders/common.wgsl)): `0/1` 水 src/dst、`2/3` 浮遊 src/dst、`4/5` 沈着 src/dst、`6` SimParams、`7` splat storage、`8` 紙ハイト、`9` 顔料個性、`10` 清書ペンの線画(透水率。読むのは velocity / diffuse だけ)、`11` アクティブタイルの状態(splat / velocity / relax / flowout / advect / diffuse / transfer が読む。fastdry / rewet は宣言せず全面計算)、`12` 筆の中身、`13` 吸い込みの集計(splat / brush だけが宣言する)
+- **共通**(splat と流体パス。[common.wgsl](../assets/shaders/common.wgsl)): `0/1` 水 src/dst、`2/3` 浮遊 src/dst、`4/5` 沈着 src/dst、`6` SimParams、`7` splat storage、`8` 紙(r = 紙ハイト、g, b = 混ざりムラの場)、`9` 顔料個性、`10` 清書ペンの線画(透水率。読むのは velocity / diffuse だけ)、`11` アクティブタイルの状態(splat / velocity / relax / flowout / advect / diffuse / transfer が読む。fastdry / rewet は宣言せず全面計算)、`12` 筆の中身、`13` 吸い込みの集計(splat / brush だけが宣言する)
 - **bake**: 共通の `0..6, 8` + `9` = 乾燥レイヤーの書き込みスライス(splat なし)
 - **raster**(linesplat.wgsl): `0` 対象の線画テクスチャ(read_write r32float)、`1` SimParams、`2` splat storage、`3` 紙ハイト。描画先は bind group の差し替えで選ぶ(パイプラインは1本)
 - **tilescan**: `0` 水・`2` 浮遊顔料(read。parity 別 bind group)、`3` SimParams、`4` splat storage、`5` raw_active(write)
@@ -219,7 +219,7 @@ paint:
 | relax.wgsl | 発散の反復緩和(δ = −ξ·div。濡れセルのみ、乾いたセルは壁) |
 | flowout.wgsl | FlowOutward(縁の水を抜く)。既定オフ(edge_eta 0 で dispatch ごと省略) |
 | advect.wgsl | セミラグランジアン移流(水+浮遊顔料) |
-| diffuse.wgsl | 浮遊顔料+水の拡散(陽解法・濡れセル間のみ・保存則あり)。顔料は粒の細かさ μ で per-channel に拡散倍率が変わる。水は毛細管拡散([note/05](note/05-wet-spreading.md))。ペン線を挟む流束に透水率を掛ける |
+| diffuse.wgsl | 浮遊顔料+水の拡散(陽解法・濡れセル間のみ・保存則あり)。顔料は粒の細かさ μ で per-channel に拡散倍率が変わり、溜まりやすさ φ(紙の谷への寄り `paper_drift`×γ + 混ざりムラ `mix_mottle`)の差で流束が偏る。水は毛細管拡散([note/05](note/05-wet-spreading.md))。ペン線を挟む流束に透水率を掛ける |
 | transfer.wgsl | 吸着 / 脱着(ρ/ω で per-channel 変調)+蒸発 |
 | bake.wgsl | 乾かす = 乾燥レイヤーへの焼き込み+湿レイヤー全ゼロ |
 | fastdry.wgsl | 浮遊 → 沈着に落として水と流れをゼロに(焼き込まない) |
