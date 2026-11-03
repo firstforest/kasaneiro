@@ -334,4 +334,4 @@ paint:
 
 - e2e の結果画像は `target/tmp/e2e/*.png`。落ちたらまず画像を見て、体験として正しければ閾値側を直す
 - UI 要素は AccessKit の名前(キャンバス・「塗る色 N: 顔料名」・ボタン文字)で引く。キャンバスのシミュは prepare で進むので毎フレーム `render()` する。step_dt は実機と同じ 1/60 秒
-- テスト用 wgpu デバイスは egui_kittest の `create_render_state`(ウィンドウなし)で、アダプタは実 GPU(ディスクリート → 内蔵の順)を選ぶ([tests/common/mod.rs](../tests/common/mod.rs) の `render_state`)。`KASANEIRO_TEST_ADAPTER=cpu` で egui_kittest 既定のソフトウェアラスタライザ優先(Windows では DX12 WARP)に戻る
+- テスト用 wgpu デバイスは egui_kittest の `create_render_state`(ウィンドウなし)で、アダプタは実 GPU(ディスクリート → 内蔵の順)を選ぶ([tests/common/mod.rs](../tests/common/mod.rs) の `render_state`)。Adapter・Device・Queue はテストのプロセス全体で1つ(`OnceLock`)を使い回し、egui の `Renderer` だけ呼ぶたびに作る(`PaintApp` が callback_resources に `GpuCanvas` を入れるため。Device をテストごとに作ると並列実行で NVIDIA の Vulkan ドライバ内のデッドロックに入る)。`KASANEIRO_TEST_ADAPTER=cpu` で egui_kittest 既定のソフトウェアラスタライザ優先(Windows では DX12 WARP)に戻る

@@ -1,18 +1,39 @@
 //! e2e テストの共通部品: テスト用 GPU の用意、記録の組み立て、色の指標。
 #![allow(dead_code)] // テストファイルごとに使う部品が違う
 
+use eframe::egui::mutex::RwLock;
 use eframe::egui_wgpu;
 use kasaneiro::headless::{HeadlessCanvas, Image};
 use kasaneiro::replay::{RecordedStroke, Recording, TimedPoint};
 use paint_core::tool::WetTool;
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 
 /// テスト用の wgpu render state(ウィンドウなし)。
 ///
+/// Adapter・Device・Queue はテストのプロセス全体で1つを使い回し、egui の Renderer だけ呼ぶたびに作る
+/// (`PaintApp` が Renderer の callback_resources に自分の GpuCanvas を入れるので、並列のテスト間で
+/// 共有できない)。テストごとに Device を作ると、並列実行で「あるテストの Device 作成」と「終えた
+/// 別テストのスレッド終了」が重なったとき NVIDIA の Vulkan ドライバの中でデッドロックし、
+/// テストのプロセスが止まる(ドライバのロックと OS のローダーロックを逆順で取り合う)。
+pub fn render_state() -> egui_wgpu::RenderState {
+    static SHARED: OnceLock<egui_wgpu::RenderState> = OnceLock::new();
+    let shared = SHARED.get_or_init(create_render_state);
+    let renderer = egui_wgpu::Renderer::new(
+        &shared.device,
+        shared.target_format,
+        egui_wgpu::RendererOptions::PREDICTABLE,
+    );
+    egui_wgpu::RenderState {
+        renderer: Arc::new(RwLock::new(renderer)),
+        ..shared.clone()
+    }
+}
+
 /// egui_kittest の既定セットアップは CPU アダプタ(Windows では DX12 WARP)を優先するが、
 /// 流体シミュレーションを CPU で回すと e2e が数十倍遅くなるので実 GPU を選ぶ。
 /// `KASANEIRO_TEST_ADAPTER=cpu` で既定(ソフトウェアラスタライザ優先)に戻せる
-pub fn render_state() -> egui_wgpu::RenderState {
+fn create_render_state() -> egui_wgpu::RenderState {
     let mut setup = egui_kittest::wgpu::default_wgpu_setup();
     let use_cpu = std::env::var("KASANEIRO_TEST_ADAPTER").is_ok_and(|v| v == "cpu");
     if let egui_wgpu::WgpuSetup::CreateNew(create) = &mut setup
