@@ -78,6 +78,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │  │                      VideoJob = 別スレッド実行・進捗・取り消し)
 │  ├─ palette_store.rs    パレット ⇄ JSON
 │  ├─ pigment_store.rs    色単体(顔料1個)⇄ JSON(保存名 = 顔料名)
+│  ├─ mixpad_store.rs     混色皿の中身 ⇄ eframe の保存先の mixpad.bin
 │  ├─ work.rs             作品ファイル works/*.kasane の encode / decode
 │  └─ assets.rs           基準ディレクトリ解決(base_dir)・配布ビルドの既定 JSON 書き出し・
 │                         保存名の正規化・アトミック書き込み・JSON ストア共通関数
@@ -291,7 +292,7 @@ paint:
 - `PointerSource` trait で Mouse / Pen を抽象化する。ペン接地中はマウス入力を無視する(egui-winit が Touch からポインタをエミュレートするため二重ストロークになる)
 - 筆圧マッピングは `実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に適用(splat.wgsl と CPU 側で同式)
 - **筆の中身**: 正典は GPU の筆バッファ(`GpuBrush`)。`PaintApp` は `brush_load`(フレーム頭に読み戻した値。描いている間は数フレーム遅れる)と `brush_refill`(自動補充の戻り先 = 最後に色・水・洗うで作った中身)を持つ。色・水・拭う・洗う・自動補充・再生の停止は、`sync_brush`(GPU の完了を待って最新の値を得る。読み戻しが追いついていれば待たない)→ CPU で `BrushLoad` を変える → `set_brush` で筆バッファへその場で write_buffer、の順で置き換える。置き換えをフレームのコールバックに載せないのは、egui が UI を組み直したパスのコールバックを捨てるため。ツールバーの色・水スウォッチと拭うは押した瞬間と押し続けている間の2段で中身を変える。`brush_refill` と自動補充の on/off は eframe storage に保存する
-- **混色皿**: `MixCanvas` は本体と同じ筆の中身のバッファ(binding 12)を bind する(`GpuCanvas::with_brush`)。読み戻しと CPU からの置き換えは本体の `GpuBrush` だけが受け持ち、皿の側は読み戻さない。皿のフレームで brush.wgsl を積んだら、`MixCallback` が同じエンコーダに本体の筆の版を進めて読み戻しを積む(`brush_touched_elsewhere`)。皿のストロークは `PaintApp.mixpad`(別の `StrokeState`・`PenSource`・`MouseSource`)で splat にし、記録・Undo・線画は通さない。`PenSource` は接地点が自分の面の矩形の中のときだけ追跡を始めるので、面ごとに持っても1本のペンを取り合わない。本体の作り直しでは旧キャンバスの筆のバッファを新しいキャンバスへ渡し、皿は作り直さない
+- **混色皿**: `MixCanvas` は本体と同じ筆の中身のバッファ(binding 12)を bind する(`GpuCanvas::with_brush`)。読み戻しと CPU からの置き換えは本体の `GpuBrush` だけが受け持ち、皿の側は読み戻さない。皿のフレームで brush.wgsl を積んだら、`MixCallback` は本体の筆の版を進めるだけで(`brush_touched_elsewhere`)、読み戻しのコピーは同じフレームで後に積まれる本体の `encode_frame` が積む(皿の側で積むと、その後の本体の `poll_brush` が staging の map を始め、map 待ちのバッファを submit してしまう)。皿のストロークは `PaintApp.mixpad`(別の `StrokeState`・`PenSource`・`MouseSource`)で splat にし、記録・Undo・線画は通さない。`PenSource` は接地点が自分の面の矩形の中のときだけ追跡を始めるので、面ごとに持っても1本のペンを取り合わない。本体の作り直しでは旧キャンバスの筆のバッファを新しいキャンバスへ渡し、皿は作り直さない
 - **受け渡しと補充**: CPU はフレームごとに `BrushFrame`(穂先の残りの予測 `scale` と補充の時間 `dt`)を `CanvasCallback.brush` で渡すだけで、筆の中身そのものは GPU で進む。補充の時間は `BrushClock` が刻みを溜め、brush パスが走るフレーム(塗るツールで流体へ splat を流すフレーム)でまとめて渡す(上限 2 秒)。記録の再生は `Player` がストロークの始めに `BrushFrame.set` で記録した中身へ置き換えるので、受け渡しまで含めて画面と headless で同じ経路を通る
 - **置いたまま**: 塗る筆を置いたまま動かないフレームは、読み戻した穂先か腹に水が残る間、`PaintApp::hold_still` が毎フレーム置いたままの splat(`Splat.feed=1`)を1つ積む。受け渡しの式は同じなので、紙と釣り合うまで色水が出続け、毛細管拡散が外へ運ぶ。ストローク記録は生ポインタ点のみなので置いたままの splat は再生で再現されない
 - ストローク記録は補間前の生ポインタ入力と、ストロークごとに筆を下ろした時点の筆の中身(`RecordedStroke.load`)を保存する。`load` の無い記録はそのストロークの顔料スロットを標準の1回分含んだ筆で再生する。時刻は 1/60 秒の刻み番号(JSON のキー名は `frame`)
@@ -302,8 +303,10 @@ paint:
 - **作品ファイル**(`works/*.kasane`、[src/work.rs](../src/work.rs)): 先頭に `MAGIC "KSN1"` + メタ長 + メタ JSON(SimParams・現行パレット・レイヤー構成 `[slot, visible, density]`・レイヤーごとパレット・canvas_size・layer_count・has_base)、続けて生ブロブを固定順(f32 の湿レイヤー3 → 乾燥レイヤー → 線画3 → 顔料 latent → `has_base` のときだけ下地2スライスの f16 生ビット)で並べる。`has_base` は省略時 false、`density` は省略時 1
   - decode はメタの layer_palettes と層数の一致・レイヤー構成・末尾の余分なバイトを検査する(`layer_palettes` の不変条件の入口)。現行形式だけを読む
   - 読込時に canvas_size(`CANVAS_SIZES` で検証)が現在と違えば、そのサイズでキャンバスを作り直してから復元する
+  - 湿レイヤーだけの読み戻し / 書き戻しは `export_wet` / `import_wet`(`import_state` も湿レイヤーはこれを通す。混色皿の保存が使う)
   - GPU ⇄ f32 配列は `export_state` / `import_state`([src/gpu/persist.rs](../src/gpu/persist.rs))。読み戻しは全テクスチャのコピーを1回の submit にまとめる。parity は保存せず、読込時に `current=0` へ正規化する
   - 線画の Undo 履歴は保存しない(読込直後の Undo と水彩の undo は効かない)
+- **混色皿**([src/mixpad_store.rs](../src/mixpad_store.rs)): `eframe::storage_dir(APP_ID)` の `mixpad.bin` に `MAGIC "KSM1"` + 1辺(u32 LE)+ f32 LE の湿レイヤー [水, 浮遊, 沈着]。`PaintApp` は eframe の保存先があるときだけ(`mixpad_persist`)、起動時に `import_wet` で戻し、`eframe::App::save` で `export_wet` して書く(アトミック書き込み)
 - **リプレイ動画**(`videos/*.mp4`、[src/video.rs](../src/video.rs)): 画面と同じ Device / Queue で別の `HeadlessCanvas` を作り、別スレッドで `Player` → `encode_frame` → `snapshot` を1フレームずつ回す。読み戻した RGBA8(size²)を ffmpeg(`-f rawvideo -pix_fmt rgba` → libx264 / yuv420p / crf 18)の stdin へ書く。再生が終わってから `TAIL_FRAMES`(2 秒)だけ入力なしで撮り続ける
   - ffmpeg の場所: 環境変数 `KASANEIRO_FFMPEG` → `base_dir()` 直下の ffmpeg(.exe) → PATH。Windows では `CREATE_NO_WINDOW` で起動する
   - UI は `VideoJob` の進捗(書き終えたフレーム数 / 再生 + 余韻の予定数)を出す。取り消しは次のフレームの前で打ち切り、ffmpeg を止めて書きかけを消す。完了は `ui()` が毎フレーム `poll_video_export` で拾う(同時に1本)

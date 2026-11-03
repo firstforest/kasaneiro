@@ -5,12 +5,16 @@
 //! CPU 純粋部(sim / brush / paper / replay モデル)は paint-core crate、
 //! 顔料・混色は pigment crate、Kubelka-Munk 参照実装は km crate にある。
 
+/// eframe のアプリ ID(ウィンドウ設定・パレットなどの保存先のフォルダ名)
+pub const APP_ID: &str = "kasaneiro";
+
 pub mod app;
 pub mod assets;
 pub mod capture;
 pub mod gpu;
 pub mod headless;
 mod input;
+mod mixpad_store;
 mod palette_store;
 mod pigment_store;
 mod preset;

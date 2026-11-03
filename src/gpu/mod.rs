@@ -553,10 +553,10 @@ impl GpuCanvas {
     }
 
     /// 同じ筆のバッファを使う別のキャンバス(混色皿)が筆の中身を書き換えうるパスを積んだ後に呼ぶ。
-    /// 版を進めて読み戻しを積む
-    pub(crate) fn brush_touched_elsewhere(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    /// 版を進めるだけで、読み戻しのコピーはこのキャンバスの encode_frame が積む。ここで積むと、
+    /// 同じフレームの後で poll_brush が staging の map を始め、map 待ちのバッファを submit してしまう
+    pub(crate) fn brush_touched_elsewhere(&mut self) {
         self.brush.touched();
-        self.brush.encode_readback(encoder);
     }
 
     /// 塗る筆の中身のうち最後に分かっている値(描いている間は数フレーム遅れる。表示用)

@@ -238,9 +238,10 @@ impl egui_wgpu::CallbackTrait for MixCallback {
         let brush_ran = callback_resources
             .get_mut::<MixCanvas>()
             .is_some_and(|mix| mix.0.encode_frame(queue, egui_encoder, &self.0));
-        // 筆のバッファは本体と共有しているので、読み戻しは本体の側で積む
+        // 筆のバッファは本体と共有しているので、読み戻しは本体の側で積む(本体のコールバックは
+        // 右パネルの皿より後に積まれるので、同じフレームの本体の encode_frame が読み戻す)
         if brush_ran && let Some(canvas) = callback_resources.get_mut::<GpuCanvas>() {
-            canvas.brush_touched_elsewhere(egui_encoder);
+            canvas.brush_touched_elsewhere();
         }
         Vec::new()
     }

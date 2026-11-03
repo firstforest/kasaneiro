@@ -149,6 +149,63 @@ impl GpuCanvas {
         }))
     }
 
+    /// 湿レイヤーの [水, 浮遊, 沈着] だけを読み戻す(混色皿の保存)。乾燥レイヤー・線画は読まない
+    pub fn export_wet(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<[Vec<f32>; TEX_KINDS], String> {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("wet_readback_encoder"),
+        });
+        let buffers: Vec<wgpu::Buffer> = (0..TEX_KINDS)
+            .map(|kind| {
+                self.copy_texture(
+                    device,
+                    &mut encoder,
+                    &self.textures[kind][self.current],
+                    0,
+                    RGBA32,
+                )
+            })
+            .collect();
+        queue.submit([encoder.finish()]);
+        let all: Vec<&wgpu::Buffer> = buffers.iter().collect();
+        let wet: Vec<Vec<f32>> = map_read_all(device, &all)?
+            .into_iter()
+            .map(|v| bytemuck::pod_collect_to_vec(&v))
+            .collect();
+        Ok(wet.try_into().expect("湿レイヤー3枚"))
+    }
+
+    /// 湿レイヤーの [水, 浮遊, 沈着] を parity 0 側へ書き、`current = 0` に正規化する
+    /// (作品読込と混色皿の復元)。書き始める前に3枚とも寸法を検査する
+    pub fn import_wet(
+        &mut self,
+        queue: &wgpu::Queue,
+        wet: &[Vec<f32>; TEX_KINDS],
+    ) -> Result<(), String> {
+        let expected = (self.size * self.size) as usize * 4;
+        if let Some(bad) = wet.iter().find(|v| v.len() != expected) {
+            return Err(format!(
+                "湿レイヤーのサイズが不正です({} ≠ {expected})",
+                bad.len()
+            ));
+        }
+        for (kind, data) in wet.iter().enumerate() {
+            self.write_texture(
+                queue,
+                &self.textures[kind][0],
+                0,
+                RGBA32,
+                bytemuck::cast_slice(data),
+            );
+        }
+        self.current = 0;
+        self.mark_tiles_dirty(queue);
+        Ok(())
+    }
+
     /// [`WorkTextures`] をキャンバスへ書き戻す(M7 読込)。全テクスチャを parity 0 側へ書き、
     /// `current = 0` に正規化する。レイヤー構成 / パレットは呼び出し側(app)が別途復元する。
     pub fn import_state(&mut self, queue: &wgpu::Queue, work: &WorkTextures) -> Result<(), String> {
@@ -160,21 +217,7 @@ impl GpuCanvas {
             ));
         }
         let texels = (self.size * self.size) as usize;
-        // 湿レイヤー(rgba32float)を parity 0 へ
-        for kind in 0..TEX_KINDS {
-            if work.wet[kind].len() != texels * 4 {
-                return Err("作品データの湿レイヤーのサイズが不正です".to_owned());
-            }
-            self.write_texture(
-                queue,
-                &self.textures[kind][0],
-                0,
-                RGBA32,
-                bytemuck::cast_slice(&work.wet[kind]),
-            );
-        }
-        self.current = 0;
-        self.mark_tiles_dirty(queue);
+        self.import_wet(queue, &work.wet)?;
 
         // 乾燥レイヤー: slot 昇順に書き戻す(export と同順)
         for (slot, data) in work.dried.iter().enumerate() {

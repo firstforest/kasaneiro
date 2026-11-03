@@ -16,6 +16,7 @@ use crate::gpu::LineTarget;
 use crate::gpu::hot_reload::{ScreenshotWatcher, ShaderWatcher, screenshots_dir, shader_dir};
 use crate::gpu::{GpuCanvas, MIX_CANVAS_SIZE, MixCanvas, ViewUniform};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase};
+use crate::mixpad_store::{self, MixpadState};
 use crate::palette_store;
 use crate::pigment_store;
 use crate::preset;
@@ -231,6 +232,8 @@ pub struct PaintApp {
     dev_mode: bool,
     /// 混色皿(右パネルの小さな湿レイヤー)のストローク状態
     mixpad: MixPad,
+    /// 混色皿の中身を前回の終了時から引き継ぐか(eframe の保存先があるときだけ。e2e では false)
+    mixpad_persist: bool,
     /// このフレームで進める刻み数(フレーム頭に一度だけ時計を進める。本体と混色皿で共有)
     frame_ticks: u32,
     /// このフレームで進めるシミュレーションのステップ数(一時停止・1ステップ込み。本体と混色皿で共有)
@@ -278,6 +281,23 @@ fn surface_canvas(
     match surface {
         Surface::Canvas => resources.get::<GpuCanvas>(),
         Surface::MixPad => resources.get::<MixCanvas>().map(|m| &m.0),
+    }
+}
+
+/// 前回保存した混色皿を書き戻す。無ければ白い皿のまま。読めない・大きさが違うときはログに残して白い皿で始める
+fn restore_mixpad(mix: &mut GpuCanvas, queue: &egui_wgpu::wgpu::Queue) {
+    match mixpad_store::load() {
+        Ok(Some(state)) if state.size == MIX_CANVAS_SIZE => {
+            if let Err(e) = mix.import_wet(queue, &state.wet) {
+                log::warn!("混色皿を戻せません: {e}");
+            }
+        }
+        Ok(Some(state)) => log::warn!(
+            "保存した混色皿の大きさ {} が今の皿 {MIX_CANVAS_SIZE} と違うので、白い皿で始めます",
+            state.size
+        ),
+        Ok(None) => {}
+        Err(e) => log::warn!("混色皿を読めません: {e}"),
     }
 }
 
@@ -360,6 +380,11 @@ impl PaintApp {
             log::error!("混色皿の WGSL の初回ビルドに失敗: {e}");
         }
         mix.set_palette(&render_state.queue, &palette);
+        // 前回終了時の皿へ戻す。保存先を持たない起動(e2e の egui_kittest)では読まず、書きもしない
+        let mixpad_persist = cc.storage.is_some();
+        if mixpad_persist {
+            restore_mixpad(&mut mix, &render_state.queue);
+        }
         {
             let resources = &mut render_state.renderer.write().callback_resources;
             resources.insert(canvas);
@@ -439,6 +464,7 @@ impl PaintApp {
             capture: None,
             dev_mode,
             mixpad: MixPad::default(),
+            mixpad_persist,
             frame_ticks: 0,
             frame_sim_steps: 0,
             has_painted: false,
@@ -640,6 +666,29 @@ impl PaintApp {
             && let Err(e) = mix.rebuild_pipelines(&self.render_state.device)
         {
             log::warn!("混色皿のシェーダーの再ビルドに失敗: {e}");
+        }
+    }
+
+    /// 混色皿の中身をファイルへ書く(終了時と eframe の自動保存のたび)。失敗はログだけに残す
+    fn save_mixpad(&self) {
+        let wet = {
+            let renderer = self.render_state.renderer.read();
+            match renderer.callback_resources.get::<MixCanvas>() {
+                Some(MixCanvas(mix)) => {
+                    mix.export_wet(&self.render_state.device, &self.render_state.queue)
+                }
+                None => return,
+            }
+        };
+        let result = wet.and_then(|wet| {
+            mixpad_store::save(&MixpadState {
+                size: MIX_CANVAS_SIZE,
+                wet,
+            })
+        });
+        match result {
+            Ok(path) => log::debug!("混色皿を保存: {}", path.display()),
+            Err(e) => log::warn!("混色皿を保存できません: {e}"),
         }
     }
 
@@ -1607,6 +1656,9 @@ impl eframe::App for PaintApp {
         storage.set_string("auto_refill", self.auto_refill.to_string());
         if let Ok(json) = serde_json::to_string(&self.brush_refill) {
             storage.set_string("brush_load", json);
+        }
+        if self.mixpad_persist {
+            self.save_mixpad();
         }
     }
 

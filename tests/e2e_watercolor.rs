@@ -1099,3 +1099,48 @@ fn wiped_brush_paints_without_spreading() {
         "拭った筆の線が粒の列になっている\n{ctx}"
     );
 }
+
+/// 混色皿の保存と復元: 濡れた塗りを読み戻して白紙の皿へ書き戻すと、同じ見た目になり、
+/// その後も濡れたまま同じように乾いていく(水と浮いた顔料ごと戻る)
+#[test]
+fn wet_state_roundtrip_keeps_wet_paint() {
+    let rs = render_state();
+    let size = kasaneiro::gpu::MIX_CANVAS_SIZE;
+    let mut a = HeadlessCanvas::new(rs.device.clone(), rs.queue.clone(), size).unwrap();
+    a.play(recording(vec![hstroke(
+        WetTool::Paint,
+        YELLOW,
+        60.0,
+        200.0,
+        128.0,
+        0,
+    )]));
+    let wet = a.export_wet().unwrap();
+    assert!(
+        wet[0].iter().any(|&w| w > 0.0),
+        "塗った直後なのに水が読み戻せない"
+    );
+    let mut b = HeadlessCanvas::new(rs.device, rs.queue, size).unwrap();
+    b.import_wet(&wet).unwrap();
+    let diff = |a: &HeadlessCanvas, b: &HeadlessCanvas| {
+        let (ia, ib) = (a.snapshot().unwrap(), b.snapshot().unwrap());
+        ia.rgba
+            .iter()
+            .zip(&ib.rgba)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap()
+    };
+    // 表示は毎フレーム書く SimParams の uniform を読むので、両方を1フレーム進めてから比べる
+    a.idle(1);
+    b.idle(1);
+    let d = diff(&a, &b);
+    assert!(d <= 1, "戻した皿の見た目が違う(最大差 {d})");
+    a.idle(60);
+    b.idle(60);
+    save(&b.snapshot().unwrap(), "wet-roundtrip");
+    let d = diff(&a, &b);
+    assert!(d <= 2, "戻した皿が元の皿と同じように乾かない(最大差 {d})");
+    let back = b.export_wet().unwrap();
+    assert!(back[0].iter().any(|&w| w > 0.0), "戻した皿の水がすぐ消えた");
+}

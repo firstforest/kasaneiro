@@ -164,6 +164,16 @@ impl HeadlessCanvas {
         });
     }
 
+    /// 湿レイヤーの [水, 浮遊, 沈着] を読み戻す(混色皿の保存と同じ経路)
+    pub fn export_wet(&self) -> Result<[Vec<f32>; 3], String> {
+        self.canvas.export_wet(&self.device, &self.queue)
+    }
+
+    /// 湿レイヤーの [水, 浮遊, 沈着] を書き戻す(混色皿の復元と同じ経路)
+    pub fn import_wet(&mut self, wet: &[Vec<f32>; 3]) -> Result<(), String> {
+        self.canvas.import_wet(&self.queue, wet)
+    }
+
     /// 現在の見た目を読み戻す
     pub fn snapshot(&self) -> Result<Image, String> {
         // ビュー変換なし(キャンバス全体・無回転)で焼く

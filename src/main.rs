@@ -25,7 +25,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "kasaneiro",
+        kasaneiro::APP_ID,
         options,
         Box::new(|cc| Ok(Box::new(app::PaintApp::with_capture(cc, capture_dir)))),
     )
