@@ -803,6 +803,59 @@ fn light_pressure_paints_thin_lines() {
     assert!(p[2].1 > p[0].1 * 0.7, "弱い筆圧の線が薄すぎる: {ctx}");
 }
 
+/// 勢いよく払うと、最後のポインタ点は「遠くへ飛び、筆圧はほぼ 0」で届く。その1区間でも splat の
+/// 間隔が各地点の太さに見合い、払いの先まで胴と同じ濃さで細っていく(終点の細い筆圧の間隔で
+/// 区間全体を埋めると、太い所に splat が詰まって筆の中身を使い切り、払いの先が薄く抜ける)
+#[test]
+fn fast_flick_tail_keeps_density() {
+    const Y: f32 = 256.0;
+    let mut c = canvas();
+    let mut s = hstroke(WetTool::Paint, SIENNA, 80.0, 320.0, Y, 0);
+    for pt in &mut s.points {
+        pt.pressure = 0.8;
+    }
+    let last = s.points.last().unwrap().clone();
+    s.points.push(paint_core::replay::TimedPoint {
+        frame: last.frame + 1,
+        pos: [440.0, Y],
+        pressure: 0.02,
+    });
+    c.play(recording(vec![s]));
+    c.idle(120);
+    let img = c.snapshot().unwrap();
+    let png = save(&img, "fast_flick_tail");
+    let paper = img.mean_rgb(0, 0, 32, 32);
+
+    // 列 x..x+4 の線の中心(上下1行)の濃さと、紙より目に見えて暗い行の数(線の幅)
+    let ink = |x: u32, row: u32| lightness(paper) - lightness(img.mean_rgb(x, row, x + 4, row + 1));
+    let center = |x: u32| {
+        (Y as u32 - 1..=Y as u32 + 1)
+            .map(|r| ink(x, r))
+            .fold(0.0, f32::max)
+    };
+    let width = |x: u32| {
+        ((Y as u32 - 60)..(Y as u32 + 60))
+            .filter(|&r| ink(x, r) > 0.02)
+            .count()
+    };
+    let body = (140..280).step_by(10).map(center).fold(0.0, f32::max);
+    // 払いの区間(320..440)の、まだ幅のある前半〜中ほど
+    let tail: Vec<f32> = (330..400).step_by(10).map(center).collect();
+    let widths: Vec<usize> = (330..440).step_by(10).map(width).collect();
+    let ctx = format!(
+        "胴の中心の濃さ {body:.3} 払いの中心の濃さ {tail:.3?} 払いの幅 {widths:?}\n{}",
+        png.display()
+    );
+    assert!(
+        tail.iter().all(|&t| t > body * 0.6),
+        "払いの先が薄く抜ける: {ctx}"
+    );
+    assert!(
+        widths.windows(2).all(|w| w[1] <= w[0]),
+        "払いが単調に細っていない: {ctx}"
+    );
+}
+
 /// 乾いた色の上に別の色を置くと、水が色の上へ染みて置いた色が下の色へ境界なく馴染み、
 /// 白い紙へは広がらない(wet_expand × 沈着量の門)。乾いたシエナの横帯を濡れた青の縦線で横切り、
 /// 帯に沿って明度を取る。比較の基準は同じ手順をにじみ拡張なし(wet_expand = 0)で再生したキャンバス

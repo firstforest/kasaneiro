@@ -930,10 +930,14 @@ impl PaintApp {
             // サンプル間隔は筆圧を反映した実効半径から(細い筆入れでも隙間を作らない)。
             // ラスタ線画は鉛筆/ペン/ハイライトの独立半径を使う(brush_radius と切り離す)
             let base = self.active_base_radius();
-            let spacing = self.params.splat_spacing(base, ev.pressure);
+            let params = &self.params;
             let start = splats.len();
-            self.stroke
-                .add_motion([px.x, px.y], ev.pressure, spacing, splats);
+            self.stroke.add_motion(
+                [px.x, px.y],
+                ev.pressure,
+                |p| params.splat_spacing(base, p),
+                splats,
+            );
             if self.tool == Tool::Wet(WetTool::Paint) {
                 self.brush_frame.drag(&mut splats[start..], &self.params);
             }

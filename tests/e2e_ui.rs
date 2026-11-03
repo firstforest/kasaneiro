@@ -293,6 +293,48 @@ fn pen_pressure_changes_stroke() {
     );
 }
 
+/// 勢いよく払ってペンが離れるとき、winit は離れる直前にまとめて届いた位置を筆圧 0 で送り、
+/// 筆圧 0 は `force: None` になる。それを筆圧のない入力(1.0)と取り違えず、末尾が太く丸くならない
+#[test]
+fn pen_lift_without_force_does_not_fatten_tail() {
+    let mut harness = app();
+    harness.get_by_label_contains("塗る色 2:").click();
+    frames(&mut harness, 2);
+    let rect = canvas_rect(&harness);
+    let touch = |u: f32, phase, force| egui::Event::Touch {
+        device_id: egui::TouchDeviceId(1),
+        id: egui::TouchId(1),
+        phase,
+        pos: rect.lerp_inside(egui::vec2(u, 0.5)),
+        force,
+    };
+    harness.event(touch(0.2, egui::TouchPhase::Start, Some(0.15)));
+    frame(&mut harness);
+    for i in 1..=10 {
+        let u = 0.2 + 0.04 * i as f32;
+        harness.event(touch(u, egui::TouchPhase::Move, Some(0.15)));
+        frame(&mut harness);
+    }
+    // 離れる瞬間: 直前の位置が筆圧なしで届き、続けて End(実機では1フレームにまとめて届くが、
+    // kittest は1フレームに積んだイベントを別々のパスで処理し、描かれないパスの splat が捨てられる)
+    for u in [0.65, 0.7, 0.75, 0.8] {
+        harness.event(touch(u, egui::TouchPhase::Move, None));
+        frame(&mut harness);
+    }
+    harness.event(touch(0.8, egui::TouchPhase::End, None));
+    frame(&mut harness);
+    frames(&mut harness, 60);
+    // 線の中心から外した位置: 筆圧 1.0 の太さなら塗られ、筆圧 0.15 の細さなら紙のまま
+    let colors = canvas_color(&mut harness, "pen-lift", &[(0.4, 0.53), (0.72, 0.53)]);
+    let ink = |c: [f32; 3]| 1.0 - lightness(c);
+    assert!(
+        ink(colors[1]) < ink(colors[0]) + 0.05,
+        "ペンを離した所が太くなっている: 胴={:?} 末尾={:?}",
+        colors[0],
+        colors[1]
+    );
+}
+
 /// ツールボタンを押すと選択中ツールが切り替わり、説明の1行も変わる
 #[test]
 fn tool_button_switches_tool() {

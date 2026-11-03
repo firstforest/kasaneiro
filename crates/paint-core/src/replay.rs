@@ -177,10 +177,14 @@ impl Player {
                 }
             }
             // サンプル間隔は筆圧を反映した実効半径から(ライブ描画 src/app/mod.rs と同じ式)
-            let spacing = params.splat_spacing(params.brush_radius, point.pressure);
+            let base = params.brush_radius;
             let start = out.len();
-            self.stroke_state
-                .add_motion(point.pos, point.pressure, spacing, out);
+            self.stroke_state.add_motion(
+                point.pos,
+                point.pressure,
+                |p| params.splat_spacing(base, p),
+                out,
+            );
             if stroke.tool == WetTool::Paint.gpu_id() {
                 brush.drag(&mut out[start..], params);
             }

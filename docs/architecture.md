@@ -274,11 +274,12 @@ paint:
 ```
 ペン → Windows Ink(WM_POINTER)→ winit(GetPointerPenInfo で筆圧)→ egui::Event::Touch{force}
   → input.rs PenSource → PointerEvent(論理ピクセル+筆圧 0..1)
-  → paint_core::brush(ストローク補間。サンプル間隔は筆圧反映後の実効半径から SimParams::splat_spacing)
+  → paint_core::brush(ストローク補間。サンプル間隔は区間内の各地点の筆圧を反映した実効半径から SimParams::splat_spacing)
   → 塗る筆なら paint_core::load::BrushFrame::drag(各 splat に置く時点の穂先の残りの予測を載せる。乾いた紙に置いた場合 = 最も減る場合)
   → Splat 列 + BrushFrame → splat storage buffer → splat.wgsl(穂先と紙の受け渡しを集計)→ brush.wgsl
 ```
 
+- winit(Windows)は筆圧 0 を `force: None` で送る。PenSource は、そのストロークで筆圧が一度でも届いていれば `None` を筆圧 0、一度も届かない入力(指タッチ等)は 1.0 と読む
 - `PointerSource` trait で Mouse / Pen を抽象化する。ペン接地中はマウス入力を無視する(egui-winit が Touch からポインタをエミュレートするため二重ストロークになる)
 - 筆圧マッピングは `実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に適用(splat.wgsl と CPU 側で同式)
 - **筆の中身**: 正典は GPU の筆バッファ(`GpuBrush`)。`PaintApp` は `brush_load`(フレーム頭に読み戻した値。描いている間は数フレーム遅れる)と `brush_refill`(自動補充の戻り先 = 最後に色・水・洗うで作った中身)を持つ。色・水・洗う・自動補充・再生の停止は、`sync_brush`(GPU の完了を待って最新の値を得る。読み戻しが追いついていれば待たない)→ CPU で `BrushLoad` を変える → `set_brush` で筆バッファへその場で write_buffer、の順で置き換える。置き換えをフレームのコールバックに載せないのは、egui が UI を組み直したパスのコールバックを捨てるため。ツールバーの色・水スウォッチは押した瞬間と押し続けている間の2段で中身を変える。`brush_refill` と自動補充の on/off は eframe storage に保存する

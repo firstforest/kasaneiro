@@ -85,6 +85,8 @@ pub struct PenSource {
     active_id: Option<egui::TouchId>,
     /// 直近の筆圧(UI のデバッグ表示用。接地中のみ Some)
     last_pressure: Option<f32>,
+    /// 追跡中のストロークで筆圧が一度でも届いたか(以降の force: None を筆圧 0 と読む)
+    has_force: bool,
 }
 
 impl PenSource {
@@ -117,8 +119,16 @@ impl PointerSource for PenSource {
             else {
                 continue;
             };
-            // 筆圧非対応(指タッチ等)は 1.0 = マウスと同じ扱い
-            let pressure = force.unwrap_or(1.0);
+            // winit(Windows)は筆圧 0 を None で送る。勢いよく払うとペンが離れる直前の位置が
+            // まとめて筆圧 0 で届くので、筆圧の届いているストロークでは None を 0 と読む
+            // (1.0 と読むと末尾が最大の太さで丸く膨らむ)。一度も届かない指タッチ等は
+            // 筆圧非対応として 1.0 = マウスと同じ扱い
+            let tracked = self.active_id == Some(id);
+            let pressure = match force {
+                Some(f) => f,
+                None if tracked && self.has_force => 0.0,
+                None => 1.0,
+            };
             match phase {
                 egui::TouchPhase::Start => {
                     // 生 Touch はウィジェットの重なりを見ないので、接地点の最前面が
@@ -126,6 +136,7 @@ impl PointerSource for PenSource {
                     let on_canvas = canvas.ctx.layer_id_at(pos) == Some(canvas.layer_id);
                     if self.active_id.is_none() && on_canvas {
                         self.active_id = Some(id);
+                        self.has_force = force.is_some();
                         self.last_pressure = Some(pressure);
                         out.push(PointerEvent {
                             phase: PointerPhase::Down,
@@ -136,7 +147,8 @@ impl PointerSource for PenSource {
                 }
                 // ペンのホバー(接地前)でも Move は届くが、追跡中でなければ無視
                 egui::TouchPhase::Move => {
-                    if self.active_id == Some(id) {
+                    if tracked {
+                        self.has_force |= force.is_some();
                         self.last_pressure = Some(pressure);
                         out.push(PointerEvent {
                             phase: PointerPhase::Move,
@@ -146,8 +158,9 @@ impl PointerSource for PenSource {
                     }
                 }
                 egui::TouchPhase::End | egui::TouchPhase::Cancel => {
-                    if self.active_id == Some(id) {
+                    if tracked {
                         self.active_id = None;
+                        self.has_force = false;
                         self.last_pressure = None;
                         out.push(PointerEvent {
                             phase: PointerPhase::Up,

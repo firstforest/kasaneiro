@@ -88,9 +88,13 @@ pub fn stroke_splats(stroke: &RasterStroke) -> Vec<Splat> {
     state.begin();
     let mut out = Vec::new();
     for &(pos, pressure) in &stroke.points {
-        let spacing = stroke.params.splat_spacing(base, pressure);
         // ライブ描画と同じ補間。GPU へ流すときは rasterize_line が MAX_SPLATS 単位に分割する
-        state.add_motion(pos, pressure, spacing, &mut out);
+        state.add_motion(
+            pos,
+            pressure,
+            |p| stroke.params.splat_spacing(base, p),
+            &mut out,
+        );
     }
     out
 }
