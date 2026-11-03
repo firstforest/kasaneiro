@@ -253,7 +253,7 @@ paint:
 下書き鉛筆・清書ペン・白ハイライトのラスタツール(`Tool::Raster`)。
 
 - **描画経路**: 選択中ツールが `Tool::Raster` のとき `PaintApp::line_target()` が `Some(LineTarget)` を返し、`CanvasCallback` がブラシ入力を `linesplat.wgsl` へ回す。`line_mode` が見た目を分岐(鉛筆 = 柔エッジ・紙目粒状・筆圧→濃さ / ペン = 硬エッジ・筆圧→太さ / ハイライト = 硬めエッジの不透明白・筆圧→不透明度)
-- **入力点 → splat**: 清書ペンだけ、生ポインタ点を `LineSmoother`([crates/paint-core/src/brush.rs](../crates/paint-core/src/brush.rs))に通す。指数移動平均で均し(`pen_smooth`)、0.5px 以上離れた点を centripetal Catmull-Rom で 1px ごとに刻む。次の点が来てから前の区間を確定し、離したとき平滑化した位置を終点まで追わせる。出た点は他の線種と同じく `StrokeState::add_motion` で等間隔にする。ライブ描画と引き直し(`linehist::stroke_splats`)は同じ `linehist::line_smoother` で作る
+- **入力点 → splat**: 清書ペンだけ、生ポインタ点を `LineSmoother`([crates/paint-core/src/brush.rs](../crates/paint-core/src/brush.rs))に通す。入力1点を1刻みとする 1€ フィルタで位置と筆圧を均し(速度 0 での強さ `pen_smooth`、遮断周波数が速度に比例して上がる割合 `pen_smooth_speed`。速度は生の移動ベクトルを低域通過した大きさ)、0.5px 以上離れた点を centripetal Catmull-Rom で 1px ごとに刻む。次の点が来てから前の区間を確定し、離したとき平滑化した位置を終点まで追わせ、その区間の筆圧に残りの距離に応じた `1 − pen_tail×(1 − 残り/最初の遅れ)` を掛ける。出た点は他の線種と同じく `StrokeState::add_motion` で等間隔にする。ライブ描画と引き直し(`linehist::stroke_splats`)は同じ `linehist::line_smoother` で作る
 - **蓄積**: 目標濃度への `max`(1フレーム内で密にサンプルしても一定の濃度へ収束)。清書ペンは目標を `下地 + 量×(1 − 下地)` にする。下地はストローク開始時(ライブは Down、引き直しは `rasterize_line` の頭)に `snapshot_pen_base` でペン層を `pen_base` へ複製したもの
 - **清書ペンの形**: 半径 = `pen_radius × mix(1, 筆圧, pressure_radius)`(筆圧は1回だけ)。覆いは縁を中心にした 1px の遷移帯。半径が `PEN_MIN_RADIUS`(0.7px)を下回る線は半径をそこで止めて、細さの比だけ濃さを落とす
 - **合成**: display.wgsl で色を合成した後、`apply_lines()` が鉛筆(グレー)→ ペン(濃色)→ ハイライト(白)の順にアルファ合成。`show_pencil` / `show_pen` / `show_highlight` で非表示にできる
