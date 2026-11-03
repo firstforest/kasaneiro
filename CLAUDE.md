@@ -46,6 +46,14 @@ Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は mise 
 - **解析用キャプチャ**: 不具合の報告は `mise run run:capture`(= `cargo run -- --capture`)で起動して再現し、閉じてもらう。起動した checkout の `target/capture/<日時>/` に `log.txt`(ストローク・ツール・パラメータ・乾燥操作・表示の変化を刻み番号付きで)・`strokes.json`(起動直後からの全ストローク)・`params_start/end.json`・`session.json`・終了時の `ui.png` / `canvas.png` / `work.kasane`(湿レイヤーを含む全状態)が残る。`mise run replay:capture` でいちばん新しいキャプチャを headless 再生して `replay.png` を書く(別のものは `KASANEIRO_CAPTURE=<dir>`)([src/capture.rs](src/capture.rs))
 - **e2e**(GPU 必須): [tests/e2e_watercolor.rs](tests/e2e_watercolor.rs) = headless でストローク再生 → 3要件を色相・明度の帯で判定 / [tests/e2e_ui.rs](tests/e2e_ui.rs) = egui_kittest で PaintApp を実入力で操作。流体シェーダーの数値は固定せず「体験が壊れていないか」だけを見る回帰検知なので、調整で指標が外れたら `target/tmp/e2e/*.png` を見て、体験として正しければ閾値側を直す。UI 要素は AccessKit の名前で引くので、文字のないウィジェットを足すときは `widget_info` で名前を付ける
 
+## 作業の効率化(この環境で詰まりやすい所)
+
+- **Python で日本語を含むファイルを書き換えるとき**は、スクリプトを Write でファイルに書いて `python -X utf8 <file>` で実行する。`python - <<'EOF'` で標準入力から流すと cp932 として読まれ、マルチバイト文字が引用符を飲み込んで構文エラーや文字化けになる
+- **整形は変更したファイルだけ**(`rustfmt --edition 2024 <files>`)。`cargo fmt --all` は未整形の既存ファイル(`src/capture.rs` など)まで書き換えて差分に混ざる
+- **線画ツールの見た目の確認は e2e_ui で**。headless(`HeadlessCanvas`)は流体ツール専用で線画を描けない。e2e_ui ではレイヤー名(「清書(ペン)」など)をクリックしてから `pen_path` / `pen_stroke` で引き、`canvas_color` の画像(`target/tmp/e2e/ui-*.png`)を Read で見る
+- **線画のストローク → splat の変換は2か所**(ライブ描画 `app::apply_pointer_events` と引き直し `linehist::stroke_splats`)。片方だけ変えると Undo/Redo で線が変わるので両方に通し、`pen_undo_redo_restores_same_lines` で一致を確かめる
+- **ワークツリーで作業するセッションでは git コマンドを1つずつ実行する**。`;` や `|` でつないだ git コマンドは、ワークツリー外を触らないか検証できず拒否される
+
 ## 設計の核心原則: 試行錯誤の速度を最優先
 
 品質はアルゴリズム選択ではなく**パラメータ調整の反復回数**で決まる。これを支える構造を壊さないこと:
