@@ -43,6 +43,7 @@ Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は mise 
 - `crates/km`(Kubelka-Munk 純関数)と `crates/pigment`(mixbox 混色)は CPU 参照実装 + `cargo test` の対象
 - WGSL は `cargo build` では検査されない。[tests/shader_compile.rs](tests/shader_compile.rs) が naga で全シェーダーをパース+検証し、[tests/sim_params_layout.rs](tests/sim_params_layout.rs) が `SimParams` の Rust 定義と `common.wgsl` の struct のフィールド名・順序・型の一致を検査する(uniform は bytemuck で生バイトのまま渡すので、ずれてもコンパイルは通る)
 - **性能の計測**(GPU 必須): `cargo test --test perf_bench -- --ignored --nocapture` で 512/1024/2048 のフレーム時間と表示時間を表で出す([tests/perf_bench.rs](tests/perf_bench.rs))。性能に効く変更の前後で回す
+- **解析用キャプチャ**: 不具合の報告は `mise run run:capture`(= `cargo run -- --capture`)で起動して再現し、閉じてもらう。起動した checkout の `target/capture/<日時>/` に `log.txt`(ストローク・ツール・パラメータ・乾燥操作・表示の変化を刻み番号付きで)・`strokes.json`(起動直後からの全ストローク)・`params_start/end.json`・`session.json`・終了時の `ui.png` / `canvas.png` / `work.kasane`(湿レイヤーを含む全状態)が残る。`mise run replay:capture` でいちばん新しいキャプチャを headless 再生して `replay.png` を書く(別のものは `KASANEIRO_CAPTURE=<dir>`)([src/capture.rs](src/capture.rs))
 - **e2e**(GPU 必須): [tests/e2e_watercolor.rs](tests/e2e_watercolor.rs) = headless でストローク再生 → 3要件を色相・明度の帯で判定 / [tests/e2e_ui.rs](tests/e2e_ui.rs) = egui_kittest で PaintApp を実入力で操作。流体シェーダーの数値は固定せず「体験が壊れていないか」だけを見る回帰検知なので、調整で指標が外れたら `target/tmp/e2e/*.png` を見て、体験として正しければ閾値側を直す。UI 要素は AccessKit の名前で引くので、文字のないウィジェットを足すときは `widget_info` で名前を付ける
 
 ## 設計の核心原則: 試行錯誤の速度を最優先

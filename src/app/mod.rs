@@ -13,6 +13,7 @@ mod ui;
 use crate::gpu::DriedLayer;
 use crate::gpu::GpuCanvas;
 use crate::gpu::LineTarget;
+use crate::capture::{self, Capture, Closing};
 use crate::gpu::hot_reload::{ScreenshotWatcher, ShaderWatcher, screenshots_dir, shader_dir};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase};
 use crate::palette_store;
@@ -219,6 +220,9 @@ pub struct PaintApp {
     /// UI スクショ(AI レビュー用): screenshots/request-shot の作成/変更を監視し、
     /// AI(外部 Bash)からの撮影指示をフレームループで拾う。ボタン撮影とは別経路
     shot_watcher: ScreenshotWatcher,
+    /// 解析用キャプチャ(`--capture` で起動したときだけ Some)。起動直後からのストローク記録と、
+    /// 終了時の書き出しの進み具合を持つ
+    capture: Option<Capture>,
     /// 開発モード(UI 二層化)。off=通常ユーザー向け最小 UI / on=味付け・診断・シミュ制御・
     /// 記録再生・シェーダー状態を露出。開発機能は削除でなくこのトグルの裏へ退避する。
     /// eframe storage に永続化(前回の状態で起動。初回のみ off)
@@ -241,6 +245,11 @@ const EYEDROPPER_MIN_SHARE: f32 = 0.02;
 
 impl PaintApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        Self::with_capture(cc, None)
+    }
+
+    /// `capture_dir` があれば、起動直後から終了までを解析用にそこへ記録する([`crate::capture`])
+    pub fn with_capture(cc: &eframe::CreationContext<'_>, capture_dir: Option<PathBuf>) -> Self {
         install_japanese_font(&cc.egui_ctx);
 
         let render_state = cc
@@ -300,7 +309,7 @@ impl PaintApp {
             .callback_resources
             .insert(canvas);
 
-        Self {
+        let mut app = Self {
             render_state,
             params: SimParams::default(),
             tool: Tool::Wet(WetTool::Paint),
@@ -369,9 +378,15 @@ impl PaintApp {
             shader_dir: dir,
             screenshot_pending: false,
             shot_watcher: ScreenshotWatcher::new(&screenshots_dir()),
+            capture: None,
             dev_mode,
             has_painted: false,
+        };
+        if let Some(dir) = capture_dir {
+            app.status_msg = Some(format!("解析用に記録中: {}", dir.display()));
+            app.capture = Some(Capture::new(dir, &app.params));
         }
+        app
     }
 
     /// M8: キャンバスを指定サイズで作り直す(現在の絵・履歴・ビューは破棄)。
@@ -873,17 +888,18 @@ impl PaintApp {
                     }
                     // H5: 記録はストローク単位。そのとき選ばれていた顔料スロット・ツール・筆の中身も残す
                     // (自動補充しないときは前のストロークの残りから始まるので、GPU の最新の値を待つ)
-                    if self.replay_ui.recorder.is_some() && recordable {
+                    if (self.replay_ui.recorder.is_some() || self.capture.is_some()) && recordable {
                         if !self.auto_refill {
                             self.sync_brush();
                         }
                         let load = self.brush_load;
-                        if let Some(recorder) = &mut self.replay_ui.recorder {
-                            recorder.begin_stroke(
-                                self.params.brush_channel,
-                                self.params.tool,
-                                Some(load),
-                            );
+                        let (channel, tool) = (self.params.brush_channel, self.params.tool);
+                        for recorder in self.recorders() {
+                            recorder.begin_stroke(channel, tool, Some(load));
+                        }
+                        let name = format!("{:?}", self.tool);
+                        if let Some(c) = &mut self.capture {
+                            c.stroke_begin(&name, channel, Some(&load));
                         }
                     }
                     // M4.5d: ラスタ線画は履歴へストロークを開始(実効パラメータをスナップショット)
@@ -901,10 +917,13 @@ impl PaintApp {
                         self.painting = false;
                         self.stroke.end();
                         self.feed_pos = None;
-                        if let Some(recorder) = &mut self.replay_ui.recorder
-                            && recordable
-                        {
-                            recorder.end_stroke();
+                        if recordable {
+                            for recorder in self.recorders() {
+                                recorder.end_stroke();
+                            }
+                            if let Some(c) = &self.capture {
+                                c.stroke_end(&self.brush_load);
+                            }
                         }
                         // M4.5d: ラスタ線画のストロークを確定(Redo 履歴を破棄)
                         if line_target.is_some() {
@@ -945,10 +964,10 @@ impl PaintApp {
             self.feed_pos = Some(([px.x, px.y], ev.pressure));
             // H5: 補間前の生ポインタ位置+筆圧を記録する(再生時に補間し直すため
             // ブラシ半径や筆圧マッピングを変えても同じストロークを引ける)
-            if let Some(recorder) = &mut self.replay_ui.recorder
-                && recordable
-            {
-                recorder.add_point([px.x, px.y], ev.pressure);
+            if recordable {
+                for recorder in self.recorders() {
+                    recorder.add_point([px.x, px.y], ev.pressure);
+                }
             }
             // M4.5d: ラスタ線画は生ポインタ点を履歴に溜める(Undo で引き直すため)
             if line_target.is_some() {
@@ -1162,19 +1181,7 @@ impl PaintApp {
     /// ファイル名はタイムスタンプ+プリセット名(入力欄の値。「どの設定の絵か」を残す)
     fn save_snapshot(&mut self) {
         let result = (|| -> Result<PathBuf, String> {
-            let data = {
-                let renderer = self.render_state.renderer.read();
-                let canvas = renderer
-                    .callback_resources
-                    .get::<GpuCanvas>()
-                    .ok_or("キャンバスが初期化されていません")?;
-                // 書き出しはビュー(パン/ズーム/回転)に依らずキャンバス全体を無回転で焼く
-                canvas.snapshot(
-                    &self.render_state.device,
-                    &self.render_state.queue,
-                    &crate::gpu::ViewUniform::default(),
-                )?
-            };
+            let data = self.canvas_rgba()?;
             let dir = crate::assets::base_dir().join("snapshots");
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("{} を作れません: {e}", dir.display()))?;
@@ -1200,6 +1207,82 @@ impl PaintApp {
             Ok(path) => format!("保存: {}", path.display()),
             Err(e) => e,
         });
+    }
+
+    /// 解析用キャプチャの毎フレームの仕事: ツール・パラメータ・表示の変化をログへ書き、
+    /// 閉じる要求が来たら一度止めて書き出し、UI スクショが届いてから(待ちきれなければそのまま)閉じる
+    fn capture_frame(&mut self, ctx: &egui::Context) {
+        let Some(c) = &mut self.capture else {
+            return;
+        };
+        c.observe(&format!("{:?}", self.tool), &self.params, self.status_msg.as_ref());
+        match c.closing {
+            Closing::Running => {
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    c.closing = Closing::WaitingShot(0);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
+                        egui::UserData::default(),
+                    ));
+                    self.flush_capture();
+                }
+            }
+            Closing::WaitingShot(waited) => {
+                let image = ctx.input(|i| {
+                    i.raw.events.iter().rev().find_map(|e| match e {
+                        egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                        _ => None,
+                    })
+                });
+                match image {
+                    Some(image) => c.save_ui_shot(&image),
+                    None if waited < capture::SHOT_TIMEOUT_FRAMES => {
+                        c.closing = Closing::WaitingShot(waited + 1);
+                        ctx.request_repaint();
+                        return;
+                    }
+                    None => log::warn!("UI スクショが届かないまま閉じます"),
+                }
+                c.closing = Closing::Done;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Closing::Done => {}
+        }
+    }
+
+    /// 解析用キャプチャの終了時の書き出し(記録・パラメータ・キャンバス PNG・作品ファイル)。2回目以降は何もしない
+    fn flush_capture(&mut self) {
+        if self.capture.is_none() {
+            return;
+        }
+        let png = self.canvas_rgba();
+        let work = self.export_work().and_then(|w| work::encode(&w));
+        if let Some(c) = &mut self.capture {
+            c.flush(&self.params, &self.palette, self.canvas_size, png, work);
+        }
+    }
+
+    /// いま動いている記録(H5 の手動記録と、解析用キャプチャの記録)
+    fn recorders(&mut self) -> impl Iterator<Item = &mut crate::replay::Recorder> {
+        self.replay_ui
+            .recorder
+            .iter_mut()
+            .chain(self.capture.as_mut().map(|c| &mut c.recorder))
+    }
+
+    /// キャンバス全体を表示どおりに RGBA8(行連続、canvas_size²)で読み戻す。
+    /// ビュー(パン/ズーム/回転)に依らず全体を無回転で焼く
+    fn canvas_rgba(&self) -> Result<Vec<u8>, String> {
+        let renderer = self.render_state.renderer.read();
+        let canvas = renderer
+            .callback_resources
+            .get::<GpuCanvas>()
+            .ok_or("キャンバスが初期化されていません")?;
+        canvas.snapshot(
+            &self.render_state.device,
+            &self.render_state.queue,
+            &crate::gpu::ViewUniform::default(),
+        )
     }
 
     /// UI スクショ(AI レビュー用): 画面全体(egui のパネル込み。キャンバスだけの
@@ -1257,35 +1340,36 @@ impl PaintApp {
     /// 現行パレット・SimParams)を1ファイルへ保存する。GPU から読み戻して work::save へ渡す。
     /// 描きかけ(湿った絵の具含む)から翌日続けられるようにするのが目的
     fn save_work(&mut self, name: &str) -> Result<PathBuf, String> {
-        let file = {
-            let renderer = self.render_state.renderer.read();
-            let canvas = renderer
-                .callback_resources
-                .get::<GpuCanvas>()
-                .ok_or("キャンバスが初期化されていません")?;
-            let textures =
-                canvas.export_state(&self.render_state.device, &self.render_state.queue)?;
-            let layers = canvas
-                .layers
-                .iter()
-                .map(|l| work::StoredLayer {
-                    slot: l.slot,
-                    visible: l.visible,
-                    density: l.density,
-                })
-                .collect();
-            work::WorkFile {
-                // GpuCanvas の実寸を直接読む(app 側ミラー canvas_size との取り違え防止)
-                canvas_size: canvas.size(),
-                params: self.params,
-                palette: self.palette.clone(),
-                layers,
-                // M5h: 乾燥レイヤーの記録時パレット(CPU 正典)も作品へ残す
-                layer_palettes: canvas.layer_palettes.clone(),
-                textures,
-            }
-        };
-        work::save(name, &file)
+        work::save(name, &self.export_work()?)
+    }
+
+    /// 現在の全状態を作品ファイルの形で GPU から読み戻す
+    fn export_work(&self) -> Result<work::WorkFile, String> {
+        let renderer = self.render_state.renderer.read();
+        let canvas = renderer
+            .callback_resources
+            .get::<GpuCanvas>()
+            .ok_or("キャンバスが初期化されていません")?;
+        let textures = canvas.export_state(&self.render_state.device, &self.render_state.queue)?;
+        let layers = canvas
+            .layers
+            .iter()
+            .map(|l| work::StoredLayer {
+                slot: l.slot,
+                visible: l.visible,
+                density: l.density,
+            })
+            .collect();
+        Ok(work::WorkFile {
+            // GpuCanvas の実寸を直接読む(app 側ミラー canvas_size との取り違え防止)
+            canvas_size: canvas.size(),
+            params: self.params,
+            palette: self.palette.clone(),
+            layers,
+            // M5h: 乾燥レイヤーの記録時パレット(CPU 正典)も作品へ残す
+            layer_palettes: canvas.layer_palettes.clone(),
+            textures,
+        })
     }
 
     /// M7: 保存済み作品を読み込んでキャンバス全体を差し替える。
@@ -1398,6 +1482,11 @@ impl eframe::App for PaintApp {
         }
     }
 
+    /// ウィンドウの閉じる以外の経路で終わったときも、解析用キャプチャの記録は残す
+    fn on_exit(&mut self) {
+        self.flush_capture();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // H1: .wgsl が保存されたら再ビルド(失敗しても落とさない)
         if self.watcher.take_dirty() {
@@ -1418,6 +1507,7 @@ impl eframe::App for PaintApp {
         if self.shot_watcher.take_request() {
             self.request_ui_screenshot(ui.ctx());
         }
+        self.capture_frame(ui.ctx());
         self.poll_ui_screenshot(ui.ctx());
 
         // 上端に「ファイル」メニューバーを1本(左右・中央パネルより先に show して上端の帯を確保)

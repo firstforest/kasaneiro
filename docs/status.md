@@ -48,6 +48,7 @@
 | ストローク記録 | `assets/strokes/*.json`(git 管理) | 生ポインタ入力+記録時パレット(`StoredRecording`)。同梱 [two-color-adjacent.json](../assets/strokes/two-color-adjacent.json) |
 | PNG 書き出し | `snapshots/`(git 管理外) | キャンバス全体・無回転で焼く。ファイル名はタイムスタンプ+プリセット名 |
 | リプレイ動画 | `videos/`(git 管理外) | 保存済みストローク記録を裏で再生した MP4(H.264・60fps・キャンバス全体・無回転)。ファイル名はタイムスタンプ+ストローク名。外部の ffmpeg を使う([src/video.rs](../src/video.rs)) |
+| 解析用キャプチャ | `target/capture/<日時>/`(起動した checkout の target。git 管理外) | `--capture` 付きで起動したときだけ。`log.txt`(標準エラーと同じログ。キャプチャ中は自前クレートを debug まで。ストローク開始・終了と筆の中身、ツール・パラメータ(止まってから差分をまとめて)・乾燥操作・ステータス表示の変化を、記録の刻み番号付きで)・`strokes.json`(起動直後からの全ストローク。`StoredRecording`)・`params_start.json` / `params_end.json`・`session.json`(終了までの刻み数・キャンバスの大きさ)・終了時の `ui.png`(画面全体)/ `canvas.png` / `work.kasane`(作品ファイル)。閉じる要求を一度止めて書き出し、UI スクショが届いてから閉じる(60 フレーム待って届かなければそのまま閉じる)。[tests/capture_replay.rs](../tests/capture_replay.rs)(ignored、`mise run replay:capture`)がいちばん新しいキャプチャ(`KASANEIRO_CAPTURE` があればそれ)を headless 再生して `replay.png` を書く |
 | UI スクショ | `screenshots/ui-latest.png`(git 管理外) | 画面全体。`screenshots/request-shot` を書くと実行中アプリが撮影する |
 
 - 保存名はすべて [src/assets.rs](../src/assets.rs) の `sanitize_name` を通し(パス区切り・Windows 禁止文字・制御文字を `_`、予約デバイス名は `_` 前置、空なら保存しない)、`{name}.{ext}.tmp` → rename のアトミック書き込みで保存する
@@ -79,6 +80,8 @@
 - FlowOutward(`edge_eta`)は既定 0 でパスごと省略している(顔料が縁でなく中心へ寄る定式化のまま)
 - 紙の水は表面にだけあり蒸発でしか減らないので、塗り重ねた所や同じ所の往復では筆がほとんど減らない(紙が筆と同じくらい濡れると受け渡しが止まる)。紙が水を吸い込む仕組みは先送り(design.md §4)
 - 塗る筆を置いたまま動かさない間の流れ出し(置いたままの splat)は、生ポインタ点を記録するストローク記録(H5)では再現されない
+- 解析用キャプチャの再生は、ストロークと起動時のパラメータだけを流す。乾燥操作・スライダーの変更・パレットの編集・キャンバスの作り直しは log.txt に残るだけで再生に入らない
+- headless(e2e・キャプチャの再生)は表示先を sRGB にしていて、非 sRGB のアプリの画面・PNG 書き出しより明るく写る(同じ絵でも紙が白く、色が淡い)
 - 筆と紙の受け渡しは紙が筆の濡れ具合まで濡れたところで止まり、筆跡の重なりで顔料が積み上がらないので、受け渡しの式にする前より全体に色が薄い(同じ操作でおよそ半分の濃さ)。いったん薄いままにしている。戻すなら `brush_pigment` の既定値を上げる
 - 作品を開くと保存時の SimParams に戻る(保存時の `evap_rate` 等も含む)
 - プリセットに `tool` / `brush_channel` / `display_mode` / `display_gain` / `compose_mode` などの作業状態も入る(プリセット読込で選択中ツール・顔料・診断表示まで切り替わる)。外すなら `#[serde(skip)]`。「作業状態ごと復元したい」なら現状が正なので、気になったときに決める

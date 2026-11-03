@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod assets;
+pub mod capture;
 pub mod gpu;
 pub mod headless;
 mod input;

@@ -44,6 +44,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │  ├─ main.rs             eframe 起動(lib の app::PaintApp を走らせるだけ)
 │  ├─ lib.rs              ライブラリ部のルート(e2e テストが同じモジュールをウィンドウなしで駆動する)
 │  ├─ headless.rs         ウィンドウなしの GPU 駆動(HeadlessCanvas: 記録再生 → encode_frame → snapshot)
+│  ├─ capture.rs          解析用キャプチャ(--capture): 保存先・ログの二重出力・起動直後からの記録・終了時の書き出し
 │  ├─ app/                egui UI
 │  │  ├─ mod.rs           PaintApp の状態・ライフサイクル・ツールパネルの振り分け・App::ui / save
 │  │  ├─ linehist.rs      線画の多段 Undo/Redo 履歴(RasterStroke / LineHistory / 再ラスタライズ)

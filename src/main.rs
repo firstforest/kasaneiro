@@ -5,7 +5,12 @@ use eframe::egui;
 use kasaneiro::{app, assets};
 
 fn main() -> eframe::Result {
-    env_logger::init();
+    // --capture: 解析用に起動直後から終了までを target/capture/<日時>/ へ記録する
+    let capture_dir = kasaneiro::capture::dir_from_args();
+    kasaneiro::capture::init_logging(capture_dir.as_deref());
+    if let Some(dir) = &capture_dir {
+        eprintln!("解析用に記録中: {}", dir.display());
+    }
 
     // 配布ビルド(embed-assets)の初回起動時、既定の顔料・パレット・プリセット等を
     // exe 隣へ書き出す(通常ビルドでは何もしない)。ストア読込より前に呼ぶこと
@@ -22,7 +27,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "kasaneiro",
         options,
-        Box::new(|cc| Ok(Box::new(app::PaintApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(app::PaintApp::with_capture(cc, capture_dir)))),
     )
 }
 

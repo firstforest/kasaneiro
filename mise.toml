@@ -5,6 +5,14 @@ rust = "1.96.0"
 description = "アプリを起動する"
 run = "cargo run"
 
+[tasks."run:capture"]
+description = "解析用キャプチャ付きで起動する(target/capture/<日時>/ にログ・ストローク・終了時の画面と全状態)"
+run = "cargo run -- --capture"
+
+[tasks."replay:capture"]
+description = "いちばん新しいキャプチャを headless で再生して replay.png を書く(別のものは KASANEIRO_CAPTURE=<dir>)"
+run = "cargo test --test capture_replay -- --ignored --nocapture"
+
 [tasks.test]
 description = "全テスト(e2e は GPU 必須)"
 run = "cargo test --workspace"

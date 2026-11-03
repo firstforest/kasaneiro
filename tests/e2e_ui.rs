@@ -445,3 +445,75 @@ fn dry_keeps_painted_color() {
         "乾いて明るくなる幅が濡れ色の分を超えている: {ctx}"
     );
 }
+
+/// 解析用キャプチャ: 描いてウィンドウを閉じようとすると、閉じる前に記録一式を書き出してから閉じる
+/// (テストの描画では UI スクショが届かないので、待ちきれずに閉じる経路を通る。log.txt は main のログ初期化が作るので見ない)
+#[test]
+fn capture_writes_session_on_close() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("e2e-capture");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let capture_dir = dir.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1100.0, 780.0))
+        .with_step_dt(1.0 / 60.0)
+        .renderer(WgpuTestRenderer::from_render_state(render_state()))
+        .build_eframe(move |cc| PaintApp::with_capture(cc, Some(capture_dir.clone())));
+    frames(&mut harness, 3);
+    harness.get_by_label_contains("塗る色 2:").click();
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.3, 0.7, 0.5);
+    frames(&mut harness, 10);
+
+    harness
+        .input_mut()
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .events
+        .push(egui::ViewportEvent::Close);
+    frame(&mut harness);
+    let closes = |h: &Harness<'_, PaintApp>| {
+        h.output()
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .is_some_and(|v| v.commands.contains(&egui::ViewportCommand::Close))
+    };
+    let cancelled = harness
+        .output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .is_some_and(|v| v.commands.contains(&egui::ViewportCommand::CancelClose));
+    assert!(cancelled, "閉じる要求を止めずにそのまま閉じた");
+    let mut closed = false;
+    for _ in 0..90 {
+        frame(&mut harness);
+        if closes(&harness) {
+            closed = true;
+            break;
+        }
+    }
+    assert!(closed, "書き出しの後に閉じていない");
+
+    for name in [
+        "params_start.json",
+        "params_end.json",
+        "session.json",
+        "strokes.json",
+        "canvas.png",
+        "work.kasane",
+    ] {
+        assert!(dir.join(name).is_file(), "{name} が書き出されていない");
+    }
+    let stored: kasaneiro::replay::StoredRecording =
+        serde_json::from_slice(&std::fs::read(dir.join("strokes.json")).unwrap()).unwrap();
+    assert_eq!(
+        stored.recording.strokes.len(),
+        1,
+        "描いた1本が記録されていない"
+    );
+    assert!(
+        stored.recording.strokes[0].load.is_some(),
+        "筆の中身が記録されていない"
+    );
+}

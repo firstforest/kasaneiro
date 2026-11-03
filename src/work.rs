@@ -23,7 +23,7 @@ use std::path::PathBuf;
 const MAGIC: &[u8; 4] = b"KSN1";
 
 /// 作品ファイルの拡張子(JSON プリセット等と区別する)
-const EXT: &str = "kasane";
+pub(crate) const EXT: &str = "kasane";
 
 /// レイヤー構成1枚分(GpuCanvas::DriedLayer と対応。GPU 非依存に持つ)
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
@@ -102,7 +102,7 @@ pub fn load(name: &str) -> Result<WorkFile, String> {
 }
 
 /// WorkFile → バイト列。MAGIC + メタ長 + メタ JSON + 生 f32 ブロブ(固定順)
-fn encode(work: &WorkFile) -> Result<Vec<u8>, String> {
+pub(crate) fn encode(work: &WorkFile) -> Result<Vec<u8>, String> {
     let meta = WorkMeta {
         canvas_size: work.canvas_size,
         layer_count: work.textures.dried.len() as u32,

@@ -156,6 +156,11 @@ impl PaintApp {
                 recorder.tick();
             }
         }
+        if let Some(capture) = &mut self.capture {
+            for _ in 0..ticks {
+                capture.tick();
+            }
+        }
 
         // H5: 再生中は記録済みポインタ入力を同じテンポで流し込む(手描きと合流可)
         if let Some(player) = &mut self.replay_ui.player {
