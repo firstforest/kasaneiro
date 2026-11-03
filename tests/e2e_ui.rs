@@ -260,15 +260,15 @@ fn tool_button_switches_tool() {
     );
 }
 
-/// 色スウォッチのダブルクリックで、その色の「色をつくる」モーダルが開き、閉じるで閉じる
+/// 「色をつくる」ボタンで選択中スロット(最後に押した色スウォッチ)の編集モーダルが開き、
+/// 閉じるで閉じる。色スウォッチを2回続けて押してもモーダルは開かない
 #[test]
-fn double_click_swatch_opens_color_modal() {
+fn color_edit_button_opens_modal_for_selected_slot() {
     let mut harness = app();
-    assert!(harness.query_by_label("色をつくる").is_none());
     let swatch = harness.get_by_label_contains("塗る色 3:").rect().center();
     harness.event(egui::Event::PointerMoved(swatch));
     frame(&mut harness);
-    // 押す・離すを1フレームずつ(実際の操作と同じく、ダブルクリック判定の時間内に収まる)
+    // ダブルクリックの間隔で押す・離すを2回
     for pressed in [true, false, true, false] {
         harness.event(egui::Event::PointerButton {
             pos: swatch,
@@ -280,10 +280,16 @@ fn double_click_swatch_opens_color_modal() {
     }
     frames(&mut harness, 2);
     assert!(
+        harness.query_by_label("色をつくる").is_none(),
+        "スウォッチの連打でモーダルが開いた"
+    );
+
+    harness.get_by_label("色をつくる(#3)…").click();
+    frames(&mut harness, 2);
+    assert!(
         harness.query_by_label("色をつくる").is_some(),
         "モーダルが開かない"
     );
-    // 編集対象はダブルクリックしたスロット(#3)
     assert!(
         harness.query_by_label("#3").is_some(),
         "編集対象が #3 でない"
@@ -292,6 +298,24 @@ fn double_click_swatch_opens_color_modal() {
     harness.get_by_label("閉じる").click();
     frames(&mut harness, 3);
     assert!(harness.query_by_label("色をつくる").is_none(), "閉じない");
+}
+
+/// 色スウォッチの右クリックメニュー「この色をつくる」で、その色の編集モーダルが開く
+#[test]
+fn swatch_context_menu_opens_color_modal() {
+    let mut harness = app();
+    harness.get_by_label_contains("塗る色 4:").click_secondary();
+    frames(&mut harness, 2);
+    harness.get_by_label("この色をつくる…").click();
+    frames(&mut harness, 2);
+    assert!(
+        harness.query_by_label("色をつくる").is_some(),
+        "モーダルが開かない"
+    );
+    assert!(
+        harness.query_by_label("#4").is_some(),
+        "編集対象が #4 でない"
+    );
 }
 
 /// 「乾かす(固定)」で乾燥レイヤーに焼き込んでも色は残る。濡れ色(水量で最大 12% 暗く

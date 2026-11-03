@@ -7,10 +7,10 @@
 //! 乾燥済みレイヤーは「乾かす」時に色を記録済みなので、後から顔料を編集しても変色しない(M5c)。
 //!
 //! パレット編集はメイン機能なので**常時表示**: 「色ライブラリ」(1色のスウォッチグリッド)+
-//! 「パレット」(4色一式の保存/読込)を左パネルに並べる。旧 FileModal::Palette / Pigment は廃止。
-//! 「色をつくる」(選択中スロットの編集)だけは**ツールバーの色スウォッチのダブルクリックで開く
-//! モーダル**([`PaintApp::color_edit_modal`])。編集対象の色ボタンを直接叩く動線のほうが
-//! 自然なため、常時表示セクションは廃止した(ユーザー判断 2026-07-13)。
+//! 「パレット」(4色一式の保存/読込)を右パネルの色スウォッチの下に並べる。
+//! 「色をつくる」(選択中スロットの編集)は**モーダル**([`PaintApp::color_edit_modal`])で、
+//! スウォッチ下の「色をつくる(#n)…」ボタンか、色スウォッチの右クリックメニューから開く。
+//! スウォッチのクリックは筆に色を取る操作なので、編集を開く操作はクリックと別の入口に分ける。
 
 use crate::app::PaintApp;
 use crate::palette_store;
@@ -54,8 +54,7 @@ fn hue_order(cache: &[(String, pigment::Pigment)]) -> Vec<usize> {
 }
 
 impl PaintApp {
-    /// パレット(M5): 色ライブラリ・パレットの2セクションを常時表示する。
-    /// 色の編集(色をつくる)はツールバーの色スウォッチのダブルクリックで開くモーダル
+    /// パレット(M5): 色ライブラリ・パレットの2セクションを常時表示する
     pub(in crate::app) fn palette_panel(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         self.pigment_library_section(ui);
@@ -63,12 +62,29 @@ impl PaintApp {
         self.palette_file_section(ui);
     }
 
-    /// スポイト待機トグル(色選びの動線)。M5e。brush_panel のツールバー直後から呼ばれる
+    /// 「色をつくる」モーダルを開くボタン。編集対象は選択中スロット(最後に押した色スウォッチ)
+    pub(in crate::app) fn color_edit_button(&mut self, ui: &mut egui::Ui) {
+        let ch = self.params.brush_channel.min(3) as usize;
+        if ui
+            .button(format!("色をつくる(#{})…", ch + 1))
+            .on_hover_text(format!(
+                "選択中のスロット #{}「{}」の色・名前・性質を編集します。
+                 別の色を編集するときは、その色スウォッチを押してから(または右クリック →「この色をつくる」)",
+                ch + 1,
+                self.palette.pigments[ch].name
+            ))
+            .clicked()
+        {
+            self.palette_ui.color_modal = true;
+        }
+    }
+
+    /// スポイト待機トグル(色選びの動線)。M5e
     pub(in crate::app) fn eyedropper_control(&mut self, ui: &mut egui::Ui) {
         let slot = self.params.brush_channel.min(3) as usize + 1;
         let armed = self.palette_ui.eyedropper;
         if ui
-            .selectable_label(armed, "💧 スポイト(画面の色を拾う)")
+            .selectable_label(armed, "💧 スポイト")
             .on_hover_text(format!(
                 "押してからキャンバスをクリックすると、その点の色を選択中スロット #{slot} に取り込みます。\nI キーを押している間だけ一時的にスポイトにもできます(ペンタブレットのキーに I を割り当て)"
             ))
@@ -76,6 +92,10 @@ impl PaintApp {
         {
             self.palette_ui.eyedropper = !armed;
         }
+    }
+
+    /// スポイト待機中の案内(待機中だけ1行)
+    pub(in crate::app) fn eyedropper_status(&self, ui: &mut egui::Ui) {
         if self.palette_ui.eyedropper {
             ui.colored_label(
                 egui::Color32::from_rgb(64, 130, 200),
@@ -84,9 +104,8 @@ impl PaintApp {
         }
     }
 
-    /// 「色をつくる」モーダル: ツールバーの色スウォッチをダブルクリックで開く。
-    /// 選択中スロットの色・性質(ρ/ω/γ)編集と1クリック保存(M5g: 編集対象は
-    /// brush_channel 連動=どのスウォッチをダブルクリックしたかで決まる)。
+    /// 「色をつくる」モーダル: 「色をつくる」ボタンか色スウォッチの右クリックメニューで開く。
+    /// 選択中スロットの色・性質(ρ/ω/γ)編集と1クリック保存(M5g: 編集対象は brush_channel)。
     /// 背景クリック/Esc で閉じる(編集は即時反映済みなので閉じても失われない)
     pub(in crate::app) fn color_edit_modal(&mut self, ctx: &egui::Context) {
         if !self.palette_ui.color_modal {

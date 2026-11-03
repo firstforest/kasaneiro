@@ -2,7 +2,7 @@
 //! キャンバス操作 / ポインタ入力の反映 / スナップショット保存)と、eframe::App の描画エントリ。
 //!
 //! 各パネルの描画は [`ui`] 配下のサブモジュールに `impl PaintApp` として分割してある:
-//! - [`ui::tools`] 相当 — 乾燥ボタン・水ブラシ(`dry_controls` / `brush_panel`)
+//! - [`ui::tools`] 相当 — 乾燥ボタン・元に戻す・水ブラシ・右パネルの色まわり(`dry_controls` / `undo_controls` / `brush_panel` / `wet_palette_panel`)
 //! - レイヤー(`layer_panel` / `layers_panel`)・調整(`tuning_panel`)
 //! - プリセット/記録再生/シェーダー状態(`preset_panel` / `replay_panel` / `shader_status`)
 //! - キャンバスとエラーオーバーレイ(`canvas_ui` / `error_overlay`)
@@ -154,8 +154,6 @@ pub struct PaintApp {
     /// 自動補充: 筆を下ろすたびに brush_refill へ戻す。off(既定)なら前のストロークの残りから続き、
     /// 乾きかけの筆で濡れた色を吸える。eframe storage に永続化
     auto_refill: bool,
-    /// 色スウォッチのダブルクリック(色をつくる)で取った色を取り消すための、1回目を押す前の中身
-    swatch_undo: Option<(usize, f64, BrushLoad)>,
     /// 押している最中のスウォッチ(0〜3 = 色、4 = 水)。押し始めの判定と押し続けの取り込みに使う
     swatch_held: Option<usize>,
     /// 直近のストローク位置と筆圧(テクセル座標)。置いたまま動かないフレームの
@@ -310,7 +308,6 @@ impl PaintApp {
             brush_clock: BrushClock::default(),
             brush_refill,
             auto_refill,
-            swatch_undo: None,
             swatch_held: None,
             feed_pos: None,
             pen: PenSource::default(),
@@ -1333,25 +1330,30 @@ impl eframe::App for PaintApp {
         egui::Panel::top("menu_bar").show(ui, |ui| self.menu_bar(ui));
 
         egui::Panel::left("tools")
-            .default_size(280.0)
+            .default_size(260.0)
             .show(ui, |ui| {
                 // F11: 開発モードトグルは左パネルの下端(左下)へ固定する。
                 // 下端固定は他より先に確保する(残りが上側のスクロール領域になる)
                 egui::Panel::bottom("dev_toggle").show(ui, |ui| self.dev_mode_toggle(ui));
-                // M2: 乾燥ボタンはスクロールの外に置き、常に見える位置に固定する
-                self.dry_controls(ui);
+                // 元に戻す/やり直しはスクロールの外に置き、常に見える位置に固定する
+                self.undo_controls(ui);
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| self.tool_panel(ui));
                 // F3: 操作結果(保存先・スポイト・エラー)はスクロール外の下端で常時表示する
                 self.status_bar(ui);
             });
 
-        // レイヤー関連はキャンバスの右へ(選択中レイヤーが左のツール群を決める)
+        // 右パネル: 描いている最中に手を伸ばす色まわり(乾燥・パレット)と、表示・レイヤー
+        // (選択中レイヤーが左のツール群を決める)
         egui::Panel::right("layers")
-            .default_size(230.0)
+            .default_size(290.0)
             .show(ui, |ui| {
+                // M2: 乾燥ボタンはスクロールの外に置き、常に見える位置に固定する
+                self.dry_controls(ui);
+                ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    // 表示(ズーム・回転)はレイヤーの上=右パネル最上段に置く
+                    self.wet_palette_panel(ui);
+                    ui.separator();
                     self.view_panel(ui);
                     self.layer_stack_panel(ui);
                 });
@@ -1365,7 +1367,7 @@ impl eframe::App for PaintApp {
         // &mut self を捕捉する closure と ui.ctx() の同時借用を回避する(Modal は foreground Area)
         let ctx = ui.ctx().clone();
         self.file_modals(&ctx);
-        // 「色をつくる」モーダル(色スウォッチのダブルクリックで開く。palette.rs)
+        // 「色をつくる」モーダル(palette.rs)
         self.color_edit_modal(&ctx);
 
         // 常時シミュレーションが走るため連続再描画

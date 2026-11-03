@@ -1,8 +1,11 @@
-//! 乾燥ボタン(常時表示)と、アクティブレイヤーごとのツールパネル。
+//! 乾燥ボタン・元に戻す(常時表示)と、アクティブレイヤーごとのツールパネル。
 //!
 //! レイヤーごとに使うツールが決まっているため、左パネルのツール群は右のレイヤーパネルで
 //! 選択中のレイヤーに関係するものだけを出す([`PaintApp::active_tools_panel`] が出し分ける):
-//! 水彩 → 水ブラシ+パレット / 鉛筆・ペン・ハイライト → 各線画ツール / 乾燥 → 編集不可の案内。
+//! 水彩 → 筆の状態とブラシスライダー / 鉛筆・ペン・ハイライト → 各線画ツール / 乾燥 → 編集不可の案内。
+//!
+//! 描いている最中に何度も手を伸ばす色まわり(乾燥ボタン・色スウォッチ・水・洗う・削り/消す/吸い取り・
+//! 色をつくる・スポイト・色ライブラリ・パレット)は右パネルにまとめる([`PaintApp::wet_palette_panel`])。
 
 use crate::app::{ActiveLayer, PaintApp};
 use crate::gpu::{DriedLayer, GpuCanvas};
@@ -15,10 +18,7 @@ impl PaintApp {
     /// F12: 「今のツール」のブロックを Frame::group で囲み、下の設定セクションと視覚的に分離する
     pub(in crate::app) fn active_tools_panel(&mut self, ui: &mut egui::Ui) {
         egui::Frame::group(ui.style()).show(ui, |ui| match self.active_layer {
-            ActiveLayer::Wet => {
-                self.brush_panel(ui);
-                self.palette_panel(ui);
-            }
+            ActiveLayer::Wet => self.brush_panel(ui),
             ActiveLayer::Pencil => self.pencil_panel(ui),
             ActiveLayer::Pen => self.pen_panel(ui),
             ActiveLayer::Highlight => self.highlight_panel(ui),
@@ -27,7 +27,7 @@ impl PaintApp {
     }
 
     /// M2: 乾燥操作は「にじみを止めたい瞬間」に間に合う必要がある(Fresco の UX 教訓)ため、
-    /// スクロール領域の外=左パネル最上部に常時表示する
+    /// スクロール領域の外=右パネル最上部(色を選ぶ手の近く)に常時表示する
     pub(in crate::app) fn dry_controls(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -60,8 +60,12 @@ impl PaintApp {
                 self.invalidate_wet_undo();
             }
         });
-        // M6: 統一 Undo/Redo(水彩=1段 / 線画=多段)。乾燥ボタンと同じく常時見える位置に置く。
-        // Ctrl+Z / Ctrl+Shift+Z と同じ経路(末尾の操作種別で振り分け)
+    }
+
+    /// M6: 統一 Undo/Redo(水彩=1段 / 線画=多段)。スクロールの外=左パネル最上部に常時表示する。
+    /// Ctrl+Z / Ctrl+Shift+Z と同じ経路(末尾の操作種別で振り分け)
+    pub(in crate::app) fn undo_controls(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
             let can_undo = !self.painting && !self.undo_stack.is_empty();
             let can_redo = !self.painting && !self.line_history.redo.is_empty();
@@ -95,9 +99,26 @@ impl PaintApp {
         ui.add_space(4.0);
     }
 
-    /// 水彩レイヤーのツール(M1〜M4): ツール選択・筆の中身・ブラシスライダー
-    pub(in crate::app) fn brush_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("水彩ブラシ");
+    /// 右パネルの色まわり(水彩レイヤー選択時のみ): 筆の中身を作るツールバー・色をつくる・スポイト・
+    /// 色ライブラリ・パレット
+    pub(in crate::app) fn wet_palette_panel(&mut self, ui: &mut egui::Ui) {
+        if self.active_layer != ActiveLayer::Wet {
+            return;
+        }
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.heading("パレット");
+            self.wet_toolbar(ui);
+            ui.horizontal_wrapped(|ui| {
+                self.color_edit_button(ui);
+                self.eyedropper_control(ui);
+            });
+            self.eyedropper_status(ui);
+            self.palette_panel(ui);
+        });
+    }
+
+    /// 水彩のツールバー(M1〜M4): 塗る色4つ・水・洗う・削り/消す/吸い取り
+    fn wet_toolbar(&mut self, ui: &mut egui::Ui) {
         // 1列(折り返しあり)に「塗る」の色4つ+水+洗う、続けて削り/消す/吸い取り。
         // 色・水・洗うは筆の中身を作る操作で、押すと塗るツールにもなる。
         // 選択状態: 色は塗るツールのとき筆に入っている色、他の4ツールは tool==Wet(wt)。
@@ -113,14 +134,13 @@ impl PaintApp {
                         "{}に持ち替える(筆を洗ってからこの色を取る。押している間、取り続けて濃くなる)\n\
                          Shift+押す: 今の筆の色に足す(筆の中で混ざる)\n\
                          沈みやすさ {:.2} / 染みつき {:.2} / 粒状感 {:.2} / 粒の細かさ {:.2}\n\
-                         ダブルクリック: 色をつくる / 右クリック: ライブラリ保存",
+                         右クリック: 色をつくる・ライブラリ保存",
                         p.name, p.density, p.staining, p.granulation, p.mobility
                     ),
                 )
             })
             .collect();
         let dt = ui.input(|i| i.stable_dt);
-        let now = ui.input(|i| i.time);
         let painting_tool = self.tool == Tool::Wet(WetTool::Paint);
         ui.horizontal_wrapped(|ui| {
             // 色スウォッチ: 押した瞬間に筆を洗ってその色を1回分(Shift なら洗わずに足す)、押している間も取り続ける。
@@ -141,12 +161,6 @@ impl PaintApp {
                 resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
                 match self.swatch_press(i, resp.is_pointer_button_down_on()) {
                     Some(true) => {
-                        // ダブルクリックの1回目より前の中身を覚えておく(2回目の押下では上書きしない)
-                        let fresh = !matches!(self.swatch_undo, Some((k, t, _)) if k == i && now - t < 0.5);
-                        if fresh {
-                            self.sync_brush();
-                            self.swatch_undo = Some((i, now, self.brush_load));
-                        }
                         let mix = ui.input(|inp| inp.modifiers.shift);
                         self.edit_brush(|b| {
                             if !mix {
@@ -163,21 +177,16 @@ impl PaintApp {
                     }
                     None => {}
                 }
-                // ダブルクリック: この色の「色をつくる」をモーダルで開く。開くための2回の押下で
-                // 筆に取った色は取り消す(1回目の押下でスロットは選択済みなので、その色が編集対象になる)
-                if resp.double_clicked() {
-                    if let Some((k, _, before)) = self.swatch_undo.take()
-                        && k == i
-                    {
-                        self.edit_brush(|b| *b = before);
-                        self.brush_refill = before;
-                    }
-                    self.palette_ui.color_modal = true;
-                }
-                // 右クリック: ライブラリ保存(色の管理の近道)
+                // 右クリック: この色の「色をつくる」・ライブラリ保存(色の管理の近道)。
+                // 色をつくるは筆の中身を変えずにスロットだけ選ぶ(編集対象 = brush_channel)
                 resp.context_menu(|ui| {
                     let pname = self.palette.pigments[i].name.trim().to_owned();
                     ui.label(egui::RichText::new(self.palette.pigments[i].name.as_str()).strong());
+                    if ui.button("この色をつくる…").clicked() {
+                        self.params.brush_channel = i as u32;
+                        self.palette_ui.color_modal = true;
+                        ui.close();
+                    }
                     if ui
                         .add_enabled(
                             !pname.is_empty(),
@@ -254,8 +263,11 @@ impl PaintApp {
         if let Some(wt) = self.tool.wet() {
             self.params.tool = wt.gpu_id();
         }
-        // スポイトは色選びの動線なのでツールバーの直後に置く(M5e。旧: パレットパネル内)
-        self.eyedropper_control(ui);
+    }
+
+    /// 水彩レイヤーの左パネル: 選択中ツールの説明・筆の状態・ブラシスライダー
+    pub(in crate::app) fn brush_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("水彩ブラシ");
         // F16: 選択中ツールの短い説明を常時1行(ホバー不要で「何をする筆か」が読める)。
         // 左パネル幅で折り返さないよう常時表示は short_hint、詳しい説明はホバーに温存
         if let Some(wt) = self.tool.wet() {
