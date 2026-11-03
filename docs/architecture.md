@@ -113,7 +113,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 - 混色皿(`MixCanvas`)は `MIX_CANVAS_SIZE` = 256 の別インスタンス(本体のサイズ変更では作り直さない)
 - 64 の倍数なので読み戻しの行バイト数は常に 256B 整列(パディング不要)
 - VRAM は 2048² で計 ~1.3GB(乾燥レイヤー8枚の 512MB が支配的。下地は 64MB。窮屈なら `MAX_LAYERS` を減らす)
-- テクスチャ・バッファは作成時に wgpu がゼロ初期化する。「全部消す」(`clear`)と線画 Undo(`clear_line`)のゼロ化は、`Features::CLEAR_TEXTURE`(アダプタ対応時だけ要求)があれば `clear_texture`、なければゼロ埋めの `write_texture`
+- テクスチャ・バッファは作成時に wgpu がゼロ初期化する。「全部消す」(`clear`)・水彩のクリア(`clear_wet`)・線画のクリアと Undo(`clear_line`)のゼロ化は、`Features::CLEAR_TEXTURE`(アダプタ対応時だけ要求)があれば `clear_texture`、なければゼロ埋めの `write_texture`
 
 ### 3.2 テクスチャ
 
@@ -249,8 +249,9 @@ paint:
 
 - 乾かす = bake パスが `edge_aa_conc(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を texture array の新スライスへ書き、湿レイヤーを全ゼロにする
 - レイヤーの重ね順・可視性・濃度倍率は `LayerUniform`(order + visible_mask + density)で `dried_cache_main` へ渡す。倍率は読んだ顔料濃度に掛けてから発色・合成する。UI の並べ替えがそのまま合成順になる。`sync_layers` が合成キャッシュの焼き直しを予約する
-- **下地への統合**(`merge_into_base`): 下から N 枚だけを並べた LayerUniform を `force_mode` 1 / 2 で2回 `dried_cache_main` に通し、それぞれの合成キャッシュを下地のスライス 0 / 1 へコピーして `has_base` を立てる。続けて残りの層を重ね順のままスロット 0.. へ詰め直す(同じテクスチャ内のスライス間コピー。行き先にまだ動かしていない層がいれば空きスロットへ逃がす `compaction_moves`)。`clear` で `has_base` を下ろす
-- 水彩の undo: ストローク開始時に `current` の3枚を退避テクスチャへコピーし、Ctrl+Z で書き戻す
+- **下地への統合**(`merge_into_base`): 下から N 枚だけを並べた LayerUniform を `force_mode` 1 / 2 で2回 `dried_cache_main` に通し、それぞれの合成キャッシュを下地のスライス 0 / 1 へコピーして `has_base` を立てる。続けて残りの層を重ね順のままスロット 0.. へ詰め直す(`compact_layers`。同じテクスチャ内のスライス間コピー。行き先にまだ動かしていない層がいれば空きスロットへ逃がす `compaction_moves`。記録パレットと GPU の latent 枠も同じ順に書き直す)。`clear` で `has_base` を下ろす
+- **乾いた層の削除**(`delete_dried_layer`): その層を除いた残りを `compact_layers` で詰め直すだけ(下地には焼かない)
+- 水彩の undo: ストローク開始時に `current` の3枚を退避テクスチャへコピーし、Ctrl+Z で書き戻す。「このレイヤーをクリア」も同じく退避してから `clear_wet`(ping-pong の両方をゼロ)する
 
 ## 7. 線画
 
@@ -262,7 +263,7 @@ paint:
 - **清書ペンの形**: 半径 = `pen_radius × mix(1, 筆圧, pressure_radius)`(筆圧は1回だけ)。覆いは縁を中心にした 1px の遷移帯。半径が `PEN_MIN_RADIUS`(0.7px)を下回る線は半径をそこで止めて、細さの比だけ濃さを落とす
 - **合成**: display.wgsl で色を合成した後、`apply_lines()` が鉛筆(グレー)→ ペン(濃色)→ ハイライト(白)の順にアルファ合成。`show_pencil` / `show_pen` / `show_highlight` で非表示にできる
 - **透水率**: 清書ペン濃度から `perm = 1 − line_block×ペン濃度` を出し、velocity(速度場・にじみ拡張)と diffuse(隣接流束)に掛ける。`line_block=0` で境界なし
-- **多段 Undo/Redo**([src/app/linehist.rs](../src/app/linehist.rs)): ストローク単位で生ポインタ点+実効 SimParams を `LineHistory` に持つ。Undo = 対象テクスチャを `clear_line` してから残りを `rasterize_line` で引き直す / Redo = 取り消し分を再適用(Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y)。長い線は MAX_SPLATS 単位に分けて dispatch
+- **多段 Undo/Redo**([src/app/linehist.rs](../src/app/linehist.rs)): ストローク単位で生ポインタ点+実効 SimParams を `LineHistory` に持つ。Undo = 対象テクスチャを `clear_line` してから残りを `rasterize_line` で引き直す / Redo = 取り消し分を再適用(Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y)。レイヤーのクリアも `RasterStroke { clear: true }`(点なし)として同じ列に積み、引き直しはその target の最後のクリアより後だけを使う(`live_strokes`)。長い線は MAX_SPLATS 単位に分けて dispatch
 - **記録との関係**: ストローク記録は流体ツールだけが対象(`line_target` が Some の間は recorder をスキップ)
 
 ## 8. アクティブタイル

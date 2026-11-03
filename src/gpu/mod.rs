@@ -364,6 +364,13 @@ impl GpuCanvas {
         self.sync_layers(queue);
     }
 
+    /// 湿レイヤー(水・浮遊・沈着、ping-pong の両方)だけをゼロに戻す。乾いた層・線画には触れない
+    pub fn clear_wet(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let textures: Vec<&wgpu::Texture> = self.textures.iter().flatten().collect();
+        self.zero_textures(device, queue, &textures);
+        self.mark_tiles_dirty(queue);
+    }
+
     /// 2D テクスチャ(1 スライス・1 mip)群をゼロにする。`CLEAR_TEXTURE` が使えるデバイス
     /// (main.rs がアダプタ対応時に要求する)では GPU 上の clear_texture、使えなければ
     /// ゼロ埋めのバイト列を write_texture する(sim は rgba32float=16B、線画は r32float=4B)
@@ -416,7 +423,7 @@ impl GpuCanvas {
 
     /// 乾燥レイヤー slot の記録時パレット(M5h)。UI のパレット抽出が読む。
     /// 不変条件(len == layers.len())が保たれていれば使用スロットでは常に Some だが、
-    /// 将来の変更(レイヤー個別削除など)で崩れたときの破綻検知を兼ねて Option のまま返す
+    /// 崩れたときの破綻検知を兼ねて Option のまま返す
     pub fn layer_palette(&self, slot: usize) -> Option<&pigment::Palette> {
         self.layer_palettes.get(slot)
     }
@@ -667,8 +674,34 @@ impl GpuCanvas {
             queue.submit([encoder.finish()]);
         }
         self.has_base = true;
+        self.compact_layers(device, queue, self.layers[count..].to_vec());
+        Ok(())
+    }
 
-        let remaining: Vec<DriedLayer> = self.layers[count..].to_vec();
+    /// 乾燥レイヤー `index`(`layers` の添字)を消してスロットを空ける。元に戻せない
+    pub fn delete_dried_layer(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        index: usize,
+    ) -> Result<(), String> {
+        if index >= self.layers.len() {
+            return Err(format!("消す乾いた層がありません({index})"));
+        }
+        let mut remaining = self.layers.clone();
+        remaining.remove(index);
+        self.compact_layers(device, queue, remaining);
+        Ok(())
+    }
+
+    /// 残す層(重ね順)をスロット 0.. へ詰め直し、記録パレットも同じ順に並べ替える
+    /// (layer_palettes の添字 = slot を保つ)
+    fn compact_layers(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        remaining: Vec<DriedLayer>,
+    ) {
         let old_palettes = std::mem::take(&mut self.layer_palettes);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("compact_layers_encoder"),
@@ -694,7 +727,6 @@ impl GpuCanvas {
             self.write_layer_latents(queue, slot, &palette.pigment_latents());
         }
         self.sync_layers(queue);
-        Ok(())
     }
 
     /// 乾燥テクスチャのスライス `from` を `to` へ写すコマンドを積む
@@ -1015,7 +1047,7 @@ impl GpuCanvas {
 
 /// スロット詰め直しのコピー手順。`slots[j]` = 残す層 j の今のスロットで、層 j をスロット j へ
 /// 動かす (from, to) の列を返す。同じテクスチャ内のコピーなので、行き先にまだ動かしていない層が
-/// いれば先に空きスロットへ逃がす(統合で1枚以上空くので空きは必ずある)
+/// いれば先に空きスロットへ逃がす(統合・削除で1枚以上空くので空きは必ずある)
 fn compaction_moves(slots: impl Iterator<Item = usize>) -> Vec<(usize, usize)> {
     let mut at: Vec<usize> = slots.collect();
     let mut holder: [Option<usize>; MAX_LAYERS] = [None; MAX_LAYERS];
@@ -1031,7 +1063,7 @@ fn compaction_moves(slots: impl Iterator<Item = usize>) -> Vec<(usize, usize)> {
         if let Some(i) = holder[j] {
             let free = (j + 1..MAX_LAYERS)
                 .find(|&f| holder[f].is_none())
-                .expect("統合でスロットが空いている");
+                .expect("統合・削除でスロットが空いている");
             moves.push((j, free));
             holder[free] = Some(i);
             at[i] = free;

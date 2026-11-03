@@ -17,13 +17,42 @@ impl PaintApp {
     /// 選択中レイヤーのツールパネル(左パネル先頭)。右のレイヤーパネルの選択で出し分ける。
     /// F12: 「今のツール」のブロックを Frame::group で囲み、下の設定セクションと視覚的に分離する
     pub(in crate::app) fn active_tools_panel(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::group(ui.style()).show(ui, |ui| match self.active_layer {
-            ActiveLayer::Wet => self.brush_panel(ui),
-            ActiveLayer::Pencil => self.pencil_panel(ui),
-            ActiveLayer::Pen => self.pen_panel(ui),
-            ActiveLayer::Highlight => self.highlight_panel(ui),
-            ActiveLayer::Dried(index) => self.dried_info_panel(ui, index),
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            match self.active_layer {
+                ActiveLayer::Wet => self.brush_panel(ui),
+                ActiveLayer::Pencil => self.pencil_panel(ui),
+                ActiveLayer::Pen => self.pen_panel(ui),
+                ActiveLayer::Highlight => self.highlight_panel(ui),
+                ActiveLayer::Dried(index) => self.dried_info_panel(ui, index),
+            }
+            ui.separator();
+            self.layer_clear_control(ui);
         });
+    }
+
+    /// 選択中レイヤーを空にするボタン。線画・水彩は確認なしで消して Ctrl+Z で戻せる。
+    /// 乾いた層は戻せないので、サブメニューの確認ボタンを押して層ごと消す
+    fn layer_clear_control(&mut self, ui: &mut egui::Ui) {
+        match self.active_layer {
+            ActiveLayer::Dried(index) => {
+                ui.menu_button("この層を削除…", |ui| {
+                    ui.label("この乾いた層を消して枠を空けます。元に戻せません");
+                    if ui.button("削除する").clicked() {
+                        self.delete_dried_layer(index);
+                        ui.close();
+                    }
+                });
+            }
+            _ => {
+                if ui
+                    .add_enabled(!self.painting, egui::Button::new("このレイヤーをクリア"))
+                    .on_hover_text("このレイヤーの中身を全部消す。元に戻す (Ctrl+Z) で戻せる")
+                    .clicked()
+                {
+                    self.clear_active_layer();
+                }
+            }
+        }
     }
 
     /// M2: 乾燥操作は「にじみを止めたい瞬間」に間に合う必要がある(Fresco の UX 教訓)ため、
@@ -497,7 +526,7 @@ impl PaintApp {
 
         // M5h: 記録時パレットからの取り込み。スウォッチクリック=1色だけ同番スロットへ、
         // ボタン=4色丸ごと。読込時正規化(load_work)により通常 recorded は常に Some だが、
-        // 将来の変更(レイヤー個別削除など)で崩れたときの破綻検知を兼ねて None も明示する
+        // 不変条件が崩れたときの破綻検知を兼ねて None も明示する
         ui.separator();
         let Some(rec) = recorded else {
             ui.label(egui::RichText::new("この層のパレット記録はありません").weak());
@@ -576,7 +605,7 @@ impl PaintApp {
     /// 「元に戻す / やり直し」(dry_controls)と Ctrl+Z / Ctrl+Shift+Z が担う
     fn line_history_status(&self, ui: &mut egui::Ui) {
         ui.label(format!(
-            "線画履歴: {} 本(やり直し {} 本)",
+            "線画履歴: {} 件(やり直し {} 件)",
             self.line_history.done.len(),
             self.line_history.redo.len()
         ));

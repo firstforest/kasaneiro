@@ -8,6 +8,8 @@
 //!
 //! 履歴は鉛筆/ペン/ハイライトを1本の時系列で持つ。Undo で消えるのは末尾の1本で、
 //! その target のテクスチャだけをクリア→再ラスタライズする(他の線種は無傷)。
+//! 「このレイヤーをクリア」も1件として積む(`clear` = true、点なし)。引き直しはその target の
+//! 最後のクリアより後のストロークだけを使う。
 
 use crate::gpu::LineTarget;
 use paint_core::brush::{LineSmoother, StrokeState};
@@ -23,6 +25,8 @@ pub struct RasterStroke {
     pub params: SimParams,
     /// 生ポインタ点(テクセル座標, 筆圧)。再生時に StrokeState で補間し直す
     pub points: Vec<([f32; 2], f32)>,
+    /// レイヤーのクリア(線ではない)。true なら points は空で、適用 = その target をゼロにする
+    pub clear: bool,
 }
 
 /// 線画の多段 Undo/Redo 履歴。鉛筆/ペン/ハイライト共通の1本の時系列。
@@ -43,7 +47,31 @@ impl LineHistory {
             target,
             params,
             points: Vec::new(),
+            clear: false,
         });
+    }
+
+    /// レイヤーのクリアを1件として積む(Redo 履歴は破棄する)。テクスチャは呼び出し側がゼロにする
+    pub fn push_clear(&mut self, target: LineTarget) {
+        self.done.push(RasterStroke {
+            target,
+            params: SimParams::default(),
+            points: Vec::new(),
+            clear: true,
+        });
+        self.redo.clear();
+    }
+
+    /// target のテクスチャを引き直すのに使うストローク(最後のクリアより後、古い順)
+    pub fn live_strokes(&self, target: LineTarget) -> impl Iterator<Item = &RasterStroke> {
+        let start = self
+            .done
+            .iter()
+            .rposition(|s| s.target == target && s.clear)
+            .map_or(0, |i| i + 1);
+        self.done[start..]
+            .iter()
+            .filter(move |s| s.target == target)
     }
 
     /// 描画中の生ポインタ点を1つ足す(補間前。テクセル座標+筆圧)
@@ -112,4 +140,48 @@ pub fn stroke_splats(stroke: &RasterStroke) -> Vec<Splat> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn draw(history: &mut LineHistory, target: LineTarget, x: f32) {
+        history.begin(target, SimParams::default());
+        history.push_point([x, 0.0], 1.0);
+        history.finish();
+    }
+
+    /// 引き直しはその target の最後のクリアより後だけ。他の target のクリアには影響されない
+    #[test]
+    fn live_strokes_start_after_last_clear_of_same_target() {
+        let mut h = LineHistory::default();
+        draw(&mut h, LineTarget::Pen, 1.0);
+        draw(&mut h, LineTarget::Pencil, 2.0);
+        h.push_clear(LineTarget::Pen);
+        draw(&mut h, LineTarget::Pen, 3.0);
+        h.push_clear(LineTarget::Highlight);
+        draw(&mut h, LineTarget::Pen, 4.0);
+
+        let xs = |h: &LineHistory, t| -> Vec<f32> {
+            h.live_strokes(t).map(|s| s.points[0].0[0]).collect()
+        };
+        assert_eq!(xs(&h, LineTarget::Pen), [3.0, 4.0]);
+        assert_eq!(xs(&h, LineTarget::Pencil), [2.0]);
+        assert!(xs(&h, LineTarget::Highlight).is_empty());
+
+        // クリアを取り消せば、その前の線がまた引き直しの対象に戻る
+        h.done.retain(|s| !(s.clear && s.target == LineTarget::Pen));
+        assert_eq!(xs(&h, LineTarget::Pen), [1.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn push_clear_drops_redo() {
+        let mut h = LineHistory::default();
+        draw(&mut h, LineTarget::Pen, 1.0);
+        let stroke = h.done.pop().unwrap();
+        h.redo.push(stroke);
+        h.push_clear(LineTarget::Pen);
+        assert!(h.redo.is_empty());
+    }
 }

@@ -536,6 +536,66 @@ fn dry_keeps_painted_color() {
     );
 }
 
+/// 水彩(乾く前)の「このレイヤーをクリア」で紙の白に戻り、元に戻すで色が戻る
+#[test]
+fn wet_layer_clear_and_undo() {
+    let mut harness = app();
+    harness.get_by_label_contains("塗る色 2:").click();
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.3, 0.7, 0.5);
+    frames(&mut harness, 30);
+    let painted = canvas_color(&mut harness, "wet-clear-before", &[(0.5, 0.5)])[0];
+    assert!(
+        lightness(painted) < 0.9,
+        "そもそも描けていない: {painted:?}"
+    );
+
+    harness.get_by_label("このレイヤーをクリア").click();
+    frames(&mut harness, 3);
+    let cleared = canvas_color(&mut harness, "wet-clear-after", &[(0.5, 0.5)])[0];
+    assert!(
+        lightness(cleared) > 0.9,
+        "クリアしても色が残った: {cleared:?}"
+    );
+
+    harness.get_by_label("元に戻す").click();
+    frames(&mut harness, 3);
+    let undone = canvas_color(&mut harness, "wet-clear-undo", &[(0.5, 0.5)])[0];
+    assert!(
+        lightness(undone) < 0.9,
+        "元に戻しても色が戻らない: {undone:?}"
+    );
+}
+
+/// 乾いた層の「この層を削除…」→「削除する」で、その層が消えて紙の白に戻る
+#[test]
+fn dried_layer_delete() {
+    let mut harness = app();
+    harness.get_by_label_contains("塗る色 2:").click();
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.3, 0.7, 0.5);
+    frames(&mut harness, 30);
+    harness.get_by_label("乾かす(固定)").click();
+    frames(&mut harness, 5);
+    let dried = canvas_color(&mut harness, "dried-delete-before", &[(0.5, 0.5)])[0];
+    assert!(lightness(dried) < 0.9, "乾いた層に色がない: {dried:?}");
+
+    select_layer(&mut harness, "乾いた層 1");
+    frames(&mut harness, 2);
+    harness.get_by_label("この層を削除…").scroll_to_me();
+    frames(&mut harness, 30);
+    harness.get_by_label("この層を削除…").click();
+    frames(&mut harness, 2);
+    harness.get_by_label("削除する").click();
+    frames(&mut harness, 3);
+    let deleted = canvas_color(&mut harness, "dried-delete-after", &[(0.5, 0.5)])[0];
+    assert!(
+        lightness(deleted) > 0.9,
+        "削除しても色が残った: {deleted:?}"
+    );
+    assert_eq!(harness.query_all_by_label("乾いた層 1").count(), 0);
+}
+
 /// 解析用キャプチャ: 描いてウィンドウを閉じようとすると、閉じる前に記録一式を書き出してから閉じる
 /// (テストの描画では UI スクショが届かないので、待ちきれずに閉じる経路を通る。log.txt は main のログ初期化が作るので見ない)
 #[test]
@@ -717,6 +777,55 @@ fn pen_undo_redo_restores_same_lines() {
         let d = (0..3).map(|c| (b[c] - a[c]).abs()).fold(0.0, f32::max);
         assert!(d < 0.02, "{:?} で違う: {b:?} → {a:?}", at[i]);
     }
+}
+
+/// 線画の「このレイヤーをクリア」は選んだレイヤーだけを消し、元に戻す / やり直しで行き来できる。
+/// クリアの後に描いた線を元に戻しても、クリア前の線は戻らない
+#[test]
+fn line_layer_clear_undo_redo() {
+    let mut harness = app();
+    select_layer(&mut harness, "下書き(鉛筆)");
+    frames(&mut harness, 2);
+    pen_path(&mut harness, &[(0.2, 0.7), (0.8, 0.7)], 1.0);
+    select_layer(&mut harness, "清書(ペン)");
+    frames(&mut harness, 2);
+    pen_path(&mut harness, &[(0.2, 0.5), (0.8, 0.5)], 1.0);
+    frames(&mut harness, 2);
+
+    // [ペン線, 鉛筆線, 後で描くペン線, 紙]
+    let at = [(0.5, 0.5), (0.5, 0.7), (0.5, 0.3), (0.1, 0.1)];
+    let ink = |h: &mut Harness<'_, PaintApp>, name: &str| -> Vec<bool> {
+        let c = canvas_color(h, name, &at);
+        let paper = luma(c[3]);
+        c[..3].iter().map(|&x| paper - luma(x) > 0.05).collect()
+    };
+    assert_eq!(ink(&mut harness, "line-clear-0"), [true, true, false]);
+
+    harness.get_by_label("このレイヤーをクリア").click();
+    frames(&mut harness, 2);
+    assert_eq!(
+        ink(&mut harness, "line-clear-1"),
+        [false, true, false],
+        "ペンだけが消えていない"
+    );
+
+    harness.get_by_label("元に戻す").click();
+    frames(&mut harness, 2);
+    assert_eq!(ink(&mut harness, "line-clear-2"), [true, true, false]);
+    harness.get_by_label("やり直し").click();
+    frames(&mut harness, 2);
+    assert_eq!(ink(&mut harness, "line-clear-3"), [false, true, false]);
+
+    pen_path(&mut harness, &[(0.2, 0.3), (0.8, 0.3)], 1.0);
+    frames(&mut harness, 2);
+    assert_eq!(ink(&mut harness, "line-clear-4"), [false, true, true]);
+    harness.get_by_label("元に戻す").click();
+    frames(&mut harness, 2);
+    assert_eq!(
+        ink(&mut harness, "line-clear-5"),
+        [false, true, false],
+        "クリア後の線を戻したらクリア前の線まで戻った"
+    );
 }
 
 /// 清書ペンの消しゴムは描く太さとは別の太さを持つ: 細いペン線を既定の太い消しゴムで横切ると、

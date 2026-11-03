@@ -713,6 +713,52 @@ impl PaintApp {
         self.undo_stack.clear();
     }
 
+    /// 選択中のレイヤーを空にする。線画は線画履歴に、水彩は1段 undo に積むので Ctrl+Z で戻せる。
+    /// 乾いた層はクリアせず [`Self::delete_dried_layer`] で層ごと消す
+    fn clear_active_layer(&mut self) {
+        if self.painting {
+            return;
+        }
+        let (target, name) = match self.active_layer {
+            ActiveLayer::Pencil => (LineTarget::Pencil, "下書き(鉛筆)"),
+            ActiveLayer::Pen => (LineTarget::Pen, "清書(ペン)"),
+            ActiveLayer::Highlight => (LineTarget::Highlight, "ハイライト(白)"),
+            ActiveLayer::Wet => {
+                self.backup_wet_layer();
+                if self.run_canvas_action(|c, d, q| {
+                    c.clear_wet(d, q);
+                    Ok(())
+                }) {
+                    log::info!("水彩(乾く前)をクリア");
+                    self.invalidate_wet_undo();
+                    self.undo_stack.push(UndoKind::Wet);
+                    self.line_history.redo.clear();
+                    self.status_msg = Some("水彩(乾く前)をクリアしました".to_owned());
+                }
+                return;
+            }
+            ActiveLayer::Dried(_) => return,
+        };
+        if self.run_canvas_action(move |c, d, q| {
+            c.clear_line(d, q, target);
+            Ok(())
+        }) {
+            log::info!("{name}をクリア");
+            self.line_history.push_clear(target);
+            self.undo_stack.push(UndoKind::Line);
+            self.status_msg = Some(format!("{name}をクリアしました"));
+        }
+    }
+
+    /// 乾いた層 `index` を層ごと消して枠を空ける(元に戻せない)。水彩の 1 段 undo には触れない
+    fn delete_dried_layer(&mut self, index: usize) {
+        if self.run_canvas_action(|c, d, q| c.delete_dried_layer(d, q, index)) {
+            log::info!("乾いた層 {index} を削除");
+            self.select_layer(ActiveLayer::Wet);
+            self.status_msg = Some("乾いた層を削除しました".to_owned());
+        }
+    }
+
     /// 統一 Undo(M6): 末尾の操作種別で振り分ける(Ctrl+Z)。線を描いた直後は線が、
     /// 水彩ストロークの直後は湿レイヤーが戻る。ボタン・キーの両方からここを通す。
     /// ストローク中は履歴とテクスチャが食い違うので何もしない
@@ -814,9 +860,7 @@ impl PaintApp {
         // 対象 target の残りストロークを (params, splats) に確定させてから GPU へ流す
         let strokes: Vec<(SimParams, Vec<Splat>)> = self
             .line_history
-            .done
-            .iter()
-            .filter(|s| s.target == target)
+            .live_strokes(target)
             .map(|s| (s.params, stroke_splats(s)))
             .collect();
         self.run_canvas_action(move |c, d, q| {
@@ -839,9 +883,16 @@ impl PaintApp {
             return false;
         };
         let target = stroke.target;
-        let params = stroke.params;
-        let splats = stroke_splats(&stroke);
-        self.run_canvas_action(move |c, d, q| c.rasterize_line(d, q, target, &params, &splats));
+        if stroke.clear {
+            self.run_canvas_action(move |c, d, q| {
+                c.clear_line(d, q, target);
+                Ok(())
+            });
+        } else {
+            let params = stroke.params;
+            let splats = stroke_splats(&stroke);
+            self.run_canvas_action(move |c, d, q| c.rasterize_line(d, q, target, &params, &splats));
+        }
         self.line_history.done.push(stroke);
         self.undo_stack.push(UndoKind::Line);
         true
