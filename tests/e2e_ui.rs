@@ -144,11 +144,12 @@ fn mouse_drag_paints_on_canvas() {
     );
 }
 
-/// 筆の中身で濃さを描き分けられる: 青を取った線 > 水に浸して薄めた線 > 洗って水だけにした筆の線(ほぼ紙の白)。
-/// 自動補充(既定 on)は最後に作った中身へ戻すので、取り直した直後の線はその濃さで引ける
+/// 筆の中身で濃さを描き分けられる: 水に浸してから青を取った線 > 水に浸して薄めた線 > 洗って水だけにした筆の線(ほぼ紙の白)。
+/// 色を取っても水は変わらないので、起動時の空の筆はまず水に浸す
 #[test]
 fn brush_load_controls_density() {
     let mut harness = app();
+    harness.get_by_label("水").click();
     harness.get_by_label_contains("塗る色 2:").click();
     frames(&mut harness, 2);
     mouse_drag(&mut harness, 0.2, 0.8, 0.2);
@@ -184,7 +185,7 @@ fn brush_load_controls_density() {
     );
 }
 
-/// 色スウォッチの押下は持ち替え(筆を洗ってその色だけにする)、Shift+押下は今の色に足す(筆の中で混ざる)。
+/// 色スウォッチの押下は持ち替え(筆の顔料を捨ててその色だけにする)、Shift+押下は今の色に足す(筆の中で混ざる)。
 /// 黄 → 青と押した筆の線は青のまま、そこへ Shift+黄を足した筆の線は緑寄りになる
 #[test]
 fn swatch_switches_color_and_shift_mixes() {

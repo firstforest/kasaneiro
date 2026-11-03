@@ -1076,7 +1076,7 @@ impl PaintApp {
     }
 
     /// 筆へのスポイト: カーソル下の湿レイヤーの顔料構成(浮遊 + 沈着、小さな窓の平均)を拾い、
-    /// 筆を洗ってその比で合計1回分を取る(色スウォッチと同じ濃さ)。パレットは変えない。
+    /// 筆の顔料を捨ててその比で合計1回分を取る(水は色スウォッチと同じく変えない)。パレットは変えない。
     /// 乾いた層は乾かした時点のパレットで記録されていて今の4スロットへ写せないので拾わない
     fn pick_to_brush(&mut self, pos: egui::Pos2, rect: egui::Rect) {
         let t = self.screen_to_texel(pos, rect);
@@ -1119,7 +1119,7 @@ impl PaintApp {
             }
         }
         self.edit_brush(|b| {
-            b.wash();
+            b.clear_pigment();
             b.take_mix(amounts, paint_core::load::TAKE_DOSE);
         });
         self.after_brush_take();

@@ -10,11 +10,12 @@
 //! 読み戻した中身を表示と次の操作の起点に使う。
 //!
 //! 中身を変えるのはツールバーのスウォッチとスポイト:
-//! - 色: 押した瞬間に洗ってその色を1回分(Shift なら洗わずに足す)、押している間も少しずつ足す(濃くなる)
+//! - 色: 押した瞬間に顔料を捨ててその色を1回分(Shift なら捨てずに足す)、押している間も少しずつ足す(濃くなる)。
+//!   水は変えない(水の量は水と拭うで決める)。水が TAKE_MIN_WATER より少なければそこまでは入れる
 //! - 水: 押した瞬間に顔料を半分、押している間も水と入れ替わって抜けていく(薄くなる・洗える)
 //! - 拭う: 押した瞬間に水を半分、押している間も水だけ抜けていく(顔料は残るので濃く、紙を濡らす量が減る)
 //! - 洗う: 水も顔料も 0(空の筆。紙に何も置かず、濡れた所では色水を吸う)。続けて水に浸せば水だけの筆になる
-//! - スポイト: 洗ってから、拾った点の湿レイヤーの顔料構成の比で合計1回分を取る([`BrushLoad::take_mix`])
+//! - スポイト: 顔料を捨ててから、拾った点の湿レイヤーの顔料構成の比で合計1回分を取る([`BrushLoad::take_mix`])。水は色と同じ扱い
 //!
 //! 筆は穂先(紙と受け渡す。小さい)と腹(穂先へ水を送る。大きい)の2室。乾いた紙に描くと穂先から出て、
 //! 腹が補充するので全体が減っていく(腹 `brush_hold` px で半分)。出るときは穂先の濃さのまま出るので濃さは
@@ -29,6 +30,8 @@ use serde::{Deserialize, Serialize};
 pub const TAKE_DOSE: f32 = 1.0;
 /// 色スウォッチを押し続けている間に足す顔料(1秒あたり)
 pub const TAKE_RATE: f32 = 1.0;
+/// 色を取ったときに入れる水の下限(拭い切った筆と同じ量)。水 0 の筆は乾いた紙に色を出せないので、空の筆に色を取ってもここまでは入れる
+pub const TAKE_MIN_WATER: f32 = WIPE_MIN_WATER;
 /// 筆が含める顔料の上限(標準の4回分)
 pub const PIGMENT_MAX: f32 = 4.0;
 /// 水スウォッチを押した瞬間に残る顔料の割合
@@ -73,8 +76,17 @@ impl Chamber {
     }
 
     fn take_pigment(&mut self, channel: u32, amount: f32) {
-        self.pigment[channel.min(3) as usize] += amount.max(0.0);
-        self.water = 1.0;
+        let mut add = [0.0; 4];
+        add[channel.min(3) as usize] = amount.max(0.0);
+        self.add_pigment(add);
+    }
+
+    /// 顔料を足す。水は変えず、TAKE_MIN_WATER より少なければそこまで入れる。合計は PIGMENT_MAX で頭打ち(比率を保って縮める)
+    fn add_pigment(&mut self, add: [f32; 4]) {
+        for (p, a) in self.pigment.iter_mut().zip(add) {
+            *p += a;
+        }
+        self.water = self.water.max(TAKE_MIN_WATER);
         let total = self.pigment_total();
         if total > PIGMENT_MAX {
             let k = PIGMENT_MAX / total;
@@ -150,9 +162,9 @@ impl BrushLoad {
         }
     }
 
-    /// 空の筆に色を1回分取った状態(スロット ch の標準の濃さ)
+    /// 水満タンの筆に色を1回分取った状態(スロット ch の標準の濃さ)
     pub fn standard(channel: u32) -> Self {
-        let mut load = Self::empty();
+        let mut load = Self::water_only();
         load.take_pigment(channel, TAKE_DOSE);
         load
     }
@@ -186,7 +198,7 @@ impl BrushLoad {
         *self = Self::from_chambers(tip, belly);
     }
 
-    /// 色を取る: 顔料を amount 足し、水を満たす(絵具皿の色は水に溶けている)。
+    /// 色を取る: 顔料を amount 足す。水は変えない(TAKE_MIN_WATER より少なければそこまで入れる)。
     /// 合計は PIGMENT_MAX で頭打ち(比率を保って縮める)
     pub fn take_pigment(&mut self, channel: u32, amount: f32) {
         self.each(|c| c.take_pigment(channel, amount));
@@ -200,19 +212,13 @@ impl BrushLoad {
             return;
         }
         let total = amount.max(0.0);
-        self.each(|c| {
-            for (p, r) in c.pigment.iter_mut().zip(ratio) {
-                *p += total * r.max(0.0) / sum;
-            }
-            c.water = 1.0;
-            let t = c.pigment_total();
-            if t > PIGMENT_MAX {
-                let k = PIGMENT_MAX / t;
-                for p in &mut c.pigment {
-                    *p *= k;
-                }
-            }
-        });
+        let add = ratio.map(|r| total * r.max(0.0) / sum);
+        self.each(|c| c.add_pigment(add));
+    }
+
+    /// 顔料だけを捨てる(水は残す)。色を持ち替えるときに使う
+    pub fn clear_pigment(&mut self) {
+        self.each(|c| c.pigment = [0.0; 4]);
     }
 
     /// 水に浸す: 水を満たし、顔料を keep の割合だけ残す。しきい値以下は 0 に切る
@@ -383,7 +389,7 @@ mod tests {
     /// 配合比で合計1回分を取る(比の合計は問わない)
     #[test]
     fn take_mix_splits_one_dose_by_ratio() {
-        let mut load = BrushLoad::empty();
+        let mut load = BrushLoad::water_only();
         load.take_mix([0.0, 0.3, 0.0, 0.1], TAKE_DOSE);
         assert_eq!(load.water, 1.0);
         assert!((load.pigment[1] - 0.75).abs() < 1e-6);
@@ -394,6 +400,27 @@ mod tests {
         let before = load;
         load.take_mix([0.0; 4], TAKE_DOSE);
         assert_eq!(load, before);
+    }
+
+    /// 色を取っても水は変わらない。拭ってから持ち替えれば濃い色になり、空の筆でも下限までは水が入る
+    #[test]
+    fn take_keeps_water() {
+        let mut load = BrushLoad::standard(1);
+        load.wipe(WIPE_KEEP);
+        load.clear_pigment();
+        load.take_pigment(2, TAKE_DOSE);
+        assert_eq!(load.water, 0.5);
+        assert_eq!(load.pigment, [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!(load.concentration(), 2.0);
+
+        let mut empty = BrushLoad::empty();
+        empty.take_pigment(0, TAKE_DOSE);
+        assert_eq!(empty.water, TAKE_MIN_WATER);
+
+        let mut picked = BrushLoad::empty();
+        picked.take_mix([1.0, 1.0, 0.0, 0.0], TAKE_DOSE);
+        assert_eq!(picked.water, TAKE_MIN_WATER);
+        assert_eq!(picked.pigment, [0.5, 0.5, 0.0, 0.0]);
     }
 
     #[test]
@@ -516,7 +543,7 @@ mod tests {
         };
         let mut load = BrushLoad::from_chambers(dirty_tip, BrushLoad::standard(1).belly());
         load.take_pigment(1, 1.0);
-        assert_eq!(load.tip().water, 1.0);
+        assert_eq!(load.tip().water, 0.4);
         assert_eq!(load.tip().pigment, [0.3, 1.0, 0.0, 0.0]);
         assert_eq!(load.pigment, [0.0, 2.0, 0.0, 0.0]);
         load.wash();
