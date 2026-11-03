@@ -49,7 +49,7 @@ Rust は mise で管理(`mise.toml`、rust 1.96.0)。ビルド・実行は mise 
 ## 作業の効率化(この環境で詰まりやすい所)
 
 - **Python で日本語を含むファイルを書き換えるとき**は、スクリプトを Write でファイルに書いて `python -X utf8 <file>` で実行する。`python - <<'EOF'` で標準入力から流すと cp932 として読まれ、マルチバイト文字が引用符を飲み込んで構文エラーや文字化けになる
-- **整形は変更したファイルだけ**(`rustfmt --edition 2024 <files>`)。`cargo fmt --all` は未整形の既存ファイル(`src/capture.rs` など)まで書き換えて差分に混ざる
+- **整形は hook が行う**([.claude/settings.json](.claude/settings.json))。Edit / Write の後は書き換えたファイル、Bash の後は作業ツリーで HEAD から変更・追加された `.rs` に rustfmt がかかるので、Python や sed で書き換えても整形される
 - **線画ツールの見た目の確認は e2e_ui で**。headless(`HeadlessCanvas`)は流体ツール専用で線画を描けない。e2e_ui ではレイヤー名(「清書(ペン)」など)をクリックしてから `pen_path` / `pen_stroke` で引き、`canvas_color` の画像(`target/tmp/e2e/ui-*.png`)を Read で見る
 - **線画のストローク → splat の変換は2か所**(ライブ描画 `app::apply_pointer_events` と引き直し `linehist::stroke_splats`)。片方だけ変えると Undo/Redo で線が変わるので両方に通し、`pen_undo_redo_restores_same_lines` で一致を確かめる
 - **ワークツリーで作業するセッションでは git コマンドを1つずつ実行する**。`;` や `|` でつないだ git コマンドは、ワークツリー外を触らないか検証できず拒否される
