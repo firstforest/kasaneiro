@@ -35,7 +35,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │     └─ src/
 │        ├─ sim.rs        SimParams(全パラメータの唯一の置き場)・Splat・CANVAS_SIZES
 │        ├─ brush.rs      ストローク → splat 列(位置補間、筆圧の線形補間)
-│        ├─ load.rs       筆の中身 BrushLoad(穂先と腹の2室。取る・浸す・洗う)・GPU 筆バッファのレイアウト BrushState・
+│        ├─ load.rs       筆の中身 BrushLoad(穂先と腹の2室。取る・浸す・拭う・洗う)・GPU 筆バッファのレイアウト BrushState・
 │        │                フレームごとの筆への指示 BrushFrame(置き換え・穂先の残りの予測・補充の時間)・BrushClock
 │        ├─ paper.rs      紙テクスチャの CPU 生成(紙ハイト = 値ノイズ4成分、混ざりムラの場2枚 = グラディエントノイズ)
 │        ├─ replay.rs     ストローク記録・再生モデル(Recorder / Player)
@@ -185,7 +185,7 @@ prepare(毎フレーム)= encode_frame:
   (prepare の頭で、前のフレームまでに積んだ筆の中身の読み戻しを進める)
   SimParams を uniform に write_buffer(スライダー即時反映)
   筆の中身の置き換え(再生のストローク開始)があれば筆バッファへ write_buffer
-    (アプリの色・水・洗う・自動補充はフレーム外でその場で write_buffer)
+    (アプリの色・水・拭う・洗う・自動補充はフレーム外でその場で write_buffer)
   splat storage へヘッダ+splat 列を書く(0 個でもヘッダは書く。一時停止中でもブラシは反映。
     MAX_SPLATS 超過分は警告ログを出して切り捨て。fluid_count は線画ツールのフレームで 0)
   ラスタツール(line_target=Some)→ 専用 line_pass で linesplat.wgsl(線画テクスチャへ直描き)
@@ -283,7 +283,7 @@ paint:
 - winit は1メッセージにまとまった過去の位置すべてに受け取った時点の筆圧を付ける。PenSource は同じ筆圧で続けて届いた Move を1つのまとまりとみなし、直前のまとまりの筆圧からこのまとまりの筆圧へ線形に割り振る(`spread_bundles`。記録・再生はこの後の値を使う)
 - `PointerSource` trait で Mouse / Pen を抽象化する。ペン接地中はマウス入力を無視する(egui-winit が Touch からポインタをエミュレートするため二重ストロークになる)
 - 筆圧マッピングは `実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に適用(splat.wgsl と CPU 側で同式)
-- **筆の中身**: 正典は GPU の筆バッファ(`GpuBrush`)。`PaintApp` は `brush_load`(フレーム頭に読み戻した値。描いている間は数フレーム遅れる)と `brush_refill`(自動補充の戻り先 = 最後に色・水・洗うで作った中身)を持つ。色・水・洗う・自動補充・再生の停止は、`sync_brush`(GPU の完了を待って最新の値を得る。読み戻しが追いついていれば待たない)→ CPU で `BrushLoad` を変える → `set_brush` で筆バッファへその場で write_buffer、の順で置き換える。置き換えをフレームのコールバックに載せないのは、egui が UI を組み直したパスのコールバックを捨てるため。ツールバーの色・水スウォッチは押した瞬間と押し続けている間の2段で中身を変える。`brush_refill` と自動補充の on/off は eframe storage に保存する
+- **筆の中身**: 正典は GPU の筆バッファ(`GpuBrush`)。`PaintApp` は `brush_load`(フレーム頭に読み戻した値。描いている間は数フレーム遅れる)と `brush_refill`(自動補充の戻り先 = 最後に色・水・洗うで作った中身)を持つ。色・水・拭う・洗う・自動補充・再生の停止は、`sync_brush`(GPU の完了を待って最新の値を得る。読み戻しが追いついていれば待たない)→ CPU で `BrushLoad` を変える → `set_brush` で筆バッファへその場で write_buffer、の順で置き換える。置き換えをフレームのコールバックに載せないのは、egui が UI を組み直したパスのコールバックを捨てるため。ツールバーの色・水スウォッチと拭うは押した瞬間と押し続けている間の2段で中身を変える。`brush_refill` と自動補充の on/off は eframe storage に保存する
 - **受け渡しと補充**: CPU はフレームごとに `BrushFrame`(穂先の残りの予測 `scale` と補充の時間 `dt`)を `CanvasCallback.brush` で渡すだけで、筆の中身そのものは GPU で進む。補充の時間は `BrushClock` が刻みを溜め、brush パスが走るフレーム(塗るツールで流体へ splat を流すフレーム)でまとめて渡す(上限 2 秒)。記録の再生は `Player` がストロークの始めに `BrushFrame.set` で記録した中身へ置き換えるので、受け渡しまで含めて画面と headless で同じ経路を通る
 - **置いたまま**: 塗る筆を置いたまま動かないフレームは、読み戻した穂先か腹に水が残る間、`PaintApp::hold_still` が毎フレーム置いたままの splat(`Splat.feed=1`)を1つ積む。受け渡しの式は同じなので、紙と釣り合うまで色水が出続け、毛細管拡散が外へ運ぶ。ストローク記録は生ポインタ点のみなので置いたままの splat は再生で再現されない
 - ストローク記録は補間前の生ポインタ入力と、ストロークごとに筆を下ろした時点の筆の中身(`RecordedStroke.load`)を保存する。`load` の無い記録はそのストロークの顔料スロットを標準の1回分含んだ筆で再生する。時刻は 1/60 秒の刻み番号(JSON のキー名は `frame`)

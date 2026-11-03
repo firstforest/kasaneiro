@@ -219,6 +219,24 @@ impl PaintApp {
                 }
                 None => {}
             }
+            // 拭う: 押した瞬間に水が半分、押している間も水だけ抜けていく(顔料は残るので濃くなる)
+            let resp = ui
+                .add(egui::Button::new("拭う").min_size(egui::vec2(0.0, 28.0)))
+                .on_hover_text(
+                    "筆を布で拭う: 色はそのままで水だけ減る。押している間減り続け、\
+                     水の少ない筆は紙をあまり濡らさず、濃い色を広がらずに置く",
+                );
+            match self.swatch_press(5, resp.is_pointer_button_down_on()) {
+                Some(true) => {
+                    self.edit_brush(|b| b.wipe(load::WIPE_KEEP));
+                    self.after_brush_take();
+                }
+                Some(false) => {
+                    self.edit_brush(|b| b.wipe(BrushLoad::wipe_keep(dt)));
+                    self.after_brush_take();
+                }
+                None => {}
+            }
             if ui
                 .add(egui::Button::new("洗う").min_size(egui::vec2(0.0, 28.0)))
                 .on_hover_text("筆を洗う: 水も色もすべて落として空の筆にする(リセット)。空の筆は紙に何も置かず、濡れた絵の具をなでると吸い取る。続けて「水」を押すと水だけの筆になる")

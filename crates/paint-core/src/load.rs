@@ -12,6 +12,7 @@
 //! 中身を変えるのはツールバーのスウォッチとスポイト:
 //! - 色: 押した瞬間に洗ってその色を1回分(Shift なら洗わずに足す)、押している間も少しずつ足す(濃くなる)
 //! - 水: 押した瞬間に顔料を半分、押している間も水と入れ替わって抜けていく(薄くなる・洗える)
+//! - 拭う: 押した瞬間に水を半分、押している間も水だけ抜けていく(顔料は残るので濃く、紙を濡らす量が減る)
 //! - 洗う: 水も顔料も 0(空の筆。紙に何も置かず、濡れた所では色水を吸う)。続けて水に浸せば水だけの筆になる
 //! - スポイト: 洗ってから、拾った点の湿レイヤーの顔料構成の比で合計1回分を取る([`BrushLoad::take_mix`])
 //!
@@ -34,6 +35,12 @@ pub const PIGMENT_MAX: f32 = 4.0;
 pub const DIP_KEEP: f32 = 0.5;
 /// 水に浸している間に顔料が抜ける時定数(秒)
 pub const DIP_TAU: f32 = 0.25;
+/// 拭うボタンを押した瞬間に残る水の割合
+pub const WIPE_KEEP: f32 = 0.5;
+/// 拭っている間に水が抜ける時定数(秒)
+pub const WIPE_TAU: f32 = 0.5;
+/// 拭って残る水の下限。これより乾かすと紙へほとんど出なくなり、濃さだけが際限なく上がるので止める
+pub const WIPE_MIN_WATER: f32 = 0.1;
 /// 顔料の合計がこれを下回ったら 0 に切る(水に浸し続ければ必ず透明になる)
 pub const CLEAN_EPS: f32 = 0.02;
 /// 水がこれ以下の室は、濃さ(顔料 ÷ 水)を 0 として表示する(ほぼ空の室で濃さが跳ねないように)
@@ -85,6 +92,12 @@ impl Chamber {
         }
         if self.pigment_total() < CLEAN_EPS {
             self.pigment = [0.0; 4];
+        }
+    }
+
+    fn wipe(&mut self, keep: f32) {
+        if self.water > WIPE_MIN_WATER {
+            self.water = (self.water * keep.clamp(0.0, 1.0)).max(WIPE_MIN_WATER);
         }
     }
 }
@@ -210,6 +223,16 @@ impl BrushLoad {
     /// 水に dt 秒浸したときに残る顔料の割合
     pub fn dip_keep(dt: f32) -> f32 {
         (-dt.max(0.0) / DIP_TAU).exp()
+    }
+
+    /// 拭う: 水を keep の割合だけ残す(顔料は残すので濃くなる)。水は WIPE_MIN_WATER より下げない
+    pub fn wipe(&mut self, keep: f32) {
+        self.each(|c| c.wipe(keep));
+    }
+
+    /// dt 秒拭ったときに残る水の割合
+    pub fn wipe_keep(dt: f32) -> f32 {
+        (-dt.max(0.0) / WIPE_TAU).exp()
     }
 
     pub fn wash(&mut self) {
@@ -392,6 +415,25 @@ mod tests {
         }
         assert_eq!(load.pigment, [0.0; 4]);
         assert_eq!(load.water, 1.0);
+    }
+
+    /// 拭うと水だけが減って濃くなり、押し続けても下限で止まる。空の筆には水を足さない
+    #[test]
+    fn wipe_removes_water_and_keeps_pigment() {
+        let mut load = BrushLoad::standard(1);
+        load.wipe(WIPE_KEEP);
+        assert_eq!(load.water, 0.5);
+        assert_eq!(load.pigment, [0.0, 1.0, 0.0, 0.0]);
+        assert_eq!(load.concentration(), 2.0);
+        for _ in 0..600 {
+            load.wipe(BrushLoad::wipe_keep(1.0 / 60.0));
+        }
+        assert_eq!(load.water, WIPE_MIN_WATER);
+        assert_eq!(load.pigment, [0.0, 1.0, 0.0, 0.0]);
+
+        let mut empty = BrushLoad::empty();
+        empty.wipe(WIPE_KEEP);
+        assert_eq!(empty, BrushLoad::empty());
     }
 
     /// 洗うと空になり、水に浸すと水だけの筆になる

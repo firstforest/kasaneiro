@@ -158,9 +158,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
                     let out_pigment = f * max(conc, vec4f(0.0)) * mix(1.0, press, params.pressure_pigment);
                     // 初速は穂先から出た水が持ち込む: 紙の水と運動量で混ぜる。筆の勢いで色水が走るのは
                     // 筆が水を出したときだけで、吸っている筆は紙の水を押さない。出る水の速さは穂先の
-                    // 濡れ具合に比例する(乾きかけの筆の薄い水が濡れた所の前縁へ寄って筋を残さないように)。
+                    // 濡れ具合の3乗: 満タンの筆は筆の勢いのまま、水の少ない筆(乾きかけ・拭った筆)ほど急に弱める。
+                    // 少ない水が勢いを持つと、1歩ごとの濡れた所の前縁へ寄って粒の列を残すため
+                    // (濡れ具合 0.3 で、比例では粒が見え、2乗でもうっすら残る)。
                     // 足し込みにしないので、1フレームに来る splat の数で勢いが変わらない
-                    let v_brush = params.brush_velocity * s_b * s.vel;
+                    let v_brush = params.brush_velocity * s_b * s_b * s_b * s.vel;
                     vel = (vel * water + v_brush * f) / (water + f);
                     water += f;
                     susp += out_pigment;

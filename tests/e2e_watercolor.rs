@@ -939,3 +939,55 @@ fn color_blends_over_dried_paint_but_not_onto_bare_paper() {
         "白い紙へ水と青が広がった\n{ctx}"
     );
 }
+
+/// 拭った筆(水だけ減らして顔料は残す)は紙をあまり濡らさないので、乾いた紙に引いた線が筆幅いっぱいへ
+/// 広がらない。置く顔料の量は満タンの筆とほぼ同じなので、線の芯は同じくらいの濃さで乗り、
+/// 少ない水が1歩ごとの濡れ縁へ寄って粒の列にもならない(芯の明度の、15px 移動平均からの揺れを見る)
+#[test]
+fn wiped_brush_paints_without_spreading() {
+    let run = |keep: f32| {
+        let mut c = canvas();
+        let mut load = BrushLoad::standard(BLUE);
+        load.wipe(keep);
+        let mut s = hstroke(WetTool::Paint, BLUE, 100.0, 400.0, 250.0, 0);
+        s.load = Some(load);
+        c.play(recording(vec![s]));
+        c.idle(240);
+        c.snapshot().unwrap()
+    };
+    let full = run(1.0);
+    let wiped = run(0.3);
+    let png = save(&full, "wiped_brush_full");
+    let wiped_png = save(&wiped, "wiped_brush_wiped");
+    // 線の中心からの距離 dy の帯の明度(x = 200..300)
+    let band = |img: &Image, dy: u32| lightness(img.mean_rgb(200, 250 + dy, 300, 251 + dy));
+    let ripple = |img: &Image| {
+        let l: Vec<f32> = (150..350).map(|x| lightness(img.rgb(x, 250))).collect();
+        let r: Vec<f32> = (7..l.len() - 7)
+            .map(|i| l[i] - l[i - 7..=i + 7].iter().sum::<f32>() / 15.0)
+            .collect();
+        (r.iter().map(|d| d * d).sum::<f32>() / r.len() as f32).sqrt()
+    };
+    let (core, wiped_core) = (band(&full, 0), band(&wiped, 0));
+    let (edge, wiped_edge) = (band(&full, 12), band(&wiped, 12));
+    let wiped_ripple = ripple(&wiped);
+    let ctx = format!(
+        "{} / {}\n芯 満タン {core:.3} 拭った {wiped_core:.3} / 縁(12px) 満タン {edge:.3} 拭った {wiped_edge:.3} / \
+         拭った線の揺れ RMS {wiped_ripple:.4}",
+        png.display(),
+        wiped_png.display()
+    );
+
+    assert!(
+        (wiped_core - core).abs() < 0.03,
+        "拭った筆の線の芯の濃さが満タンの筆と大きく違う\n{ctx}"
+    );
+    assert!(
+        wiped_edge > edge + 0.02,
+        "拭った筆の線が満タンの筆と同じだけ広がった\n{ctx}"
+    );
+    assert!(
+        wiped_ripple < 0.0025,
+        "拭った筆の線が粒の列になっている\n{ctx}"
+    );
+}
