@@ -59,8 +59,8 @@ impl PaintApp {
         });
         let over_canvas = hover.is_some_and(|p| rect.contains(p));
         if over_canvas && shift && wheel_notch != 0.0 {
-            // Shift+ホイール: 1ノッチ 15°(上=反時計回り / 下=時計回り)
-            self.rotate_view(wheel_notch.signum() * std::f32::consts::FRAC_PI_8 * 1.5);
+            // Shift+ホイール: 1ノッチ 15°(上=時計回り / 下=反時計回り)
+            self.rotate_view(-wheel_notch.signum() * std::f32::consts::FRAC_PI_8 * 1.5);
         } else if over_canvas
             && scroll_y != 0.0
             && let Some(cursor) = hover
