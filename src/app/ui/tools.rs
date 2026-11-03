@@ -422,7 +422,18 @@ impl PaintApp {
             .on_hover_text("1本の線の濃さ。別のストロークを重ねた所はさらに濃くなる");
         ui.add(egui::Slider::new(&mut self.params.pen_smooth, 0.0..=1.0).text("手ぶれ補正"))
             .on_hover_text(
-                "ペン先の震えを均す強さ。上げるほど線がなめらかになるが、ペン先から少し遅れてついてくる(離すと終点まで追いつく)。0 でも入力点の間は曲線でつなぐ",
+                "ゆっくり描くときにペン先の震えを均す強さ。上げるほど線がなめらかになるが、ペン先から少し遅れてついてくる(離すと終点まで追いつく)。0 でも入力点の間は曲線でつなぐ",
+            );
+        ui.add(
+            egui::Slider::new(&mut self.params.pen_smooth_speed, 0.0..=1.0)
+                .text("速さで補正を弱める"),
+        )
+        .on_hover_text(
+            "速く描くほど手ぶれ補正を弱めて、線の遅れを減らす。0 = 速さによらず同じ強さ。上げすぎると細かい震えも速さとみなして残る",
+        );
+        ui.add(egui::Slider::new(&mut self.params.pen_tail, 0.0..=1.0).text("抜き"))
+            .on_hover_text(
+                "ペンを離したあと、遅れていたペン先が終点へ追いつく区間を細らせる量。速く払うほど長く抜ける。0 = 細らせない(手ぶれ補正 0 だと抜きは出ない)",
             );
         ui.add(
             egui::Slider::new(&mut self.params.line_block, 0.0..=1.0)

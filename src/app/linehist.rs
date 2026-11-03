@@ -78,7 +78,8 @@ impl LineHistory {
 /// 線画ストロークの手ぶれ補正。清書ペンだけに掛ける(下書き鉛筆・ハイライトは入力点をそのまま使う)。
 /// ライブ描画と引き直しの両方がこれで作るので、同じ生ポインタ点から同じ線になる
 pub fn line_smoother(target: LineTarget, params: &SimParams) -> Option<LineSmoother> {
-    (target == LineTarget::Pen).then(|| LineSmoother::new(params.pen_smooth))
+    (target == LineTarget::Pen)
+        .then(|| LineSmoother::new(params.pen_smooth, params.pen_smooth_speed, params.pen_tail))
 }
 
 /// ストロークの生ポインタ点を保存済みパラメータで補間し、linesplat へ渡す splat 列にする。

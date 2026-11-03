@@ -92,6 +92,8 @@ struct SimParams {
     pencil_eraser_radius: f32,    // 鉛筆レイヤーの消しゴムの半径(描く太さとは別)
     pen_eraser_radius: f32,       // 清書ペンレイヤーの消しゴムの半径
     highlight_eraser_radius: f32, // ハイライトレイヤーの消しゴムの半径
+    pen_smooth_speed: f32,  // 清書ペンの手ぶれ補正を速さで弱める強さ(CPU 側で使う)
+    pen_tail: f32,          // 清書ペンの抜き(CPU 側で使う)
 };
 
 // アクティブタイル(M6): シミュレーションを「濡れているタイル+ブラシ近傍」だけに絞る土台。

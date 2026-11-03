@@ -54,8 +54,8 @@ pub const SAT_RATIO: f32 = 4.3;
 /// フィールドを足したら: ①ここに1行 ②src/app/ui/ の該当パネルにスライダー1行 ③common.wgsl の struct に1行
 /// (名前・順序・型の一致は tests/sim_params_layout.rs が検査する)。
 /// メモリレイアウトは WGSL の uniform 規則(16 バイト整列)に合わせること。
-/// 全体サイズは 16 の倍数を保つ(67 フィールド + 末尾の #[serde(skip)] な _pad: [f32; 1] = 272B。
-/// 次に足すときは _pad を実フィールドへ置き換え、その次は末尾に _pad: [f32; 3] を置き直して
+/// 全体サイズは 16 の倍数を保つ(69 フィールド + 末尾の #[serde(skip)] な _pad: [f32; 3] = 288B。
+/// 次に足すときは _pad を1つずつ実フィールドへ置き換え、使い切ったら末尾に _pad: [f32; 3] を置き直して
 /// 16B 境界を保つ。_pad は WGSL 側には書かない。手順は docs/parameters.md §11)。
 /// serde(default): プリセット(H3)にないフィールドは Default 値で埋める
 /// (パラメータを増やしても古い JSON が読めるように)。
@@ -244,9 +244,10 @@ pub struct SimParams {
     /// 乾いた層は焼き込みで掛ける(display.wgsl / bake.wgsl、式は common.wgsl の edge_aa_conc)。
     /// シミュレーションの水と顔料には触れない
     pub edge_aa: f32,
-    /// 清書ペンの手ぶれ補正(0〜1): ペン先の位置を遅れて追う平滑化の強さ。0 = 入力点をそのまま
-    /// 曲線でつなぐだけ / 1 = 強く均す(線が遅れてついてくる)。ペンを離すと終点まで追いつく。
-    /// 生ポインタ点から CPU で計算するので(paint_core::brush::LineSmoother)シェーダーは読まない
+    /// 清書ペンの手ぶれ補正(0〜1): ゆっくり描くときにペン先の位置と筆圧を遅れて追う平滑化の強さ。
+    /// 0 = 入力点をそのまま曲線でつなぐだけ / 1 = 強く均す(線が遅れてついてくる)。
+    /// ペンを離すと終点まで追いつく。生ポインタ点から CPU で計算するので
+    /// (paint_core::brush::LineSmoother)シェーダーは読まない
     pub pen_smooth: f32,
     /// 鉛筆レイヤーの消しゴムの半径(テクセル)。描く太さ(pencil_radius)とは別に持つ。筆圧で締められる
     pub pencil_eraser_radius: f32,
@@ -254,9 +255,16 @@ pub struct SimParams {
     pub pen_eraser_radius: f32,
     /// ハイライトレイヤーの消しゴムの半径(テクセル)。描く太さ(highlight_radius)とは別に持つ
     pub highlight_eraser_radius: f32,
+    /// 清書ペンの手ぶれ補正を速く描くほど弱める強さ(0〜1。1€ フィルタの beta)。
+    /// 0 = 速さによらず pen_smooth のまま。CPU 側(LineSmoother)だけが使う
+    pub pen_smooth_speed: f32,
+    /// 清書ペンの抜き(0〜1): ペンを離したあと遅れたペン先が終点へ追いつく区間で細らせる量。
+    /// 0 = 細らせない / 1 = 終点で太さ 0。速く払うほど追いつき区間が長く、抜きも長い。
+    /// CPU 側(LineSmoother)だけが使う
+    pub pen_tail: f32,
     /// uniform を 16 バイト境界に揃える詰め物(WGSL 側には書かない)
     #[serde(skip)]
-    pub _pad: [f32; 1],
+    pub _pad: [f32; 3],
 }
 
 impl SimParams {
@@ -405,11 +413,13 @@ impl Default for SimParams {
             // 薄塗り(被覆率 5% 程度)でも十分に染みる量
             wick_ref: 0.05,
             edge_aa: 1.0,
-            pen_smooth: 0.3,
+            pen_smooth: 0.5,
             pencil_eraser_radius: 16.0,
             pen_eraser_radius: 10.0,
             highlight_eraser_radius: 12.0,
-            _pad: [0.0; 1],
+            pen_smooth_speed: 0.3,
+            pen_tail: 0.5,
+            _pad: [0.0; 3],
         }
     }
 }
