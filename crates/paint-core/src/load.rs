@@ -9,10 +9,11 @@
 //! CPU は [`BrushFrame`] で「中身を置き換える」と「splat ごとの残りの予測」を毎フレーム渡し、
 //! 読み戻した中身を表示と次の操作の起点に使う。
 //!
-//! 中身を変えるのはツールバーのスウォッチだけ:
+//! 中身を変えるのはツールバーのスウォッチとスポイト:
 //! - 色: 押した瞬間に洗ってその色を1回分(Shift なら洗わずに足す)、押している間も少しずつ足す(濃くなる)
 //! - 水: 押した瞬間に顔料を半分、押している間も水と入れ替わって抜けていく(薄くなる・洗える)
 //! - 洗う: 水も顔料も 0(空の筆。紙に何も置かず、濡れた所では色水を吸う)。続けて水に浸せば水だけの筆になる
+//! - スポイト: 洗ってから、拾った点の湿レイヤーの顔料構成の比で合計1回分を取る([`BrushLoad::take_mix`])
 //!
 //! 筆は穂先(紙と受け渡す。小さい)と腹(穂先へ水を送る。大きい)の2室。乾いた紙に描くと穂先から出て、
 //! 腹が補充するので全体が減っていく(腹 `brush_hold` px で半分)。出るときは穂先の濃さのまま出るので濃さは
@@ -178,6 +179,29 @@ impl BrushLoad {
         self.each(|c| c.take_pigment(channel, amount));
     }
 
+    /// 配合比 `ratio`(4スロット。合計は問わない、負は 0 扱い)で顔料を合計 `amount` 取る。
+    /// 比がすべて 0 なら何もしない
+    pub fn take_mix(&mut self, ratio: [f32; 4], amount: f32) {
+        let sum: f32 = ratio.iter().map(|r| r.max(0.0)).sum();
+        if sum <= 0.0 {
+            return;
+        }
+        let total = amount.max(0.0);
+        self.each(|c| {
+            for (p, r) in c.pigment.iter_mut().zip(ratio) {
+                *p += total * r.max(0.0) / sum;
+            }
+            c.water = 1.0;
+            let t = c.pigment_total();
+            if t > PIGMENT_MAX {
+                let k = PIGMENT_MAX / t;
+                for p in &mut c.pigment {
+                    *p *= k;
+                }
+            }
+        });
+    }
+
     /// 水に浸す: 水を満たし、顔料を keep の割合だけ残す。しきい値以下は 0 に切る
     pub fn dip_water(&mut self, keep: f32) {
         self.each(|c| c.dip_water(keep));
@@ -331,6 +355,22 @@ mod tests {
         let mut load = BrushLoad::standard(1);
         load.take_pigment(3, 1.0);
         assert_eq!(load.pigment, [0.0, 1.0, 0.0, 1.0]);
+    }
+
+    /// 配合比で合計1回分を取る(比の合計は問わない)
+    #[test]
+    fn take_mix_splits_one_dose_by_ratio() {
+        let mut load = BrushLoad::empty();
+        load.take_mix([0.0, 0.3, 0.0, 0.1], TAKE_DOSE);
+        assert_eq!(load.water, 1.0);
+        assert!((load.pigment[1] - 0.75).abs() < 1e-6);
+        assert!((load.pigment[3] - 0.25).abs() < 1e-6);
+        assert!((load.concentration() - 1.0).abs() < 1e-6);
+        assert_eq!(load.tip, None);
+
+        let before = load;
+        load.take_mix([0.0; 4], TAKE_DOSE);
+        assert_eq!(load, before);
     }
 
     #[test]

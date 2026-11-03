@@ -559,7 +559,7 @@ impl PaintApp {
     }
 
     /// 色・水・洗うで筆の中身を作った後: 塗るツールにし、自動補充の戻り先を今の中身にする
-    fn after_brush_take(&mut self) {
+    pub(in crate::app) fn after_brush_take(&mut self) {
         self.tool = Tool::Wet(WetTool::Paint);
         // レイヤーを離れて戻ったときの復元用(select_layer が読む)
         self.last_wet_tool = WetTool::Paint;

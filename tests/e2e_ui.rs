@@ -215,6 +215,62 @@ fn swatch_switches_color_and_shift_mixes() {
     );
 }
 
+/// スポイトは筆に顔料を取る: 黄+青で塗った緑の所を拾うと、洗った筆が同じ緑で塗れる。
+/// パレットは変わらない(拾った後に押した黄スウォッチの線は黄のまま)
+#[test]
+fn eyedropper_copies_pigment_to_brush() {
+    let mut harness = app();
+    harness.get_by_label_contains("塗る色 1:").click(); // ハンザイエロー
+    harness
+        .get_by_label_contains("塗る色 2:")
+        .click_modifiers(egui::Modifiers::SHIFT); // フタロブルーを足す
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.2, 0.8, 0.2);
+    frames(&mut harness, 30);
+
+    harness.get_by_label("洗う").click();
+    harness.get_by_label("💧 スポイト").click();
+    frames(&mut harness, 2);
+    let at = canvas_rect(&harness).lerp_inside(egui::vec2(0.5, 0.2));
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(true));
+    frame(&mut harness);
+    harness.event(button(false));
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.2, 0.8, 0.5);
+
+    harness.get_by_label_contains("塗る色 1:").click();
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.2, 0.8, 0.8);
+    frames(&mut harness, 60);
+
+    let colors = canvas_color(
+        &mut harness,
+        "eyedropper",
+        &[(0.5, 0.2), (0.5, 0.5), (0.5, 0.8)],
+    );
+    let (source, picked, yellow) = (hsv(colors[0]), hsv(colors[1]), hsv(colors[2]));
+    let ctx = format!(
+        "元 {:?} {source:?} / 拾った筆 {:?} {picked:?} / 黄 {:?} {yellow:?}",
+        colors[0], colors[1], colors[2]
+    );
+    assert!(picked.1 > 0.15, "スポイトの筆で色が乗らない: {ctx}");
+    assert!(
+        (picked.0 - source.0).abs() < 20.0,
+        "拾った筆の色相が元の所と違う: {ctx}"
+    );
+    assert!(
+        (30.0..75.0).contains(&yellow.0) && yellow.1 > 0.15,
+        "スポイトの後に黄スウォッチが黄で塗れない(パレットが変わった?): {ctx}"
+    );
+}
+
 /// ペンの筆圧が線の太さに効く(弱い筆圧の線は強い筆圧の線より細い)。濃さは筆圧でほぼ変わらず、
 /// 線の中心の1点は混ざりムラ(mix_mottle)で揺れるので比べない
 #[test]

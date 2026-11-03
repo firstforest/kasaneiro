@@ -29,7 +29,7 @@ use paint_core::load::{BrushClock, BrushFrame, BrushLoad};
 use paint_core::sim::{DEFAULT_CANVAS_SIZE, SimParams, Splat};
 use paint_core::tool::{RasterTool, Tool, WetTool};
 use std::path::PathBuf;
-use ui::{NamedStore, PaletteUi, PresetUi, ReplayUi, WorkUi};
+use ui::{Eyedropper, NamedStore, PaletteUi, PresetUi, ReplayUi, WorkUi};
 
 /// UI フォントを M PLUS 1p(Google Fonts / OFL、`assets/fonts/`)に差し替える。
 /// egui のデフォルトフォントは日本語グリフを含まないため、実行ファイルに埋め込んだ
@@ -232,6 +232,13 @@ pub struct PaintApp {
 /// M6: ビューの最大拡大率(テクセルが潰れない範囲の実用上限)
 const MAX_ZOOM: f32 = 32.0;
 
+/// 筆へのスポイトで顔料を平均する窓の半径(テクセル)。紙の斑・粒状感で1テクセルの比が揺れるのをならす
+const EYEDROPPER_RADIUS: u32 = 3;
+/// 筆へのスポイトで「絵の具がある」とみなす顔料の合計(1テクセルあたり)。被覆率 1−exp(−総濃度) で 0.5% 程度
+const EYEDROPPER_MIN_PIGMENT: f32 = 0.005;
+/// 筆へのスポイトで拾う色の最小の割合。これ未満の色は落とす
+const EYEDROPPER_MIN_SHARE: f32 = 0.02;
+
 impl PaintApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_japanese_font(&cc.egui_ctx);
@@ -347,7 +354,7 @@ impl PaintApp {
                     store.name = palette_name;
                     store
                 },
-                eyedropper: false,
+                eyedropper: None,
                 // 色ライブラリ・パレット一覧は左パネルに常時表示するので起動時に読む
                 // (以降は保存時と ↻ ボタンで更新)
                 pigment_cache: pigment_store::load_all(),
@@ -482,6 +489,10 @@ impl PaintApp {
     /// 消しゴム状態は線画レイヤー間で引き継ぐ)。乾燥レイヤーはツールなし(描画はブロック)
     fn select_layer(&mut self, layer: ActiveLayer) {
         self.active_layer = layer;
+        // 筆へのスポイトは筆の中身を変えて塗るツールにするので、水彩レイヤー以外では待機を解く
+        if layer != ActiveLayer::Wet && self.palette_ui.eyedropper == Some(Eyedropper::Brush) {
+            self.palette_ui.eyedropper = None;
+        }
         // E キー保持中の一時消しゴムは元ツールへ戻してから切り替える(保持中の元ツールは
         // 前のレイヤーのものなので、そのまま残すとキーを離したとき別レイヤーのツールが復元される)
         if let Some(prev) = self.erase_hold.take() {
@@ -704,7 +715,7 @@ impl PaintApp {
 
     /// スポイト・消すをキーに割り当てる spring-loaded ショートカット(ペンタブレットのキー用)。
     /// 押している間だけ一時的に切り替え、離すと元へ戻す:
-    /// - **I** = スポイト(押している間だけ色拾い待機。離すと解除)。どのレイヤーでも効く
+    /// - **I** = 筆へのスポイト(押している間だけ待機。離すと解除)。筆の中身を変えるので水彩レイヤーだけで効く
     /// - **E** = いま描いているレイヤーに応じた消しゴム(押している間だけ。離すと元ツール):
     ///   水彩レイヤー=`Wet(Erase)`(完全消去)/ 線画レイヤー(鉛筆・ペン・ハイライト)=そのレイヤーの
     ///   消しゴム(`Raster { eraser: true }`)。乾燥レイヤー選択中は描画不可なので何もしない
@@ -722,14 +733,14 @@ impl PaintApp {
             )
         });
 
-        // スポイト(I): 押している間だけ M5e の待機フラグを立てる(離すと解除)。
-        // 待機中にキャンバスをクリックすると canvas.rs が色を拾って一旦フラグを落とすが、
+        // スポイト(I): 押している間だけ筆へのスポイト待機にする(離すと解除)。
+        // 待機中にキャンバスをクリックすると canvas.rs が拾って一旦待機を落とすが、
         // 押しっぱなしなら次フレームでここが再び立てるので連続で拾える
-        if i_down {
-            self.palette_ui.eyedropper = true;
+        if i_down && self.active_layer == ActiveLayer::Wet {
+            self.palette_ui.eyedropper = Some(Eyedropper::Brush);
             self.eyedropper_hold = true;
         } else if self.eyedropper_hold {
-            self.palette_ui.eyedropper = false;
+            self.palette_ui.eyedropper = None;
             self.eyedropper_hold = false;
         }
 
@@ -1020,10 +1031,89 @@ impl PaintApp {
         }
     }
 
-    /// M5e スポイト: カーソル下1px の表示色を拾い、選択中の顔料スロット(brush_channel)へ入れる。
+    /// スポイト待機中のクリック: 待機の種類に応じて筆かスロットへ拾う
+    fn pick(&mut self, target: Eyedropper, pos: egui::Pos2, rect: egui::Rect) {
+        match target {
+            Eyedropper::Brush => self.pick_to_brush(pos, rect),
+            Eyedropper::Slot => {
+                self.pick_to_slot(pos, rect);
+                // 「色をつくる」モーダルから来たので、拾った色を見られるよう開き直す
+                self.palette_ui.color_modal = true;
+            }
+        }
+    }
+
+    /// 筆へのスポイト: カーソル下の湿レイヤーの顔料構成(浮遊 + 沈着、小さな窓の平均)を拾い、
+    /// 筆を洗ってその比で合計1回分を取る(色スウォッチと同じ濃さ)。パレットは変えない。
+    /// 乾いた層は乾かした時点のパレットで記録されていて今の4スロットへ写せないので拾わない
+    fn pick_to_brush(&mut self, pos: egui::Pos2, rect: egui::Rect) {
+        let t = self.screen_to_texel(pos, rect);
+        let size = self.canvas_size as f32;
+        if !(0.0..size).contains(&t.x) || !(0.0..size).contains(&t.y) {
+            return;
+        }
+        let read = {
+            let renderer = self.render_state.renderer.read();
+            match renderer.callback_resources.get::<GpuCanvas>() {
+                Some(canvas) => canvas.read_wet_pigment(
+                    &self.render_state.device,
+                    &self.render_state.queue,
+                    t.x as u32,
+                    t.y as u32,
+                    EYEDROPPER_RADIUS,
+                ),
+                None => Err("キャンバスが初期化されていません".to_owned()),
+            }
+        };
+        let mut amounts = match read {
+            Ok(a) => a,
+            Err(e) => {
+                self.status_msg = Some(e);
+                return;
+            }
+        };
+        let total: f32 = amounts.iter().sum();
+        if total < EYEDROPPER_MIN_PIGMENT {
+            self.status_msg = Some(
+                "スポイト: ここには水彩レイヤーの絵の具がありません(乾いた層の色は拾えません)"
+                    .to_owned(),
+            );
+            return;
+        }
+        // 混ざりの端に残るごく僅かな色は落とす(筆の色見本に余計な色が出ないように)
+        for a in &mut amounts {
+            if *a < total * EYEDROPPER_MIN_SHARE {
+                *a = 0.0;
+            }
+        }
+        self.edit_brush(|b| {
+            b.wash();
+            b.take_mix(amounts, paint_core::load::TAKE_DOSE);
+        });
+        self.after_brush_take();
+        // 「色をつくる」の対象は拾った中で一番多い色にする
+        let main = (0..4)
+            .max_by(|&a, &b| amounts[a].total_cmp(&amounts[b]))
+            .unwrap_or(0);
+        self.params.brush_channel = main as u32;
+        let sum: f32 = amounts.iter().sum();
+        let parts: Vec<String> = (0..4)
+            .filter(|&i| amounts[i] > 0.0)
+            .map(|i| {
+                format!(
+                    "{} {:.0}%",
+                    self.palette.pigments[i].name,
+                    amounts[i] / sum * 100.0
+                )
+            })
+            .collect();
+        self.status_msg = Some(format!("スポイト: 筆 ← {}", parts.join(" / ")));
+    }
+
+    /// 「色をつくる」のスポイト: カーソル下1px の表示色を拾い、選択中の顔料スロット(brush_channel)へ入れる。
     /// snapshot() の読み戻し(display と同じ発色)から該当テクセルの RGB を取り出す。
-    /// 表示色版なので「混ざってできた見た目の色」がそのまま顔料の基本色になる(§4 の先送り表)
-    fn pick_color(&mut self, pos: egui::Pos2, rect: egui::Rect) {
+    /// 表示色なので「混ざってできた見た目の色」や乾いた層の色がそのまま顔料の基本色になる
+    fn pick_to_slot(&mut self, pos: egui::Pos2, rect: egui::Rect) {
         // M6: snapshot を画面と同じビュー変換(パン/ズーム/回転)で焼くので、
         // 画面 uv でそのまま索引する(= カーソル下に見えている画素)。screen_to_texel は
         // キャンバステクセルなので拡大・回転時にはズレる(zoom=1・無回転でのみ一致)

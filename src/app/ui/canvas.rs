@@ -109,7 +109,7 @@ impl PaintApp {
         // ストローク中にこれらへ入ったらその場で Up 扱いにして確定する(Up を取りこぼすと
         // painting が立ちっぱなしになり、置いたままの色水が出続け、線画は履歴に載らない)
         let drawing =
-            !self.palette_ui.eyedropper && !self.drawing_locked() && !panning && !resizing;
+            self.palette_ui.eyedropper.is_none() && !self.drawing_locked() && !panning && !resizing;
         if !drawing && self.painting {
             let up = PointerEvent {
                 phase: PointerPhase::Up,
@@ -118,15 +118,15 @@ impl PaintApp {
             };
             self.apply_pointer_events(&[up], rect, &mut splats);
         }
-        // M5e: スポイト待機中はクリックで色を拾うだけで、描画・記録はしない
-        if self.palette_ui.eyedropper {
+        // スポイト待機中はクリックで拾うだけで、描画・記録はしない
+        if let Some(target) = self.palette_ui.eyedropper {
             let pressed = ui.input(|i| i.pointer.primary_pressed());
             if pressed
                 && let Some(pos) = response.hover_pos()
                 && rect.contains(pos)
             {
-                self.pick_color(pos, rect);
-                self.palette_ui.eyedropper = false;
+                self.palette_ui.eyedropper = None;
+                self.pick(target, pos, rect);
             }
         } else if self.drawing_locked() {
             // 乾燥レイヤー選択中は描画不可(焼き込みは一方通行)。クリックされたら案内を出す
@@ -216,7 +216,8 @@ impl PaintApp {
         // 明暗どちらの下地でも見えるよう黒→白の二重リングにする。パン中・スポイト待機・
         // 乾燥レイヤー(描画不可)では出さない
         let show_cursor = over_canvas
-            && (resizing || (!panning && !self.palette_ui.eyedropper && !self.drawing_locked()));
+            && (resizing
+                || (!panning && self.palette_ui.eyedropper.is_none() && !self.drawing_locked()));
         if show_cursor && let Some(pos) = hover {
             let base = self.active_base_radius();
             let scale = rect.width() / self.canvas_size as f32 * self.view_zoom;

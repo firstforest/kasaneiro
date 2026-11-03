@@ -62,7 +62,8 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │  │  ├─ init.rs          GpuCanvas::new(テクスチャ・バッファ・bind group の生成)
 │  │  ├─ callback.rs      CanvasCallback(egui の prepare / paint)と encode_frame(パス実行順の正典)
 │  │  ├─ brush.rs         GpuBrush(塗る筆の中身の GPU バッファ・受け渡しの集計・CPU への非同期読み戻しと完了待ち)
-│  │  ├─ snapshot.rs      snapshot(PNG・スポイト用の読み戻し)/ render_offscreen(表示の計測用)
+│  │  ├─ snapshot.rs      snapshot(PNG・「色をつくる」のスポイト用の読み戻し)/ read_wet_pigment(筆へのスポイト用に
+│  │  │                   湿レイヤーの浮遊+沈着を小さな窓で読み戻す)/ render_offscreen(表示の計測用)
 │  │  ├─ persist.rs       export_state / import_state(作品保存の GPU 読み戻し / 書き戻し)/
 │  │  │                   pingpong_mismatch(ping-pong の2枚の食い違いを数える検査用)
 │  │  ├─ prelude.rs       Rust と WGSL で共有する定数と、それを WGSL の const にする shader_prelude
@@ -170,7 +171,7 @@ display: `0/1/2` 水 / 浮遊 / 沈着、`3` SimParams、`4` 顔料 latent、`5`
 - fs_main が画面 uv → キャンバス uv を `canvas_uv = center + R(θ)·(画面uv − 0.5)·span`(`span = 1/zoom`)で写してからサンプルするので、拡大 / パン / 回転が全サンプルに一括で効く。キャンバス外は `BG_COLOR`(紙の周りの机)
 - `zoom ∈ [1, 32]`。クランプは回転なしなら窓をキャンバス内に(`center` を各軸 `[half, 1−half]`)、回転時は `center` だけ `[0,1]` に留める
 - ポインタ → テクセル変換(描画・スポイト)も同じ写像 `PaintApp::screen_to_texel`(逆回転込み)を通す
-- スポイトの読み戻しは画面と同じビューで焼いて画面 uv で索引する。PNG 書き出しは `ViewUniform::default()`(全体・無回転)で焼く
+- 「色をつくる」のスポイト(表示色)の読み戻しは画面と同じビューで焼いて画面 uv で索引する。筆へのスポイトは `screen_to_texel` のテクセルを中心に湿レイヤーの浮遊+沈着テクスチャを直接読む。PNG 書き出しは `ViewUniform::default()`(全体・無回転)で焼く
 - 操作: 回転は Shift+ホイールで15°刻み・「ビュー」パネルのスライダーで自由角。パンは中ボタンまたはスペース+左ドラッグ
 
 ## 4. フレームの流れ

@@ -123,12 +123,21 @@ pub struct WorkUi {
     pub pending: Option<String>,
 }
 
+/// スポイトで拾った先
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Eyedropper {
+    /// 筆: その点の湿レイヤーの顔料構成を筆へ取る(ツールバーのスポイト・I キー)
+    Brush,
+    /// 選択中スロットの基本色: その点の表示色を入れる(「色をつくる」モーダルから)
+    Slot,
+}
+
 /// パレット(M5)の UI 状態。ライブラリ保存/読込(M5d)+ スポイト待機(M5e)+
 /// モーダル一覧のキャッシュ(M5f/g)。
 pub struct PaletteUi {
     pub store: NamedStore,
-    /// M5e: スポイト待機中。次のキャンバスクリックで色を拾い、選択スロットへ入れて解除する
-    pub eyedropper: bool,
+    /// スポイト待機中なら拾った先。次のキャンバスクリックで拾って解除する
+    pub eyedropper: Option<Eyedropper>,
     /// M5f: 色ライブラリ一覧のキャッシュ(左パネルに常時表示するので起動時に読み、
     /// 保存後・↻ で更新)。色見本チップとホバーの ρ/ω/γ 表示のため Pigment 丸ごと持つ
     pub pigment_cache: Vec<(String, pigment::Pigment)>,

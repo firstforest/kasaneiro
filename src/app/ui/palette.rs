@@ -13,6 +13,7 @@
 //! スウォッチのクリックは筆に色を取る操作なので、編集を開く操作はクリックと別の入口に分ける。
 
 use crate::app::PaintApp;
+use crate::app::ui::Eyedropper;
 use crate::palette_store;
 use crate::pigment_store;
 use eframe::egui;
@@ -79,29 +80,33 @@ impl PaintApp {
         }
     }
 
-    /// スポイト待機トグル(色選びの動線)。M5e
+    /// 筆へのスポイトの待機トグル
     pub(in crate::app) fn eyedropper_control(&mut self, ui: &mut egui::Ui) {
-        let slot = self.params.brush_channel.min(3) as usize + 1;
-        let armed = self.palette_ui.eyedropper;
+        let armed = self.palette_ui.eyedropper == Some(Eyedropper::Brush);
         if ui
             .selectable_label(armed, "💧 スポイト")
-            .on_hover_text(format!(
-                "押してからキャンバスをクリックすると、その点の色を選択中スロット #{slot} に取り込みます。\nI キーを押している間だけ一時的にスポイトにもできます(ペンタブレットのキーに I を割り当て)"
-            ))
+            .on_hover_text(
+                "押してからキャンバスをクリックすると、その点の濡れた絵の具の配合を筆に取ります\
+                 (筆を洗ってから、その配合で1回分。パレットの色は変わりません)。\
+                 乾いた層の色は拾えません。\n\
+                 I キーを押している間だけ一時的にスポイトにもできます(ペンタブレットのキーに I を割り当て)",
+            )
             .clicked()
         {
-            self.palette_ui.eyedropper = !armed;
+            self.palette_ui.eyedropper = if armed { None } else { Some(Eyedropper::Brush) };
         }
     }
 
     /// スポイト待機中の案内(待機中だけ1行)
     pub(in crate::app) fn eyedropper_status(&self, ui: &mut egui::Ui) {
-        if self.palette_ui.eyedropper {
-            ui.colored_label(
-                egui::Color32::from_rgb(64, 130, 200),
-                "スポイト待機中… キャンバスをクリックしてください",
-            );
-        }
+        let text = match self.palette_ui.eyedropper {
+            Some(Eyedropper::Brush) => "スポイト待機中… クリックした所の絵の具を筆に取ります",
+            Some(Eyedropper::Slot) => {
+                "スポイト待機中… クリックした所の見た目の色を、つくっている色に入れます"
+            }
+            None => return,
+        };
+        ui.colored_label(egui::Color32::from_rgb(64, 130, 200), text);
     }
 
     /// 「色をつくる」モーダル: 「色をつくる」ボタンか色スウォッチの右クリックメニューで開く。
@@ -131,13 +136,27 @@ impl PaintApp {
         let ch = self.params.brush_channel.min(3) as usize;
         let mut changed = false;
         let p = &mut self.palette.pigments[ch];
+        let mut pick = false;
         ui.horizontal(|ui| {
             changed |= ui.color_edit_button_srgb(&mut p.rgb).changed();
             ui.label(format!("#{}", ch + 1));
             changed |= ui
                 .add(egui::TextEdit::singleline(&mut p.name).desired_width(140.0))
                 .changed();
+            let resp = ui.button("💧").on_hover_text(
+                "キャンバスから色を拾う: 押してからキャンバスをクリックすると、その点の見た目の色\
+                 (混ざった色・乾いた層の色も)をこの色に入れます",
+            );
+            resp.widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "キャンバスから色を拾う")
+            });
+            pick = resp.clicked();
         });
+        if pick {
+            // モーダルはキャンバスへのクリックを塞ぐので閉じて待機し、拾ったら開き直す
+            self.palette_ui.eyedropper = Some(Eyedropper::Slot);
+            self.palette_ui.color_modal = false;
+        }
         // per-顔料の密度 ρ は「沈着の速さ」。表示の被覆率カーブ(SimParams の
         // pigment_density)とは別概念なので用語を分ける(M5a)
         changed |= ui
