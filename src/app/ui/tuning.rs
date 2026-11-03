@@ -219,6 +219,10 @@ impl PaintApp {
                         .logarithmic(true)
                         .text("表示ゲイン"),
                 );
+                ui.add(
+                    egui::Slider::new(&mut self.params.edge_aa, 0.0..=1.0)
+                        .text("色の縁のアンチエイリアス"),
+                );
 
                 ui.separator();
                 ui.label("アクティブタイル (M6)");

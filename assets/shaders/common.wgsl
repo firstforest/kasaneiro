@@ -87,6 +87,7 @@ struct SimParams {
     advect_sharp: f32,      // 移流の MacCormack 補正の割合(0=セミラグランジアン)
     wick_bare: f32,         // 白い紙(沈着顔料なし)でのにじみ拡張の倍率(0=白い紙へは広がらない)
     wick_ref: f32,          // にじみ拡張が wet_expand そのままになる沈着量(4ch の和)
+    edge_aa: f32,           // 色の縁のアンチエイリアスの強さ(0=階段のまま。edge_aa_conc)
 };
 
 // アクティブタイル(M6): シミュレーションを「濡れているタイル+ブラシ近傍」だけに絞る土台。
@@ -175,4 +176,47 @@ fn load_bilinear(t: texture_2d<f32>, p: vec2f) -> vec4f {
     let c01 = load_clamped(t, i + vec2i(0, 1));
     let c11 = load_clamped(t, i + vec2i(1, 1));
     return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
+
+// 縁のアンチエイリアス(edge_aa): 濡れマスクが二値なので、顔料の縁は1テクセル単位の階段になる。
+// 「色がある/ない」を3×3のテント重みでならした場 B と、その勾配(Sobel)から縁(B=0.5 の等値線)までの
+// 符号つき距離を出し、テクセルを覆う割合 cov = clamp(距離 + 0.5, 0, 1) にする。色のあるテクセルは cov で
+// 薄め、色のないテクセルは隣の色のあるテクセルの濃さを cov だけ借りる。グリッドに沿った真っ直ぐな縁は
+// cov が 1 / 0 になるので変わらず、階段の角だけがなめらかになる。
+// c[(dy+1)*3 + (dx+1)] = 近傍テクセルの顔料濃度(浮遊+沈着)。strength = params.edge_aa(0 で素通し)
+const EDGE_AA_PRESENCE: f32 = 0.002; // density×総濃度(≒被覆率)がこれを超えるテクセルを「色がある」とする
+fn edge_aa_conc(c_in: array<vec4f, 9>, density: f32, strength: f32) -> vec4f {
+    var c = c_in;
+    let center = max(c[4], vec4f(0.0));
+    if (strength <= 0.0) {
+        return center;
+    }
+    var pres: array<f32, 9>;
+    for (var i = 0u; i < 9u; i++) {
+        c[i] = max(c[i], vec4f(0.0));
+        pres[i] = select(0.0, 1.0, density * dot(c[i], vec4f(1.0)) > EDGE_AA_PRESENCE);
+    }
+    let b = (pres[0] + pres[2] + pres[6] + pres[8]
+        + 2.0 * (pres[1] + pres[3] + pres[5] + pres[7]) + 4.0 * pres[4]) / 16.0;
+    let gx = (pres[2] + 2.0 * pres[5] + pres[8] - pres[0] - 2.0 * pres[3] - pres[6]) / 8.0;
+    let gy = (pres[6] + 2.0 * pres[7] + pres[8] - pres[0] - 2.0 * pres[1] - pres[2]) / 8.0;
+    let g = length(vec2f(gx, gy));
+    if (g < 1e-4) {
+        return center;
+    }
+    let cov = clamp((b - 0.5) / g + 0.5, 0.0, 1.0);
+    if (pres[4] > 0.5) {
+        return center * mix(1.0, cov, strength);
+    }
+    var w = array<f32, 9>(1.0, 2.0, 1.0, 2.0, 0.0, 2.0, 1.0, 2.0, 1.0);
+    var sum = vec4f(0.0);
+    var wsum = 0.0;
+    for (var i = 0u; i < 9u; i++) {
+        sum += (w[i] * pres[i]) * c[i];
+        wsum += w[i] * pres[i];
+    }
+    if (wsum <= 0.0) {
+        return center;
+    }
+    return center + (sum / wsum - center) * (cov * strength);
 }

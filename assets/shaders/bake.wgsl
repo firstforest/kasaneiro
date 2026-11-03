@@ -10,6 +10,7 @@
 //     幅は edge_radius。濡れマスク基準にしないこと: マスクは顔料より広く、マスク縁は
 //     濃度ほぼゼロなので掛け算しても見えない。被覆率基準なら Fast Dry 後(マスク=0)でも効く。
 //     M1d の FlowOutward とは独立)
+//   縁のアンチエイリアス — 階段状の顔料の縁に覆いの割合を入れる(edge_aa、common.wgsl の edge_aa_conc)
 // binding は共通レイアウトの 0..6, 8 + 専用の 9(splats の 7 は使わない)。
 // 先頭に common.wgsl が連結される。
 
@@ -65,7 +66,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let h = textureLoad(paper_tex, ip, 0).r;
     let gran = max(1.0 + params.dry_gran * (1.0 - 2.0 * h), 0.0);
 
-    let conc = max(susp + dep, vec4f(0.0));
+    // 縁のアンチエイリアス(edge_aa): 乾いた層のデータそのものに縁の覆いの割合を焼き込む
+    // (乾いた層は合成キャッシュを通して表示するので、表示側では掛けない)
+    var nb: array<vec4f, 9>;
+    for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+            let q = ip + vec2i(dx, dy);
+            nb[(dy + 1) * 3 + dx + 1] = load_clamped(src_susp, q) + load_clamped(src_dep, q);
+        }
+    }
+    let conc = edge_aa_conc(nb, params.pigment_density, params.edge_aa);
     let baked = conc * params.dry_shift * gran * (1.0 + params.dry_edge * band);
     textureStore(dst_layer, ip, baked);
 

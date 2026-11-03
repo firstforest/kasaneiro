@@ -192,9 +192,9 @@ fn render_conc(conc_in: vec4f, z_base: vec4f, z_base_res: vec4f, pal: u32) -> ve
     return clamp(mixbox_eval(z_mix) + z_res.xyz, vec3f(0.0), vec3f(1.0));
 }
 
-// 湿レイヤーの通常レンダリング: 紙の上に発色させる
-fn render_paper(water: f32, susp: vec4f, dep: vec4f) -> vec3f {
-    var color = render_conc(susp + dep, latents[0], latents[1], LIVE_PALETTE);
+// 湿レイヤーの通常レンダリング: 紙の上に発色させる(conc = 浮遊+沈着)
+fn render_paper(water: f32, conc: vec4f) -> vec3f {
+    var color = render_conc(conc, latents[0], latents[1], LIVE_PALETTE);
     // 濡れている場所をわずかに暗く(水だけのストロークも通常表示で見えるように)
     color *= 1.0 - 0.12 * clamp(water, 0.0, 1.0);
     return color;
@@ -233,10 +233,10 @@ fn km_over_conc(conc: vec4f, r_below: vec3f, pal: u32) -> vec3f {
 
 // 紙(最下層)→ 乾燥レイヤー(下から)→ 湿レイヤー(最上)を KM で光学合成した最終色(sRGB)。
 // 紙+乾燥レイヤーまでの反射率はキャッシュ(dried_cache_main)から読む
-fn km_composite(water: f32, susp: vec4f, dep: vec4f, p: vec2f) -> vec3f {
+fn km_composite(water: f32, conc: vec4f, p: vec2f) -> vec3f {
     var r = load_bilinear(dried_cache, p).rgb;
     // 湿レイヤーを最上に重ねる(現行パレット)
-    r = km_over_conc(susp + dep, r, LIVE_PALETTE);
+    r = km_over_conc(conc, r, LIVE_PALETTE);
     var color = linear_to_srgb(r);
     // 濡れている場所をわずかに暗く(render_paper と同じ演出。水だけのストロークも見えるように)
     color *= 1.0 - 0.12 * clamp(water, 0.0, 1.0);
@@ -244,11 +244,43 @@ fn km_composite(water: f32, susp: vec4f, dep: vec4f, p: vec2f) -> vec3f {
 }
 
 // 通常表示の最終合成: compose_mode で multiply(M2) か KM(M3) を選ぶ
-fn compose(water: f32, susp: vec4f, dep: vec4f, p: vec2f) -> vec3f {
+fn compose(water: f32, conc: vec4f, p: vec2f) -> vec3f {
     if (params.compose_mode == 1u) {
-        return km_composite(water, susp, dep, p);
+        return km_composite(water, conc, p);
     }
-    return render_paper(water, susp, dep) * dried_factor(p);
+    return render_paper(water, conc) * dried_factor(p);
+}
+
+// 湿レイヤーの顔料濃度(浮遊+沈着)を、縁のアンチエイリアス(edge_aa_conc)を掛けてからバイリニア補間する。
+// 補間する4テクセルそれぞれに3×3近傍が要るので、4×4 ブロックを1回だけ読んで使い回す
+fn wet_conc_aa(p: vec2f) -> vec4f {
+    if (params.edge_aa <= 0.0) {
+        return load_bilinear(susp_tex, p) + load_bilinear(dep_tex, p);
+    }
+    let q = p - 0.5;
+    let base = floor(q);
+    let f = q - base;
+    let i0 = vec2i(base) - vec2i(1);
+    var blk: array<vec4f, 16>;
+    for (var y = 0; y < 4; y++) {
+        for (var x = 0; x < 4; x++) {
+            let ip = i0 + vec2i(x, y);
+            blk[y * 4 + x] = load_clamped(susp_tex, ip) + load_clamped(dep_tex, ip);
+        }
+    }
+    var corner: array<vec4f, 4>;
+    for (var k = 0; k < 4; k++) {
+        let ox = k & 1;
+        let oy = k >> 1u;
+        var nb: array<vec4f, 9>;
+        for (var dy = 0; dy < 3; dy++) {
+            for (var dx = 0; dx < 3; dx++) {
+                nb[dy * 3 + dx] = blk[(oy + dy) * 4 + ox + dx];
+            }
+        }
+        corner[k] = edge_aa_conc(nb, params.pigment_density, params.edge_aa);
+    }
+    return mix(mix(corner[0], corner[1], f.x), mix(corner[2], corner[3], f.x), f.y);
 }
 
 // 線画(M4.5a)を色の上に重ねる。docs/design.md §3.5 の合成順(紙→乾燥→湿→線画→ハイライト)に従い、
@@ -334,7 +366,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         }
         case 3u: {
             // 湿りオーバーレイ: 通常表示の上に濡れ領域(wet-area mask)を青く重ねる
-            color = apply_lines(compose(water, susp, dep, p), p);
+            color = apply_lines(compose(water, wet_conc_aa(p), p), p);
             if (is_wet(cell)) {
                 color = mix(color, vec3f(0.15, 0.35, 0.95), 0.3);
             }
@@ -355,7 +387,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         case 7u: {
             // アクティブタイル(M6): 通常表示にタイル格子を重ね、計算中のタイルを緑、
             // コピーだけのタイルを青、何もしないタイルを暗く沈める。コストが濡れ面積比例かを目視できる
-            color = apply_lines(compose(water, susp, dep, p), p);
+            color = apply_lines(compose(water, wet_conc_aa(p), p), p);
             let tp = vec2u(clamp(p, vec2f(0.0), dims - 1.0));
             let tile = tile_active[tile_index_of(tp)];
             if (tile == TILE_ACTIVE) {
@@ -374,7 +406,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
         default: {
             // 通常: multiply(M2) か KM(M3) で湿+乾燥レイヤーを合成(params.compose_mode)し、
             // その上に線画(M4.5a)を重ねる
-            color = apply_lines(compose(water, susp, dep, p), p);
+            color = apply_lines(compose(water, wet_conc_aa(p), p), p);
         }
     }
     // キャンバス外(回転・パンのはみ出し)は背景色で塗りつぶす

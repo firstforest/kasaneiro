@@ -155,6 +155,7 @@ diffuse.wgsl の顔料の流束(per-channel、隣 n から自セルへ):
 | `compose_mode` | 1 | 切替ボタン | レイヤー合成: 0=multiply(乗算。重ねるほど暗い安価な近似)/ 1=KM(Kubelka-Munk の R/T 光学合成。薄い層ほど下が透けるグレーズ) |
 | `display_mode` | 0 | コンボボックス | デバッグ表示(H4): 0=通常 / 1=水量ヒートマップ / 2=速度場(色相=方向)/ 3=湿りオーバーレイ(濡れ=青)/ 4=浮遊顔料 / 5=沈着顔料 / 6=紙ハイト(白=山)/ 7=アクティブタイル(計算中=緑、§10.5) |
 | `display_gain` | 1.0 | 0.1〜10 | デバッグ表示の輝度スケール |
+| `edge_aa` | 1.0 | 0〜1 | 色の縁のアンチエイリアス: 「色がある/ない」(`pigment_density`×総濃度 > 0.002)を3×3のテント重みでならした場 B と、その Sobel 勾配 g から、縁のテクセルの覆い `cov = clamp((B−0.5)/g + 0.5, 0, 1)` を出す。色のあるテクセルは濃度×cov、色のないテクセルは隣の色のあるテクセルの濃度×cov。この値で効きを補間する(0 = 階段のまま)。湿レイヤーは表示時、乾いた層は焼き込み時に掛ける |
 
 ## 9. 顔料個性 ρ/ω/γ/μ(M3、[crates/pigment/src/lib.rs](../crates/pigment/src/lib.rs))
 
@@ -218,7 +219,7 @@ GPU へ渡す前に `physics_uniform()` が ρ・μ を 0 以上、ω・γ を 0
 2. [src/app/ui/](../src/app/ui/) の該当パネルにスライダー1行
 3. [assets/shaders/common.wgsl](../assets/shaders/common.wgsl) の `struct SimParams` に1行(Rust 側と同レイアウト。名前・順序・型の不一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検出する)
 
-**現在のレイアウト**: `SimParams` は 62 フィールド+末尾の `_pad: [f32; 2]`(全て f32 / u32 の 4 バイト)= 256 バイト(16×16)。`Splat` は 32 バイト(`pos`・`vel`・`pressure`・`feed`・`scale`・`_pad`)。筆の中身 `BrushState` は 64 バイト(穂先の `tip_water`・`_pad`×3・`tip_pigment: [f32; 4]`、腹の `belly_water`・`_pad`×3・`belly_pigment: [f32; 4]`)。
+**現在のレイアウト**: `SimParams` は 63 フィールド+末尾の `_pad: [f32; 1]`(全て f32 / u32 の 4 バイト)= 256 バイト(16×16)。`Splat` は 32 バイト(`pos`・`vel`・`pressure`・`feed`・`scale`・`_pad`)。筆の中身 `BrushState` は 64 バイト(穂先の `tip_water`・`_pad`×3・`tip_pigment: [f32; 4]`、腹の `belly_water`・`_pad`×3・`belly_pigment: [f32; 4]`)。
 
 **16 バイト整列の保ち方**: uniform buffer は Rust の構造体を bytemuck で生バイトのまま渡すので、全体サイズを 16 の倍数に保つ(`params_size_aligned` テスト)。次にフィールドを足すとき 16 の倍数から外れるなら、Rust 側の末尾に `#[serde(skip)]` のパディング(例: 1個足すなら `_pad: [f32; 3]`)を置き、以降はそのパディングを1つずつ実フィールドへ置き換えていく。パディングは WGSL 側の struct には書かない([tests/sim_params_layout.rs](../tests/sim_params_layout.rs) は直列化されるフィールドの名前・順序・型を common.wgsl と突き合わせ、直列化されない末尾 16 バイト未満だけをパディングとして許す)。
 

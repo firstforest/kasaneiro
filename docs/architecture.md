@@ -213,7 +213,7 @@ paint:
 
 | ファイル | 役割 |
 |---|---|
-| common.wgsl | 共通定義(SimParams / Splat / Brush / BrushIntake 構造体、濡れ判定、バイリニア補間、`tile_index_of`)。各シェーダーの先頭に連結する(§11) |
+| common.wgsl | 共通定義(SimParams / Splat / Brush / BrushIntake 構造体、濡れ判定、バイリニア補間、`tile_index_of`、色の縁のアンチエイリアス `edge_aa_conc`)。各シェーダーの先頭に連結する(§11) |
 | splat.wgsl | ブラシ入力。tool(描画 / リフト / 消去 / 吸い取り)で分岐。描画は穂先と紙が濡れ具合の差で水を受け渡す(穂先の濡れ具合 = 穂先の水 × `Splat.scale`(置く時点の残りの予測)、紙の濡れ具合 = 水位 ÷ (`brush_water` × `SAT_RATIO`))。出るときは穂先の濃さ、入るときは紙の浮遊顔料の濃さで顔料も動き、受け渡した量を集計へ atomic で足す。出た水は筆の速度(`brush_velocity` × 穂先の濡れ具合 × 進行方向)を持ち、紙の水と運動量で混ぜる。置いたままの splat(`feed`)は初速なし・溶かし戻し弱め |
 | brush.wgsl | 塗る筆の中身の更新(1スレッド)。受け渡しの集計を穂先の容量で割って穂先に足し引き → 腹が穂先より濡れていれば `brush_dt` / `brush_refill_time` で腹から穂先へ補充(一方向、顔料は腹の濃さ)。室の容量は「満タンの室だけで乾いた紙をこの長さ塗ると半分」の長さ(`brush_tip` / `brush_hold`)から。集計は 0 に戻す |
 | velocity.wgsl | 速度更新(水面勾配 = 水深 + paper_amp×紙ハイト → 加速)。ペン線の透水率を速度場・にじみ拡張に掛ける。にじみ拡張は乾いたセルの沈着顔料の量でも変える(白い紙は `wick_bare` 倍) |
@@ -228,7 +228,7 @@ paint:
 | linesplat.wgsl | ラスタ線画。鉛筆 / ペン / ハイライトを対象テクスチャへ直描き(line_mode で見た目を分岐、line_eraser で減算) |
 | tilescan.wgsl | アクティブタイル第1段。タイルごとに濡れとブラシ近傍を走査して raw_active を書く |
 | tiledilate.wgsl | アクティブタイル第2段。raw_active を3×3で膨張し、dirty と合わせて active を確定 |
-| display.wgsl | 表示: 層内発色 → レイヤー合成 → 線画合成 → sRGB。デバッグ表示の分岐もここ。乾燥レイヤーの合成は compute 入口 `dried_cache_main` がキャッシュへ焼く(色の関数を共有するため同じファイル) |
+| display.wgsl | 表示: 湿レイヤーの濃度に縁のアンチエイリアス(`wet_conc_aa`: 4×4 テクセルを読み、補間する4点それぞれに `edge_aa_conc` を掛けてからバイリニア補間)→ 層内発色 → レイヤー合成 → 線画合成 → sRGB。デバッグ表示の分岐もここ。乾燥レイヤーの合成は compute 入口 `dried_cache_main` がキャッシュへ焼く(色の関数を共有するため同じファイル) |
 
 ## 5. 発色と合成
 
@@ -241,7 +241,7 @@ paint:
 
 ## 6. 乾燥とレイヤー
 
-- 乾かす = bake パスが `(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を texture array の新スライスへ書き、湿レイヤーを全ゼロにする
+- 乾かす = bake パスが `edge_aa_conc(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を texture array の新スライスへ書き、湿レイヤーを全ゼロにする
 - レイヤーの重ね順・可視性・濃度倍率は `LayerUniform`(order + visible_mask + density)で `dried_cache_main` へ渡す。倍率は読んだ顔料濃度に掛けてから発色・合成する。UI の並べ替えがそのまま合成順になる。`sync_layers` が合成キャッシュの焼き直しを予約する
 - **下地への統合**(`merge_into_base`): 下から N 枚だけを並べた LayerUniform を `force_mode` 1 / 2 で2回 `dried_cache_main` に通し、それぞれの合成キャッシュを下地のスライス 0 / 1 へコピーして `has_base` を立てる。続けて残りの層を重ね順のままスロット 0.. へ詰め直す(同じテクスチャ内のスライス間コピー。行き先にまだ動かしていない層がいれば空きスロットへ逃がす `compaction_moves`)。`clear` で `has_base` を下ろす
 - 水彩の undo: ストローク開始時に `current` の3枚を退避テクスチャへコピーし、Ctrl+Z で書き戻す

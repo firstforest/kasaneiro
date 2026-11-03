@@ -48,7 +48,7 @@ pub const SAT_RATIO: f32 = 4.3;
 /// フィールドを足したら: ①ここに1行 ②src/app/ui/ の該当パネルにスライダー1行 ③common.wgsl の struct に1行
 /// (名前・順序・型の一致は tests/sim_params_layout.rs が検査する)。
 /// メモリレイアウトは WGSL の uniform 規則(16 バイト整列)に合わせること。
-/// 全体サイズは 16 の倍数を保つ(62 フィールド+末尾の _pad: [f32; 2] = 256B。次に足すときは
+/// 全体サイズは 16 の倍数を保つ(63 フィールド+末尾の _pad: [f32; 1] = 256B。次に足すときは
 /// _pad を1つずつ実フィールドへ置き換え、使い切ったら末尾に新しい _pad を置いて 16B 境界を保つ。
 /// _pad は WGSL 側には書かない。手順は docs/parameters.md §11)。
 /// serde(default): プリセット(H3)にないフィールドは Default 値で埋める
@@ -233,8 +233,13 @@ pub struct SimParams {
     /// 染み込みが最大になる沈着量: 乾いたセルの沈着顔料(4ch の和)がこの量に達すると、
     /// にじみ拡張が wet_expand そのままの速さになる。これより少ないと wick_bare との間を補間する
     pub wick_ref: f32,
+    /// 色の縁のアンチエイリアス: 濡れマスクが二値で1テクセルの階段になる顔料の縁を、縁のテクセルに
+    /// 覆いの割合を入れてなめらかにする強さ(0 = 階段のまま / 1 = 全量)。湿レイヤーは表示で、
+    /// 乾いた層は焼き込みで掛ける(display.wgsl / bake.wgsl、式は common.wgsl の edge_aa_conc)。
+    /// シミュレーションの水と顔料には触れない
+    pub edge_aa: f32,
     #[serde(skip)]
-    pub _pad: [f32; 2],
+    pub _pad: [f32; 1],
 }
 
 impl SimParams {
@@ -357,7 +362,8 @@ impl Default for SimParams {
             wick_bare: 0.0,
             // 薄塗り(被覆率 5% 程度)でも十分に染みる量
             wick_ref: 0.05,
-            _pad: [0.0; 2],
+            edge_aa: 1.0,
+            _pad: [0.0; 1],
         }
     }
 }
