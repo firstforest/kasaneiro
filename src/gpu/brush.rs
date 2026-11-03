@@ -8,6 +8,9 @@
 //! 中身を CPU で編集する前(色を取る・水に浸すなど)と、記録に描き始めの中身を残すときは、
 //! [`GpuBrush::sync`] で完了を待って最新の値を得る。描き終わってから次の操作までには
 //! 普通は非同期の読み戻しが追いついているので、待つのは描いた直後に触ったときだけ。
+//!
+//! 混色皿([`super::MixCanvas`])は本体のキャンバスと同じ `state` バッファを使う(筆は1本)。
+//! 読み戻しと CPU からの置き換えは本体の `GpuBrush` が受け持ち、混色皿の側は読み戻さない。
 
 use eframe::egui_wgpu::wgpu;
 use paint_core::load::{BrushLoad, BrushState};
@@ -38,17 +41,22 @@ pub(crate) struct GpuBrush {
     copied: Option<u64>,
     /// map 中の版と結果
     mapping: Option<(u64, Arc<AtomicU8>)>,
+    /// 中身を読み戻すか。別のキャンバスと `state` を共有している側(混色皿)は false
+    readback: bool,
 }
 
 impl GpuBrush {
-    pub(super) fn new(device: &wgpu::Device) -> Self {
-        let state = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("brush_state"),
-            size: std::mem::size_of::<BrushState>() as u64,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
+    /// `shared` = 別のキャンバスの筆の中身のバッファ(None なら作る)。`readback` = 中身を CPU へ読み戻すか
+    pub(super) fn new(device: &wgpu::Device, shared: Option<wgpu::Buffer>, readback: bool) -> Self {
+        let state = shared.unwrap_or_else(|| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("brush_state"),
+                size: std::mem::size_of::<BrushState>() as u64,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })
         });
         let flow = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brush_flow"),
@@ -72,6 +80,7 @@ impl GpuBrush {
             mirror_version: 0,
             copied: None,
             mapping: None,
+            readback,
         }
     }
 
@@ -91,7 +100,11 @@ impl GpuBrush {
     /// 中身が読み戻した値より新しく、staging が空いていれば、コピーを積む。
     /// フレームの compute を積んだ最後に呼ぶ
     pub(super) fn encode_readback(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        if self.mirror_version < self.version && self.copied.is_none() && self.mapping.is_none() {
+        if self.readback
+            && self.mirror_version < self.version
+            && self.copied.is_none()
+            && self.mapping.is_none()
+        {
             encoder.copy_buffer_to_buffer(&self.state, 0, &self.staging, 0, self.staging.size());
             self.copied = Some(self.version);
         }

@@ -25,9 +25,24 @@ impl GpuCanvas {
         shader_dir: PathBuf,
         size: u32,
     ) -> Self {
-        // CANVAS_SIZES 以外は想定外(64 の倍数 = 読み戻し行の 256B 整列、TILE_SIZE の倍数が前提)
+        Self::with_brush(device, queue, target_format, shader_dir, size, None, true)
+    }
+
+    /// `brush_state` = 筆の中身のバッファ([`GpuCanvas::brush_buffer`])。Some なら別のキャンバスと
+    /// 同じ筆を使い、None なら自前で作る。`readback` = このキャンバスが筆の中身を CPU へ読み戻すか
+    /// (同じバッファを使うキャンバスのうち1つだけが読み戻し、置き換えもそのキャンバスから行う)
+    pub fn with_brush(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+        shader_dir: PathBuf,
+        size: u32,
+        brush_state: Option<wgpu::Buffer>,
+        readback: bool,
+    ) -> Self {
+        // CANVAS_SIZES と混色皿以外は想定外(64 の倍数 = 読み戻し行の 256B 整列、TILE_SIZE の倍数が前提)
         assert!(
-            CANVAS_SIZES.contains(&size),
+            CANVAS_SIZES.contains(&size) || size == super::MIX_CANVAS_SIZE,
             "未対応のキャンバスサイズです: {size}(選択肢: {CANVAS_SIZES:?})"
         );
         let make_texture = |label: &str| {
@@ -645,7 +660,7 @@ impl GpuCanvas {
             ],
         });
 
-        let brush = super::brush::GpuBrush::new(device);
+        let brush = super::brush::GpuBrush::new(device, brush_state, readback);
         // src=current / dst=もう片方 の2方向分
         let make_compute_bg = |src: usize, dst: usize| {
             let mut entries = Vec::new();

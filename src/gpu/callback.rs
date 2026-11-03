@@ -5,7 +5,7 @@
 //! compute を積む本体は [`GpuCanvas::encode_frame`] で、headless 駆動(e2e)も同じ経路を通る。
 //! パス実行順(encode_frame 内)はシミュレーションの心臓部で、ここがその正典。
 
-use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, ViewUniform};
+use super::{GpuCanvas, LineTarget, MAX_DIFFUSE_ITERS, MAX_RELAX_ITERS, MixCanvas, ViewUniform};
 use eframe::egui_wgpu::{self, wgpu};
 use paint_core::load::BrushFrame;
 use paint_core::sim::{MAX_SPLATS, SimParams, Splat, SplatHeader};
@@ -67,13 +67,13 @@ impl egui_wgpu::CallbackTrait for CanvasCallback {
 impl GpuCanvas {
     /// 1フレーム分(splat 注入 → シミュレーション `frame.sim_steps` ステップ)の compute パスを
     /// `encoder` に積む。egui の prepare と headless 駆動([`crate::headless`])の共通経路で、
-    /// submit は呼び出し側が行う
+    /// submit は呼び出し側が行う。筆の中身を書き換えうるパス(brush.wgsl)を積んだら true
     pub fn encode_frame(
         &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         frame: &CanvasCallback,
-    ) {
+    ) -> bool {
         let canvas = self;
         queue.write_buffer(&canvas.params_buffer, 0, bytemuck::bytes_of(&frame.params));
         // M6: パン/ズームの変換を display 用 uniform へ(compute には影響しない)
@@ -153,7 +153,7 @@ impl GpuCanvas {
             // ことを前提にしているため(tiledilate.wgsl)。active は前フレームの値が残る
             if !run_splat && frame.sim_steps == 0 {
                 canvas.brush.encode_readback(encoder);
-                return;
+                return false;
             }
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("sim_pass"),
@@ -218,5 +218,47 @@ impl GpuCanvas {
             canvas.brush.touched();
         }
         canvas.brush.encode_readback(encoder);
+        brush_ran
+    }
+}
+
+/// 混色皿([`MixCanvas`])の1フレーム分。中身は本体と同じ [`CanvasCallback`] で、
+/// src/app/ui/mixpad.rs で組み立てる。`brush.set` は使わない(筆の置き換えは本体のキャンバスが受け持つ)
+pub struct MixCallback(pub CanvasCallback);
+
+impl egui_wgpu::CallbackTrait for MixCallback {
+    fn prepare(
+        &self,
+        _device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        egui_encoder: &mut wgpu::CommandEncoder,
+        callback_resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let brush_ran = callback_resources
+            .get_mut::<MixCanvas>()
+            .is_some_and(|mix| mix.0.encode_frame(queue, egui_encoder, &self.0));
+        // 筆のバッファは本体と共有しているので、読み戻しは本体の側で積む
+        if brush_ran && let Some(canvas) = callback_resources.get_mut::<GpuCanvas>() {
+            canvas.brush_touched_elsewhere(egui_encoder);
+        }
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        _info: eframe::egui::PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        callback_resources: &egui_wgpu::CallbackResources,
+    ) {
+        let Some(MixCanvas(canvas)) = callback_resources.get::<MixCanvas>() else {
+            return;
+        };
+        let Some(pipelines) = &canvas.pipelines else {
+            return;
+        };
+        render_pass.set_pipeline(&pipelines.display);
+        render_pass.set_bind_group(0, &canvas.display_bind_groups[canvas.current], &[]);
+        render_pass.draw(0..3, 0..1);
     }
 }

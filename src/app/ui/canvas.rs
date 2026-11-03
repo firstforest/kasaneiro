@@ -1,7 +1,7 @@
 //! 中央のキャンバス描画(ポインタ入力の取り込み・記録再生の合流・シミュステップ数の決定)と
 //! シェーダーエラーのオーバーレイ。
 
-use crate::app::PaintApp;
+use crate::app::{PaintApp, Surface};
 use crate::gpu::CanvasCallback;
 use crate::input::{PointerEvent, PointerPhase, PointerSource};
 use eframe::egui;
@@ -126,7 +126,7 @@ impl PaintApp {
                 && rect.contains(pos)
             {
                 self.palette_ui.eyedropper = None;
-                self.pick(target, pos, rect);
+                self.pick(target, Surface::Canvas, pos, rect);
             }
         } else if self.drawing_locked() {
             // 乾燥レイヤー選択中は描画不可(焼き込みは一方通行)。クリックされたら案内を出す
@@ -145,10 +145,7 @@ impl PaintApp {
             self.hold_still(&mut splats);
         }
 
-        // 時間は固定刻み(1/60 秒)で数える。リフレッシュレートに依らず同じ実時間で同じだけ乾き、
-        // 記録再生も刻み単位なので別のモニタで再生しても同じテンポになる
-        let dt = ui.input(|i| i.stable_dt);
-        let ticks = self.sim_clock.advance(dt);
+        let ticks = self.frame_ticks;
 
         // H5: 記録は刻み基準(ストローク間の待ちも再現される)
         if let Some(recorder) = &mut self.replay_ui.recorder {
@@ -178,7 +175,6 @@ impl PaintApp {
 
         // 腹から穂先へ補充する時間: brush パスが走る(塗るツールで流体へ splat を流す)フレームで
         // 前回からの経過をまとめて渡す
-        self.brush_clock.tick(ticks);
         if self.params.tool == WetTool::Paint.gpu_id()
             && self.line_target().is_none()
             && !splats.is_empty()
@@ -186,16 +182,7 @@ impl PaintApp {
             self.brush_frame.dt = self.brush_clock.take();
         }
 
-        // H6: 一時停止中は 0 ステップ(1ステップボタンが押されていれば 1)
-        let sim_steps = if self.paused {
-            if std::mem::take(&mut self.step_once) {
-                1
-            } else {
-                0
-            }
-        } else {
-            ticks * self.steps_per_tick
-        };
+        let sim_steps = self.frame_sim_steps;
 
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(
             rect,

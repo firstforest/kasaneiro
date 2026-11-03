@@ -128,8 +128,11 @@ impl PointerSource for PenSource {
             match phase {
                 egui::TouchPhase::Start => {
                     // 生 Touch はウィジェットの重なりを見ないので、接地点の最前面が
-                    // キャンバスのレイヤーのときだけ受け付ける(モーダル・ポップアップの裏に描かない)
-                    let on_canvas = canvas.ctx.layer_id_at(pos) == Some(canvas.layer_id);
+                    // キャンバスのレイヤーのときだけ受け付ける(モーダル・ポップアップの裏に描かない)。
+                    // 描く面はキャンバスと混色皿の2つがあり、それぞれが PenSource を持つので、
+                    // 接地点がその面の矩形の中のときだけ追跡を始める
+                    let on_canvas = canvas.ctx.layer_id_at(pos) == Some(canvas.layer_id)
+                        && canvas.interact_rect.contains(pos);
                     if self.active_id.is_none() && on_canvas {
                         self.active_id = Some(id);
                         self.last_pressure = Some(pressure);

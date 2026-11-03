@@ -16,6 +16,7 @@
 //! - [`panels`] — 記録再生 / シェーダー状態 / 操作結果表示(`replay_panel` / `shader_status` / `status_bar`)
 //! - [`file_menu`] — 上部「ファイル」メニューバー+モーダル(作品保存/開く・設定プリセット・新規キャンバス・全部消す。`menu_bar` / `file_modals`)
 //! - [`canvas`] — キャンバス描画とエラーオーバーレイ(`canvas_ui` / `error_overlay`)
+//! - [`mixpad`] — 右パネルの混色皿(`mixpad_panel`。本体と同じ筆で塗って色を混ぜておく小さな湿レイヤー)
 //!
 //! プリセット(H3)とストローク(H5)で重複していた「名前入力+保存+一覧」パターンは
 //! [`NamedStore`] に一本化した(save_controls / list_rows)。
@@ -23,6 +24,7 @@
 mod canvas;
 mod file_menu;
 mod layers;
+mod mixpad;
 mod palette;
 mod panels;
 mod tools;

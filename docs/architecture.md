@@ -56,12 +56,13 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │  │     ├─ tuning.rs     調整・診断・シミュ制御(開発モード時のみ)
 │  │     ├─ panels.rs     表示 / 記録再生 / シェーダー状態 / ステータスバー
 │  │     ├─ file_menu.rs  メニューバー(ファイル・ヘルプ)とそのモーダル
+│  │     ├─ mixpad.rs     右パネルの混色皿(皿のストローク・スポイト・洗う)
 │  │     └─ canvas.rs     キャンバス描画・初回ガイド・エラーオーバーレイ
 │  ├─ gpu/                GpuCanvas
-│  │  ├─ mod.rs           型定義(GpuCanvas / Pipelines / DriedLayer)・COMPUTE_SHADERS 表・
+│  │  ├─ mod.rs           型定義(GpuCanvas / MixCanvas / Pipelines / DriedLayer)・COMPUTE_SHADERS 表・
 │  │  │                   clear / sync_layers / bake_dry / fast_dry / rewet / rebuild_pipelines
-│  │  ├─ init.rs          GpuCanvas::new(テクスチャ・バッファ・bind group の生成)
-│  │  ├─ callback.rs      CanvasCallback(egui の prepare / paint)と encode_frame(パス実行順の正典)
+│  │  ├─ init.rs          GpuCanvas::new / with_brush(テクスチャ・バッファ・bind group の生成。with_brush は筆のバッファを共有)
+│  │  ├─ callback.rs      CanvasCallback / MixCallback(egui の prepare / paint)と encode_frame(パス実行順の正典)
 │  │  ├─ brush.rs         GpuBrush(塗る筆の中身の GPU バッファ・受け渡しの集計・CPU への非同期読み戻しと完了待ち)
 │  │  ├─ snapshot.rs      snapshot(PNG・「色をつくる」のスポイト用の読み戻し)/ read_wet_sample(筆へのスポイト用に
 │  │  │                   湿レイヤーの水位と浮遊+沈着を小さな窓で読み戻す)/ render_offscreen(表示の計測用)
@@ -108,6 +109,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 
 - 選択肢は `CANVAS_SIZES = [512, 1024, 2048]`(正方形のみ)、既定 `DEFAULT_CANVAS_SIZE = 512`。実行時の値は `GpuCanvas.size` が正典で、全テクスチャ・dispatch・読み戻しの寸法がここから決まる
 - サイズ変更 = `PaintApp::recreate_canvas` で GpuCanvas を作り直す(旧インスタンスは callback_resources の差し替えで drop)。UI はファイルメニューの「新規キャンバス…」
+- 混色皿(`MixCanvas`)は `MIX_CANVAS_SIZE` = 256 の別インスタンス(本体のサイズ変更では作り直さない)
 - 64 の倍数なので読み戻しの行バイト数は常に 256B 整列(パディング不要)
 - VRAM は 2048² で計 ~1.3GB(乾燥レイヤー8枚の 512MB が支配的。下地は 64MB。窮屈なら `MAX_LAYERS` を減らす)
 - テクスチャ・バッファは作成時に wgpu がゼロ初期化する。「全部消す」(`clear`)と線画 Undo(`clear_line`)のゼロ化は、`Features::CLEAR_TEXTURE`(アダプタ対応時だけ要求)があれば `clear_texture`、なければゼロ埋めの `write_texture`
@@ -181,8 +183,9 @@ display: `0/1/2` 水 / 浮遊 / 沈着、`3` SimParams、`4` 顔料 latent、`5`
 egui-wgpu の `CallbackTrait`(`gpu/callback.rs` の `CanvasCallback`)で駆動する。compute は `GpuCanvas::encode_frame` に集約してあり、prepare と headless 駆動(e2e)が同じ経路を通る:
 
 ```
-app(毎フレーム): SimClock がフレームの経過時間を 1/60 秒の刻み数(最大4)に変える。
-  記録・再生は刻みごとに進め、sim_steps = 刻み数 × 速度倍率(一時停止中は 0、1ステップなら 1)
+app(毎フレームの頭に1回 advance_clock): SimClock がフレームの経過時間を 1/60 秒の刻み数(最大4)に変える。
+  記録・再生は刻みごとに進め、sim_steps = 刻み数 × 速度倍率(一時停止中は 0、1ステップなら 1)。
+  本体と混色皿は同じ sim_steps で進む。右パネルの混色皿の MixCallback が本体の CanvasCallback より先に積まれる
 prepare(毎フレーム)= encode_frame:
   (prepare の頭で、前のフレームまでに積んだ筆の中身の読み戻しを進める)
   SimParams を uniform に write_buffer(スライダー即時反映)
@@ -288,6 +291,7 @@ paint:
 - `PointerSource` trait で Mouse / Pen を抽象化する。ペン接地中はマウス入力を無視する(egui-winit が Touch からポインタをエミュレートするため二重ストロークになる)
 - 筆圧マッピングは `実効値 = 基準値 × mix(1, 筆圧^γ, 効き)` を半径・水量・顔料量に適用(splat.wgsl と CPU 側で同式)
 - **筆の中身**: 正典は GPU の筆バッファ(`GpuBrush`)。`PaintApp` は `brush_load`(フレーム頭に読み戻した値。描いている間は数フレーム遅れる)と `brush_refill`(自動補充の戻り先 = 最後に色・水・洗うで作った中身)を持つ。色・水・拭う・洗う・自動補充・再生の停止は、`sync_brush`(GPU の完了を待って最新の値を得る。読み戻しが追いついていれば待たない)→ CPU で `BrushLoad` を変える → `set_brush` で筆バッファへその場で write_buffer、の順で置き換える。置き換えをフレームのコールバックに載せないのは、egui が UI を組み直したパスのコールバックを捨てるため。ツールバーの色・水スウォッチと拭うは押した瞬間と押し続けている間の2段で中身を変える。`brush_refill` と自動補充の on/off は eframe storage に保存する
+- **混色皿**: `MixCanvas` は本体と同じ筆の中身のバッファ(binding 12)を bind する(`GpuCanvas::with_brush`)。読み戻しと CPU からの置き換えは本体の `GpuBrush` だけが受け持ち、皿の側は読み戻さない。皿のフレームで brush.wgsl を積んだら、`MixCallback` が同じエンコーダに本体の筆の版を進めて読み戻しを積む(`brush_touched_elsewhere`)。皿のストロークは `PaintApp.mixpad`(別の `StrokeState`・`PenSource`・`MouseSource`)で splat にし、記録・Undo・線画は通さない。`PenSource` は接地点が自分の面の矩形の中のときだけ追跡を始めるので、面ごとに持っても1本のペンを取り合わない。本体の作り直しでは旧キャンバスの筆のバッファを新しいキャンバスへ渡し、皿は作り直さない
 - **受け渡しと補充**: CPU はフレームごとに `BrushFrame`(穂先の残りの予測 `scale` と補充の時間 `dt`)を `CanvasCallback.brush` で渡すだけで、筆の中身そのものは GPU で進む。補充の時間は `BrushClock` が刻みを溜め、brush パスが走るフレーム(塗るツールで流体へ splat を流すフレーム)でまとめて渡す(上限 2 秒)。記録の再生は `Player` がストロークの始めに `BrushFrame.set` で記録した中身へ置き換えるので、受け渡しまで含めて画面と headless で同じ経路を通る
 - **置いたまま**: 塗る筆を置いたまま動かないフレームは、読み戻した穂先か腹に水が残る間、`PaintApp::hold_still` が毎フレーム置いたままの splat(`Splat.feed=1`)を1つ積む。受け渡しの式は同じなので、紙と釣り合うまで色水が出続け、毛細管拡散が外へ運ぶ。ストローク記録は生ポインタ点のみなので置いたままの splat は再生で再現されない
 - ストローク記録は補間前の生ポインタ入力と、ストロークごとに筆を下ろした時点の筆の中身(`RecordedStroke.load`)を保存する。`load` の無い記録はそのストロークの顔料スロットを標準の1回分含んだ筆で再生する。時刻は 1/60 秒の刻み番号(JSON のキー名は `frame`)

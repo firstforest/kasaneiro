@@ -119,6 +119,8 @@ impl PaintApp {
                 self.color_edit_button(ui);
                 self.eyedropper_control(ui);
             });
+            // スポイト待機の案内は皿の下に出す(皿の上に出すと待機の間だけ皿がずれる)
+            self.mixpad_panel(ui);
             self.eyedropper_status(ui);
             self.palette_panel(ui);
         });

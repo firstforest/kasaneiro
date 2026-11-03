@@ -38,12 +38,21 @@ mod prelude;
 mod shader_error;
 mod snapshot;
 
-pub use callback::CanvasCallback;
+pub use callback::{CanvasCallback, MixCallback};
 pub use persist::WorkTextures;
 pub use prelude::{LATENT_TOTAL, MAX_LAYERS};
 
 /// 下地テクスチャのスライス数(0 = 乗算 / 1 = KM)
 pub const BASE_SLICES: usize = 2;
+
+/// 混色皿のキャンバス1辺(テクセル)。右パネルの幅に 1 テクセル ≒ 1 画面 px で収まる大きさ
+pub const MIX_CANVAS_SIZE: u32 = 256;
+
+/// 混色皿: 右パネルに置く小さな湿レイヤー。本体と同じシミュレーションを回し、筆の中身のバッファを
+/// 本体と共有する(どちらで塗っても同じ筆が減り、吸う)。egui の callback_resources に
+/// 本体の [`GpuCanvas`] と別の型で置くための包み
+pub struct MixCanvas(pub GpuCanvas);
+
 use prelude::{LIVE_PALETTE, PALETTE_SLOTS, TILE_SIZE, shader_prelude};
 
 use eframe::egui_wgpu::wgpu;
@@ -536,6 +545,18 @@ impl GpuCanvas {
             queue.submit([encoder.finish()]);
         }
         Ok(())
+    }
+
+    /// 筆の中身のバッファ。別のキャンバスを [`GpuCanvas::with_brush`] で作るときに渡すと同じ筆を使う
+    pub fn brush_buffer(&self) -> wgpu::Buffer {
+        self.brush.state.clone()
+    }
+
+    /// 同じ筆のバッファを使う別のキャンバス(混色皿)が筆の中身を書き換えうるパスを積んだ後に呼ぶ。
+    /// 版を進めて読み戻しを積む
+    pub(crate) fn brush_touched_elsewhere(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        self.brush.touched();
+        self.brush.encode_readback(encoder);
     }
 
     /// 塗る筆の中身のうち最後に分かっている値(描いている間は数フレーム遅れる。表示用)

@@ -43,6 +43,19 @@ fn canvas_rect(harness: &Harness<'_, PaintApp>) -> egui::Rect {
     harness.get_by_label("キャンバス").rect()
 }
 
+/// 右パネルのレイヤーを選ぶ。レイヤースタックはパレット・混色皿の下にあり窓の外に出うるので、見える所まで送ってから押す
+fn select_layer(harness: &mut Harness<'_, PaintApp>, name: &str) {
+    harness.get_by_label(name).scroll_to_me();
+    // スクロールはアニメーションするので、止まってから位置を引き直して押す
+    frames(harness, 30);
+    harness.get_by_label(name).click();
+}
+
+/// 混色皿の画面上の矩形(論理座標)
+fn mixpad_rect(harness: &Harness<'_, PaintApp>) -> egui::Rect {
+    harness.get_by_label("混色皿の紙").rect()
+}
+
 /// 画面を描画して、キャンバス矩形内の点(0..1 の相対位置)の色を読む
 fn canvas_color(
     harness: &mut Harness<'_, PaintApp>,
@@ -50,6 +63,16 @@ fn canvas_color(
     at: &[(f32, f32)],
 ) -> Vec<[f32; 3]> {
     let rect = canvas_rect(harness);
+    rect_color(harness, rect, name, at)
+}
+
+/// 画面を描画して、矩形内の点(0..1 の相対位置)の色を読む
+fn rect_color(
+    harness: &mut Harness<'_, PaintApp>,
+    rect: egui::Rect,
+    name: &str,
+    at: &[(f32, f32)],
+) -> Vec<[f32; 3]> {
     let ppp = harness.ctx.pixels_per_point();
     let shot = harness.render().expect("描画");
     let png = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
@@ -69,6 +92,11 @@ fn canvas_color(
 /// マウスでキャンバス上を (u0,v)→(u1,v) へドラッグする(相対位置)
 fn mouse_drag(harness: &mut Harness<'_, PaintApp>, u0: f32, u1: f32, v: f32) {
     let rect = canvas_rect(harness);
+    mouse_drag_in(harness, rect, u0, u1, v);
+}
+
+/// マウスで矩形内を (u0,v)→(u1,v) へドラッグする(相対位置)
+fn mouse_drag_in(harness: &mut Harness<'_, PaintApp>, rect: egui::Rect, u0: f32, u1: f32, v: f32) {
     let at = |u: f32| rect.lerp_inside(egui::vec2(u, v));
     let button = |pos, pressed| egui::Event::PointerButton {
         pos,
@@ -270,6 +298,66 @@ fn eyedropper_copies_pigment_to_brush() {
     assert!(
         (30.0..75.0).contains(&yellow.0) && yellow.1 > 0.15,
         "スポイトの後に黄スウォッチが黄で塗れない(パレットが変わった?): {ctx}"
+    );
+}
+
+/// 混色皿で混ぜた色をスポイトで拾ってキャンバスに塗れる。皿で黄を塗った上へ濡れているうちに青を重ねると
+/// 皿の中で黄より緑寄りに混ざり、そこを拾った筆の線は皿と同じ色相になる。皿に塗ってもキャンバスには何も乗らない
+#[test]
+fn mixpad_mixes_and_eyedropper_picks() {
+    let mut harness = app();
+    let pad = mixpad_rect(&harness);
+    harness.get_by_label("水").click();
+    harness.get_by_label_contains("塗る色 1:").click(); // ハンザイエロー
+    frames(&mut harness, 2);
+    mouse_drag_in(&mut harness, pad, 0.2, 0.8, 0.5);
+    harness.get_by_label("水").click();
+    harness
+        .get_by_label_contains("塗る色 2:")
+        .click_modifiers(egui::Modifiers::SHIFT); // フタロブルーに持ち替え
+    frames(&mut harness, 2);
+    mouse_drag_in(&mut harness, pad, 0.2, 0.8, 0.5);
+    frames(&mut harness, 30);
+    let blank = canvas_color(&mut harness, "mixpad-canvas-blank", &[(0.5, 0.5)]);
+    assert!(
+        hsv(blank[0]).1 < 0.1,
+        "皿に塗った色がキャンバスに乗った: {:?}",
+        blank[0]
+    );
+    let dish = rect_color(&mut harness, pad, "mixpad", &[(0.5, 0.5)]);
+
+    harness.get_by_label("洗う").click();
+    harness.get_by_label("💧 スポイト").click();
+    frames(&mut harness, 2);
+    let at = mixpad_rect(&harness).lerp_inside(egui::vec2(0.5, 0.5));
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    harness.event(egui::Event::PointerMoved(at));
+    harness.event(button(true));
+    frame(&mut harness);
+    harness.event(button(false));
+    frames(&mut harness, 2);
+    mouse_drag(&mut harness, 0.2, 0.8, 0.5);
+    frames(&mut harness, 60);
+
+    let colors = canvas_color(&mut harness, "mixpad-picked", &[(0.5, 0.5)]);
+    let (dish_hsv, picked) = (hsv(dish[0]), hsv(colors[0]));
+    let ctx = format!(
+        "皿 {:?} {dish_hsv:?} / 拾った筆 {:?} {picked:?}",
+        dish[0], colors[0]
+    );
+    assert!(
+        (55.0..190.0).contains(&dish_hsv.0) && dish_hsv.1 > 0.15,
+        "皿の中で黄と青が緑に混ざっていない: {ctx}"
+    );
+    assert!(picked.1 > 0.15, "皿から拾った筆で色が乗らない: {ctx}");
+    assert!(
+        (picked.0 - dish_hsv.0).abs() < 25.0,
+        "皿から拾った筆の色相が皿と違う: {ctx}"
     );
 }
 
@@ -553,7 +641,7 @@ fn luma(c: [f32; 3]) -> f32 {
 #[test]
 fn pen_overlapping_strokes_darken() {
     let mut harness = app();
-    harness.get_by_label("清書(ペン)").click();
+    select_layer(&mut harness, "清書(ペン)");
     frames(&mut harness, 2);
     pen_path(&mut harness, &[(0.2, 0.5), (0.8, 0.5)], 1.0);
     pen_path(&mut harness, &[(0.5, 0.3), (0.5, 0.7)], 1.0);
@@ -583,7 +671,7 @@ fn pen_overlapping_strokes_darken() {
 #[test]
 fn pen_light_pressure_line_is_continuous() {
     let mut harness = app();
-    harness.get_by_label("清書(ペン)").click();
+    select_layer(&mut harness, "清書(ペン)");
     frames(&mut harness, 2);
     pen_path(&mut harness, &[(0.2, 0.5), (0.8, 0.5)], 0.15);
     frames(&mut harness, 2);
@@ -604,7 +692,7 @@ fn pen_light_pressure_line_is_continuous() {
 #[test]
 fn pen_undo_redo_restores_same_lines() {
     let mut harness = app();
-    harness.get_by_label("清書(ペン)").click();
+    select_layer(&mut harness, "清書(ペン)");
     frames(&mut harness, 2);
     pen_path(&mut harness, &[(0.2, 0.5), (0.8, 0.5)], 1.0);
     pen_path(
@@ -636,7 +724,7 @@ fn pen_undo_redo_restores_same_lines() {
 #[test]
 fn pen_eraser_keeps_own_radius() {
     let mut harness = app();
-    harness.get_by_label("清書(ペン)").click();
+    select_layer(&mut harness, "清書(ペン)");
     frames(&mut harness, 2);
     // 太さはスライダーと数値欄の2ノードに同じ名前が付く
     let eraser_slider =

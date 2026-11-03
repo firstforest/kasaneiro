@@ -12,9 +12,9 @@ mod ui;
 
 use crate::capture::{self, Capture, Closing};
 use crate::gpu::DriedLayer;
-use crate::gpu::GpuCanvas;
 use crate::gpu::LineTarget;
 use crate::gpu::hot_reload::{ScreenshotWatcher, ShaderWatcher, screenshots_dir, shader_dir};
+use crate::gpu::{GpuCanvas, MIX_CANVAS_SIZE, MixCanvas, ViewUniform};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase};
 use crate::palette_store;
 use crate::pigment_store;
@@ -229,10 +229,35 @@ pub struct PaintApp {
     /// 記録再生・シェーダー状態を露出。開発機能は削除でなくこのトグルの裏へ退避する。
     /// eframe storage に永続化(前回の状態で起動。初回のみ off)
     dev_mode: bool,
+    /// 混色皿(右パネルの小さな湿レイヤー)のストローク状態
+    mixpad: MixPad,
+    /// このフレームで進める刻み数(フレーム頭に一度だけ時計を進める。本体と混色皿で共有)
+    frame_ticks: u32,
+    /// このフレームで進めるシミュレーションのステップ数(一時停止・1ステップ込み。本体と混色皿で共有)
+    frame_sim_steps: u32,
     /// 初回体験ガイド(F15): まだ一度も描いていない間だけ空キャンバスにヒントを出す。
     /// 最初の一筆(apply_pointer_events の Down)・作品の読込(load_work)・再生開始
     /// (start_replay)で true になり、以降ガイドは消える
     has_painted: bool,
+}
+
+/// 混色皿のストローク状態。本体のキャンバスとは別に持つ(記録・Undo・線画は通さない)
+#[derive(Default)]
+struct MixPad {
+    stroke: StrokeState,
+    /// ストローク中(混色皿の上で Down したときだけ立つ)
+    painting: bool,
+    /// 直近のストローク位置と筆圧(置いたまま動かないフレームの splat 用)
+    feed_pos: Option<([f32; 2], f32)>,
+    pen: PenSource,
+    mouse: MouseSource,
+}
+
+/// スポイトで拾う面
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::app) enum Surface {
+    Canvas,
+    MixPad,
 }
 
 /// M6: ビューの最大拡大率(テクセルが潰れない範囲の実用上限)
@@ -244,6 +269,22 @@ const EYEDROPPER_RADIUS: u32 = 3;
 const EYEDROPPER_MIN_PIGMENT: f32 = 0.005;
 /// 筆へのスポイトで拾う色の最小の割合。これ未満の色は落とす
 const EYEDROPPER_MIN_SHARE: f32 = 0.02;
+
+/// スポイトで拾う面の GpuCanvas
+fn surface_canvas(
+    resources: &egui_wgpu::CallbackResources,
+    surface: Surface,
+) -> Option<&GpuCanvas> {
+    match surface {
+        Surface::Canvas => resources.get::<GpuCanvas>(),
+        Surface::MixPad => resources.get::<MixCanvas>().map(|m| &m.0),
+    }
+}
+
+/// 混色皿の画面位置 → テクセル(皿は回転・拡大しない)
+pub(in crate::app) fn mixpad_texel(pos: egui::Pos2, rect: egui::Rect) -> egui::Vec2 {
+    (pos - rect.min) / rect.width().max(1.0) * MIX_CANVAS_SIZE as f32
+}
 
 impl PaintApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -305,11 +346,25 @@ impl PaintApp {
         // 書き込んでから挿す
         canvas.set_palette(&render_state.queue, &palette);
         canvas.set_brush(&render_state.queue, brush_refill);
-        render_state
-            .renderer
-            .write()
-            .callback_resources
-            .insert(canvas);
+        // 混色皿は本体と同じ筆のバッファを使う
+        let mut mix = GpuCanvas::with_brush(
+            &render_state.device,
+            &render_state.queue,
+            render_state.target_format,
+            dir.clone(),
+            MIX_CANVAS_SIZE,
+            Some(canvas.brush_buffer()),
+            false,
+        );
+        if let Err(e) = mix.rebuild_pipelines(&render_state.device) {
+            log::error!("混色皿の WGSL の初回ビルドに失敗: {e}");
+        }
+        mix.set_palette(&render_state.queue, &palette);
+        {
+            let resources = &mut render_state.renderer.write().callback_resources;
+            resources.insert(canvas);
+            resources.insert(MixCanvas(mix));
+        }
 
         let mut app = Self {
             render_state,
@@ -383,6 +438,9 @@ impl PaintApp {
             shot_watcher: ScreenshotWatcher::new(&screenshots_dir()),
             capture: None,
             dev_mode,
+            mixpad: MixPad::default(),
+            frame_ticks: 0,
+            frame_sim_steps: 0,
             has_painted: false,
         };
         if let Some(dir) = capture_dir {
@@ -397,14 +455,24 @@ impl PaintApp {
     /// 生成し直して callback_resources を差し替える(部分的な作り直しより単純で安全。
     /// 旧キャンバスは差し替えで drop され VRAM が返る)。現行パレット・SimParams は引き継ぐ
     fn recreate_canvas(&mut self, size: u32) {
-        // 筆の中身は旧キャンバスの GPU にあるので、確定させてから新キャンバスへ書き直す
+        // 筆の中身は旧キャンバスの GPU にあるので、確定させてから新キャンバスへ書き直す。
+        // 筆のバッファは混色皿と共有しているので、新キャンバスも同じバッファを使う
         self.sync_brush();
-        let mut canvas = GpuCanvas::new(
+        let brush_buffer = self
+            .render_state
+            .renderer
+            .read()
+            .callback_resources
+            .get::<GpuCanvas>()
+            .map(GpuCanvas::brush_buffer);
+        let mut canvas = GpuCanvas::with_brush(
             &self.render_state.device,
             &self.render_state.queue,
             self.render_state.target_format,
             self.shader_dir.clone(),
             size,
+            brush_buffer,
+            true,
         );
         self.shader_error = canvas.rebuild_pipelines(&self.render_state.device).err();
         // 新キャンバスは既定パレットで生成されるので、現行パレットを書き直して引き継ぐ
@@ -549,17 +617,37 @@ impl PaintApp {
 
     /// M5: 現行パレット(self.palette)を GPU へ反映する。色・ρ/ω/γ を編集したあとに呼ぶ。
     /// physics は即時に湿シミュへ効き、色は live パレット枠だけ更新される(乾燥済みは不変=M5c)
+    /// 混色皿も今のパレットで塗る(湿レイヤーと同じく、パレットを替えると皿の色も替わる)
     fn apply_palette(&mut self) {
         let mut renderer = self.render_state.renderer.write();
-        if let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() {
+        let resources = &mut renderer.callback_resources;
+        if let Some(canvas) = resources.get_mut::<GpuCanvas>() {
             canvas.set_palette(&self.render_state.queue, &self.palette);
+        }
+        if let Some(MixCanvas(mix)) = resources.get_mut::<MixCanvas>() {
+            mix.set_palette(&self.render_state.queue, &self.palette);
         }
     }
 
     fn rebuild_shaders(&mut self) {
         let mut renderer = self.render_state.renderer.write();
-        if let Some(canvas) = renderer.callback_resources.get_mut::<GpuCanvas>() {
+        let resources = &mut renderer.callback_resources;
+        if let Some(canvas) = resources.get_mut::<GpuCanvas>() {
             self.shader_error = canvas.rebuild_pipelines(&self.render_state.device).err();
+        }
+        // エラーは本体と同じ内容になるので、表示は本体のものだけにする
+        if let Some(MixCanvas(mix)) = resources.get_mut::<MixCanvas>()
+            && let Err(e) = mix.rebuild_pipelines(&self.render_state.device)
+        {
+            log::warn!("混色皿のシェーダーの再ビルドに失敗: {e}");
+        }
+    }
+
+    /// 混色皿を洗う(水も顔料もない白に戻す)
+    fn clear_mixpad(&mut self) {
+        let mut renderer = self.render_state.renderer.write();
+        if let Some(MixCanvas(mix)) = renderer.callback_resources.get_mut::<MixCanvas>() {
+            mix.clear(&self.render_state.device, &self.render_state.queue);
         }
     }
 
@@ -1064,11 +1152,11 @@ impl PaintApp {
     }
 
     /// スポイト待機中のクリック: 待機の種類に応じて筆かスロットへ拾う
-    fn pick(&mut self, target: Eyedropper, pos: egui::Pos2, rect: egui::Rect) {
+    fn pick(&mut self, target: Eyedropper, surface: Surface, pos: egui::Pos2, rect: egui::Rect) {
         match target {
-            Eyedropper::Brush => self.pick_to_brush(pos, rect),
+            Eyedropper::Brush => self.pick_to_brush(surface, pos, rect),
             Eyedropper::Slot => {
-                self.pick_to_slot(pos, rect);
+                self.pick_to_slot(surface, pos, rect);
                 // 「色をつくる」モーダルから来たので、拾った色を見られるよう開き直す
                 self.palette_ui.color_modal = true;
             }
@@ -1079,15 +1167,18 @@ impl PaintApp {
     /// 筆の顔料を捨ててその比で合計1回分を取る。水はその窓の紙の濡れ具合(水位 ÷ 満タン水位)まで
     /// 増やす(減らさない。乾きかけの所から拾えば今の水のまま)。パレットは変えない。
     /// 乾いた層は乾かした時点のパレットで記録されていて今の4スロットへ写せないので拾わない
-    fn pick_to_brush(&mut self, pos: egui::Pos2, rect: egui::Rect) {
-        let t = self.screen_to_texel(pos, rect);
-        let size = self.canvas_size as f32;
+    fn pick_to_brush(&mut self, surface: Surface, pos: egui::Pos2, rect: egui::Rect) {
+        let (t, size) = match surface {
+            Surface::Canvas => (self.screen_to_texel(pos, rect), self.canvas_size),
+            Surface::MixPad => (mixpad_texel(pos, rect), MIX_CANVAS_SIZE),
+        };
+        let size = size as f32;
         if !(0.0..size).contains(&t.x) || !(0.0..size).contains(&t.y) {
             return;
         }
         let read = {
             let renderer = self.render_state.renderer.read();
-            match renderer.callback_resources.get::<GpuCanvas>() {
+            match surface_canvas(&renderer.callback_resources, surface) {
                 Some(canvas) => canvas.read_wet_sample(
                     &self.render_state.device,
                     &self.render_state.queue,
@@ -1149,22 +1240,23 @@ impl PaintApp {
     /// 「色をつくる」のスポイト: カーソル下1px の表示色を拾い、選択中の顔料スロット(brush_channel)へ入れる。
     /// snapshot() の読み戻し(display と同じ発色)から該当テクセルの RGB を取り出す。
     /// 表示色なので「混ざってできた見た目の色」や乾いた層の色がそのまま顔料の基本色になる
-    fn pick_to_slot(&mut self, pos: egui::Pos2, rect: egui::Rect) {
+    fn pick_to_slot(&mut self, surface: Surface, pos: egui::Pos2, rect: egui::Rect) {
         // M6: snapshot を画面と同じビュー変換(パン/ズーム/回転)で焼くので、
         // 画面 uv でそのまま索引する(= カーソル下に見えている画素)。screen_to_texel は
         // キャンバステクセルなので拡大・回転時にはズレる(zoom=1・無回転でのみ一致)
-        let size = self.canvas_size;
+        let (size, view) = match surface {
+            Surface::Canvas => (self.canvas_size, self.view_uniform()),
+            Surface::MixPad => (MIX_CANVAS_SIZE, ViewUniform::default()),
+        };
         let su = (pos - rect.min) / rect.width().max(1.0);
         let x = ((su.x * size as f32) as i32).clamp(0, size as i32 - 1) as u32;
         let y = ((su.y * size as f32) as i32).clamp(0, size as i32 - 1) as u32;
         let data = {
             let renderer = self.render_state.renderer.read();
-            match renderer.callback_resources.get::<GpuCanvas>() {
-                Some(canvas) => canvas.snapshot(
-                    &self.render_state.device,
-                    &self.render_state.queue,
-                    &self.view_uniform(),
-                ),
+            match surface_canvas(&renderer.callback_resources, surface) {
+                Some(canvas) => {
+                    canvas.snapshot(&self.render_state.device, &self.render_state.queue, &view)
+                }
                 None => Err("キャンバスが初期化されていません".to_owned()),
             }
         };
@@ -1439,6 +1531,7 @@ impl PaintApp {
         // app 側の状態を復元。読込後は履歴を破棄する(退避テクスチャ・線画履歴は旧キャンバスのもの)
         self.params = file.params;
         self.palette = file.palette;
+        self.apply_palette();
         // 作品のパレットは保存済みパレット(assets/palettes)とは別物なので名前追跡をリセット
         // (残すと「変更あり」表示が旧パレット名基準で誤誘導する)
         self.palette_ui.store.name.clear();
@@ -1470,6 +1563,24 @@ impl PaintApp {
     /// 各セクションの実装は ui サブモジュール。先頭はアクティブレイヤーのツール群
     /// (active_tools_panel が選択中レイヤーで出し分ける)。レイヤー関連は右パネル
     /// (layer_stack_panel)へ分離した
+    /// フレーム頭: 時計を進めて、このフレームの刻み数とシミュレーションのステップ数を決める。
+    /// 本体のキャンバスと混色皿は同じ時間を進む
+    fn advance_clock(&mut self, ctx: &egui::Context) {
+        // 時間は固定刻み(1/60 秒)で数える。リフレッシュレートに依らず同じ実時間で同じだけ乾き、
+        // 記録再生も刻み単位なので別のモニタで再生しても同じテンポになる
+        let dt = ctx.input(|i| i.stable_dt);
+        let ticks = self.sim_clock.advance(dt);
+        self.frame_ticks = ticks;
+        // 腹から穂先へ補充する時間: 塗るフレームで前回からの経過をまとめて渡す
+        self.brush_clock.tick(ticks);
+        // H6: 一時停止中は 0 ステップ(1ステップボタンが押されていれば 1)
+        self.frame_sim_steps = if self.paused {
+            u32::from(std::mem::take(&mut self.step_once))
+        } else {
+            ticks * self.steps_per_tick
+        };
+    }
+
     fn tool_panel(&mut self, ui: &mut egui::Ui) {
         // 通常ユーザー向けは塗るツールだけ。作品保存・設定プリセット・PNG・新規/全消去は
         // 上部「ファイル」メニュー(file_menu)、表示(ズーム・回転)は右パネル最上段にある
@@ -1511,6 +1622,7 @@ impl eframe::App for PaintApp {
         }
         self.poll_video_export();
         self.pull_brush();
+        self.advance_clock(ui.ctx());
 
         // M4.5d/M6: 統一 Undo/Redo(Ctrl+Z / Ctrl+Shift+Z)。線画・水彩の両方を振り分ける
         self.handle_undo_shortcuts(ui.ctx());
