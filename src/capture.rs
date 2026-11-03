@@ -265,7 +265,12 @@ impl Capture {
             },
         );
         match canvas_png {
-            Ok(data) => save_png(&self.dir.join("canvas.png"), canvas_size, canvas_size, &data),
+            Ok(data) => save_png(
+                &self.dir.join("canvas.png"),
+                canvas_size,
+                canvas_size,
+                &data,
+            ),
             Err(e) => log::warn!("キャンバスの PNG を書き出せません: {e}"),
         }
         match work {
