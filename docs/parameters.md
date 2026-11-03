@@ -104,8 +104,9 @@ diffuse.wgsl の顔料の流束(per-channel、隣 n から自セルへ):
 | `WATER_DIFFUSE` | 0.15 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 水の毛細管拡散の速さ(per-iter 上限 0.2、×diffuse_iters)。置いた水が濡れた紙を伝って広がる(note/05) |
 | `WATER_GAMMA` | 2.0 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 水の毛細管の水依存カーブ: 流束の重み = max(両セル水量)^γ。max なのは乾きかけへ吸い込まれる向きを殺さないため |
 | `DIFFUSE_GAMMA` | 4.0 | [diffuse.wgsl](../assets/shaders/diffuse.wgsl) | 顔料の混ざりの水依存 γ: 拡散流束の重み = (水量平均)^γ。水たっぷり=自由に混ざる/引くと止まる |
-| `FOOTPRINT_RATIO` | 0.648 | [sim.rs](../crates/paint-core/src/sim.rs)(プレリュードで WGSL へ) | 筆跡1つの被覆の面積 ÷ πr²(coverage = 1 − smoothstep(0.6r, r, d) の円の積分)。CPU の「乾いた紙での減りの上限」の予測に使う |
-| `CROSS_RATIO` | 1.6 | [sim.rs](../crates/paint-core/src/sim.rs)(プレリュードで WGSL へ) | 筆跡1つの被覆を中心線に沿って積分した長さ ÷ r(= 1回なぞって濡れる帯の実効の幅 ÷ r)。穂先・腹の容量の式に使う |
+| `FOOTPRINT_RATIO` | 1.25 | [sim.rs](../crates/paint-core/src/sim.rs)(プレリュードで WGSL へ) | 塗る筆の 1 splat の触れ方 touch = clamp(r − d + 0.5, 0, 1) × min(1/√(1−(u/r)²), `CHORD_MAX`) を円で積分した面積 ÷ πr²(u = 進行方向と直交する中心線からの距離)。CPU の「乾いた紙での減りの上限」の予測に使う |
+| `CROSS_RATIO` | 2.0 | [sim.rs](../crates/paint-core/src/sim.rs)(プレリュードで WGSL へ) | 1回なぞって濡れる帯の幅 ÷ r(塗る筆は円の内側が一様に触れ、弦の補正で幅のどこでも同じだけ受け渡すので 2r)。穂先・腹の容量の式に使う |
+| `CHORD_MAX` | 3.0 | [sim.rs](../crates/paint-core/src/sim.rs)(プレリュードで WGSL へ) | 弦の補正の上限。筆跡の縁のセルほど 1 回なぞる間に触れる splat が少ない分(弦 ∝ √(1−(u/r)²))を 1 splat あたりに掛け戻す倍率が、縁で発散しないよう頭打ちにする |
 | `SAT_RATIO` | 4.3 | [sim.rs](../crates/paint-core/src/sim.rs)(プレリュードで WGSL へ) | 紙が満タンに濡れた水位 = `brush_water` × これ。満タンの筆で乾いた紙を1回なぞり、筆跡の幅の中で均された後の水位の計測値([memo](memo/2026-11-01-brush-exchange.md) §6) |
 | `SPLAT_SPACING` | 0.25 | [sim.rs](../crates/paint-core/src/sim.rs) | splat の間隔 = 実効半径 × これ(下限 0.25px。`SimParams::splat_spacing`)。ポインタ点の間の1区間でも、各地点の補間した筆圧の半径で間隔を決める(筆圧が大きく変わる払いの区間で、太い所に細い筆用の間隔で splat が詰まらない)。ライブ描画・記録の再生・ラスタ線画の履歴のストローク補間が使う。下限を 1px にすると細い線ほど1セルをなぞる回数が減り、紙が穂先の濡れ具合まで濡れきらず線だけ薄くなる |
 | `DEPOSIT_WET_FLOOR` | 0.1 | [transfer.wgsl](../assets/shaders/transfer.wgsl) | 水膜がある間(w ≥ DRY_POINT)の吸着倍率。0 にすると濡れている間は全く沈まない |

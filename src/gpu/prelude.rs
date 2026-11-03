@@ -54,7 +54,8 @@ pub fn shader_prelude(size: u32) -> String {
          const PIGMENT_MAX: f32 = {pigment_max:?};\n\
          const FOOTPRINT_RATIO: f32 = {footprint:?};\n\
          const CROSS_RATIO: f32 = {cross:?};\n\
-         const SAT_RATIO: f32 = {sat:?};\n",
+         const SAT_RATIO: f32 = {sat:?};\n\
+         const CHORD_MAX: f32 = {chord:?};\n",
         tiles = size / TILE_SIZE,
         order = MAX_LAYERS / 4,
         global = pigment::GLOBAL_LATENTS,
@@ -63,5 +64,6 @@ pub fn shader_prelude(size: u32) -> String {
         footprint = paint_core::sim::FOOTPRINT_RATIO,
         cross = paint_core::sim::CROSS_RATIO,
         sat = paint_core::sim::SAT_RATIO,
+        chord = paint_core::sim::CHORD_MAX,
     )
 }

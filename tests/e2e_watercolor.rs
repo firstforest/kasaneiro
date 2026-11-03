@@ -940,6 +940,56 @@ fn color_blends_over_dried_paint_but_not_onto_bare_paper() {
     );
 }
 
+/// 拭った筆でジグザグに往復しても、往復の縁どうしが触れ合う所が白い筋にならず、重ねた所は濃くなる。
+/// 縦の往復 x = 200 / 230 / 260(半径 16 なので縁が 2px 重なる)の後、同じストロークで横に戻って
+/// 縦の往復を横切る(y = 300)
+#[test]
+fn wiped_brush_zigzag_has_no_white_seams() {
+    let mut c = canvas();
+    let mut load = BrushLoad::standard(BLUE);
+    load.wipe(0.1);
+    let path = [
+        [200.0, 150.0],
+        [200.0, 350.0],
+        [230.0, 350.0],
+        [230.0, 150.0],
+        [260.0, 150.0],
+        [260.0, 350.0],
+        [260.0, 300.0],
+        [180.0, 300.0],
+    ];
+    let mut zigzag = stroke(WetTool::Paint, BLUE, path[0], path[1], 0);
+    for seg in path.windows(2).skip(1) {
+        let start = zigzag.points.last().unwrap().frame;
+        let next = stroke(WetTool::Paint, BLUE, seg[0], seg[1], start);
+        zigzag.points.extend(next.points.into_iter().skip(1));
+    }
+    zigzag.load = Some(load);
+    c.play(recording(vec![zigzag]));
+    c.idle(240);
+    let img = c.snapshot().unwrap();
+    let png = save(&img, "wiped_brush_zigzag");
+
+    // y = 180..220(横切る前の所)の帯で、往復の中心と、往復の境目(x = 215 / 245)の明度
+    let band = |x: u32| lightness(img.mean_rgb(x - 1, 180, x + 2, 220));
+    let centers = [band(200), band(230), band(260)];
+    let seams = [band(215), band(245)];
+    let lightest_center = centers.iter().copied().fold(0.0f32, f32::max);
+    let single = lightness(img.mean_rgb(227, 180, 234, 220));
+    let crossed = lightness(img.mean_rgb(227, 296, 234, 304));
+    let ctx = format!(
+        "{}\n往復の中心 {centers:?} / 境目 {seams:?} / 1回だけ {single:.3} / 横切った所 {crossed:.3}",
+        png.display()
+    );
+    for seam in seams {
+        assert!(
+            seam < lightest_center + 0.01,
+            "往復の境目が白い筋になっている\n{ctx}"
+        );
+    }
+    assert!(crossed < single - 0.01, "重ねた所が濃くなっていない\n{ctx}");
+}
+
 /// 拭った筆(水だけ減らして顔料は残す)は紙をあまり濡らさないので、乾いた紙に引いた線が筆幅いっぱいへ
 /// 広がらない。置く顔料の量は満タンの筆とほぼ同じなので、線の芯は同じくらいの濃さで乗り、
 /// 少ない水が1歩ごとの濡れ縁へ寄って粒の列にもならない(芯の明度の、15px 移動平均からの揺れを見る)

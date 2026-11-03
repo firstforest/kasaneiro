@@ -80,6 +80,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let dist = distance(p, s.pos);
         // 中心は満量、縁にかけて柔らかく減衰
         let coverage = 1.0 - smoothstep(radius * 0.6, radius, dist);
+        // 塗る筆の穂先が紙に触れる範囲: 円の内側は一様に触れ、端の 1px だけで切れる。
+        // 柔らかい減衰(coverage)で受け渡すと、水の少ない筆では縁の外側 4 割が薄いまま均されず、
+        // 往復の縁どうしが触れ合う所が白い筋になる
+        let contact = clamp(radius - dist + 0.5, 0.0, 1.0);
+        // 筆跡の縁のセルほど弦が短く、1回なぞる間に触れる splat の数が中心の √(1−(u/r)²) 倍しかない
+        // (u = 進行方向と直交する向きの、中心線からの距離)。その分を 1 splat あたりに掛け戻し、
+        // 筆跡の幅のどこでも 1 回なぞった受け渡しの合計を同じにする(掛けないと、水の少ない筆では縁が
+        // 濡れきらないまま固まり、往復の縁どうしが並んだ所が白い筋になる)。縁で発散するので CHORD_MAX で頭打ち。
+        // 止まっている splat(ストローク始点・置いたまま)は向きがないので掛けない
+        let rel = p - s.pos;
+        let lateral = abs(rel.x * s.vel.y - rel.y * s.vel.x);
+        let chord = inverseSqrt(max(1.0 - lateral * lateral / (radius * radius), 1e-4));
+        let touch = contact * select(1.0, min(chord, CHORD_MAX), dot(s.vel, s.vel) > 0.5);
 
         if (params.tool == 2u) {
             // 消去: 中心ほど強く水・顔料・速度を削り、芯(coverage≈1)は紙の白まで戻す
@@ -133,7 +146,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         } else {
             // 描画(既定): 穂先と紙が濡れ具合の差で水を受け渡す。濡れ具合は穂先が s_b = 穂先の水(1 = 満タン)、
             // 紙が s_p = 水位 ÷ 満タン水位(w_sat = brush_water × SAT_RATIO)。1 splat で動く水は
-            // f = brush_exchange × coverage × 筆圧 × (s_b − s_p) × w_sat。
+            // f = brush_exchange × touch × 筆圧 × (s_b − s_p) × w_sat。
             // 穂先の水は s.scale(フレーム内で穂先が最も減った場合の残りの予測。CPU の BrushFrame::drag)を
             // 掛けた値を使うので、フレームの中で穂先に残っている以上を出すことはない。
             // 筆の中で混ざった色はそのまま4スロットへ同時に出る。紙の上で色が分かれるのは
@@ -148,8 +161,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             let s_b = max(brush.tip_water * s.scale, 0.0);
             let empty = s_b <= 0.0;
             let w_sat = params.brush_water * SAT_RATIO;
-            if (w_sat > 0.0 && coverage > 0.0) {
-                let rate = clamp(params.brush_exchange * coverage * mix(1.0, press, params.pressure_water), 0.0, 1.0);
+            if (w_sat > 0.0 && contact > 0.0) {
+                let rate = clamp(params.brush_exchange * touch * mix(1.0, press, params.pressure_water), 0.0, 1.0);
                 let f = rate * (s_b - water / w_sat) * w_sat;
                 if (f > 0.0) {
                     // 穂先 → 紙: 顔料は穂先の濃さ(顔料 ÷ 水を紙の単位へ直したもの)で一緒に出る。

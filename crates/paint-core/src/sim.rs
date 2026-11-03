@@ -34,11 +34,17 @@ pub const MAX_SPLATS: usize = 8192;
 /// ストロークに splat を置く間隔 = 筆圧を反映した実効半径 × これ(下限 1px)
 pub const SPLAT_SPACING: f32 = 0.25;
 
-/// 筆跡1つの被覆(coverage = 1 − smoothstep(0.6r, r, d)、splat.wgsl)を円で積分した面積 ÷ πr²
-pub const FOOTPRINT_RATIO: f32 = 0.648;
+/// 弦の補正の上限: 塗る筆の受け渡しは、筆跡の縁のセルほど 1 回なぞる間に触れる splat が少ない
+/// (弦の長さ ∝ √(1−(u/r)²)、u = 中心線からの距離)分を 1 splat あたりに掛け戻す
+/// (touch = contact ÷ √(1−(u/r)²)、splat.wgsl)。縁で発散するのでここで頭打ち
+pub const CHORD_MAX: f32 = 3.0;
 
-/// 筆跡1つの被覆を中心を通る直線に沿って積分した長さ ÷ r(= 1回なぞって濡れる帯の実効の幅 ÷ r)
-pub const CROSS_RATIO: f32 = 1.6;
+/// 塗る筆の 1 splat の触れ方(touch = clamp(r − d + 0.5, 0, 1) × min(1/√(1−(u/r)²), CHORD_MAX))を
+/// 円で積分した面積 ÷ πr²(進んでいる splat の値。止まっている splat は 1.0)
+pub const FOOTPRINT_RATIO: f32 = 1.25;
+
+/// 塗る筆の穂先が触れる範囲を中心を通る直線に沿って積分した長さ ÷ r(= 1回なぞって濡れる帯の幅 ÷ r)
+pub const CROSS_RATIO: f32 = 2.0;
 
 /// 紙が満タンに濡れた水位 = brush_water × これ。満タンの筆で乾いた紙を1回なぞり、
 /// 筆跡の幅の中で均された後の水位の計測値(docs/memo/2026-11-01-brush-exchange.md §6)
