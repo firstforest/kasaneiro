@@ -2,11 +2,20 @@
 //!
 //! display と同じシェーダーをスナップショット用フォーマットでオフスクリーンに焼き、
 //! テクスチャ → バッファ → map で RGBA8 の Vec に読み戻す。スポイト用に湿レイヤーの顔料を
-//! 小さな窓だけ読み戻す [`GpuCanvas::read_wet_pigment`] もここに置く。作品保存の読み戻しは persist.rs に別にある。
+//! 小さな窓だけ読み戻す [`GpuCanvas::read_wet_sample`] もここに置く。作品保存の読み戻しは persist.rs に別にある。
 
 use super::{GpuCanvas, ViewUniform};
 use eframe::egui_wgpu::wgpu;
 use std::sync::atomic::Ordering;
+
+/// スポイトが窓の平均で読む湿レイヤーの中身
+#[derive(Clone, Copy, Debug)]
+pub struct WetSample {
+    /// 浮遊 + 沈着顔料(4スロット)の1テクセルあたり平均
+    pub pigment: [f32; 4],
+    /// 水位の1テクセルあたり平均
+    pub water: f32,
+}
 
 impl GpuCanvas {
     /// 現在のキャンバス表示を RGBA8(行連続、size²)で読み戻す(H6 PNG スナップショット)。
@@ -66,16 +75,16 @@ impl GpuCanvas {
     }
 
     /// スポイト: キャンバステクセル (x, y) を中心とする (2·radius+1)² の窓で、湿レイヤーの
-    /// 浮遊 + 沈着顔料(4スロット)の1テクセルあたり平均を読み戻す。窓はキャンバス内に切り詰める。
+    /// 浮遊 + 沈着顔料(4スロット)と水位の1テクセルあたり平均を読み戻す。窓はキャンバス内に切り詰める。
     /// GPU 完了を同期で待つ(クリック1回の操作なので 1 フレームの停止は許容)
-    pub fn read_wet_pigment(
+    pub fn read_wet_sample(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         x: u32,
         y: u32,
         radius: u32,
-    ) -> Result<[f32; 4], String> {
+    ) -> Result<WetSample, String> {
         const TEXEL: u32 = 16; // rgba32float
         let x0 = x.min(self.size - 1).saturating_sub(radius);
         let y0 = y.min(self.size - 1).saturating_sub(radius);
@@ -85,15 +94,15 @@ impl GpuCanvas {
         let kind_bytes = (row * h) as u64;
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("eyedropper_readback"),
-            size: kind_bytes * 2,
+            size: kind_bytes * 3,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("eyedropper_encoder"),
         });
-        // [水, 浮遊, 沈着] のうち浮遊(1)と沈着(2)
-        for (i, kind) in [1usize, 2].into_iter().enumerate() {
+        // [水(r = 水位), 浮遊, 沈着] の3種類
+        for (i, kind) in [0usize, 1, 2].into_iter().enumerate() {
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.textures[kind][self.current],
@@ -135,14 +144,19 @@ impl GpuCanvas {
         let data = slice.get_mapped_range();
         let floats: &[f32] = bytemuck::cast_slice(&data);
         let mut sum = [0.0f32; 4];
+        let mut water = 0.0f32;
         let row_floats = (row / 4) as usize;
-        for k in 0..2 {
+        for k in 0..3 {
             let base = (kind_bytes / 4) as usize * k;
             for yy in 0..h as usize {
                 for xx in 0..w as usize {
                     let at = base + yy * row_floats + xx * 4;
-                    for (c, s) in sum.iter_mut().enumerate() {
-                        *s += floats[at + c];
+                    if k == 0 {
+                        water += floats[at];
+                    } else {
+                        for (c, s) in sum.iter_mut().enumerate() {
+                            *s += floats[at + c];
+                        }
                     }
                 }
             }
@@ -150,7 +164,10 @@ impl GpuCanvas {
         drop(data);
         buffer.unmap();
         let n = (w * h) as f32;
-        Ok(sum.map(|s| s / n))
+        Ok(WetSample {
+            pigment: sum.map(|s| s / n),
+            water: water / n,
+        })
     }
 
     /// display と同じシェーダーでオフスクリーン(snapshot_texture)に1回描く。読み戻しはしない。

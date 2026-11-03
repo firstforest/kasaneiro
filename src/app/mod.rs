@@ -1076,7 +1076,8 @@ impl PaintApp {
     }
 
     /// 筆へのスポイト: カーソル下の湿レイヤーの顔料構成(浮遊 + 沈着、小さな窓の平均)を拾い、
-    /// 筆の顔料を捨ててその比で合計1回分を取る(水は色スウォッチと同じく変えない)。パレットは変えない。
+    /// 筆の顔料を捨ててその比で合計1回分を取る。水はその窓の紙の濡れ具合(水位 ÷ 満タン水位)まで
+    /// 増やす(減らさない。乾きかけの所から拾えば今の水のまま)。パレットは変えない。
     /// 乾いた層は乾かした時点のパレットで記録されていて今の4スロットへ写せないので拾わない
     fn pick_to_brush(&mut self, pos: egui::Pos2, rect: egui::Rect) {
         let t = self.screen_to_texel(pos, rect);
@@ -1087,7 +1088,7 @@ impl PaintApp {
         let read = {
             let renderer = self.render_state.renderer.read();
             match renderer.callback_resources.get::<GpuCanvas>() {
-                Some(canvas) => canvas.read_wet_pigment(
+                Some(canvas) => canvas.read_wet_sample(
                     &self.render_state.device,
                     &self.render_state.queue,
                     t.x as u32,
@@ -1097,13 +1098,15 @@ impl PaintApp {
                 None => Err("キャンバスが初期化されていません".to_owned()),
             }
         };
-        let mut amounts = match read {
+        let sample = match read {
             Ok(a) => a,
             Err(e) => {
                 self.status_msg = Some(e);
                 return;
             }
         };
+        let mut amounts = sample.pigment;
+        let wetness = self.params.paper_wetness(sample.water);
         let total: f32 = amounts.iter().sum();
         if total < EYEDROPPER_MIN_PIGMENT {
             self.status_msg = Some(
@@ -1121,6 +1124,7 @@ impl PaintApp {
         self.edit_brush(|b| {
             b.clear_pigment();
             b.take_mix(amounts, paint_core::load::TAKE_DOSE);
+            b.fill_water_to(wetness);
         });
         self.after_brush_take();
         // 「色をつくる」の対象は拾った中で一番多い色にする

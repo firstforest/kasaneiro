@@ -185,18 +185,19 @@ fn brush_load_controls_density() {
     );
 }
 
-/// 色スウォッチの押下は持ち替え(筆の顔料を捨ててその色だけにする)、Shift+押下は今の色に足す(筆の中で混ざる)。
-/// 黄 → 青と押した筆の線は青のまま、そこへ Shift+黄を足した筆の線は緑寄りになる
+/// 色スウォッチの押下は今の色に足す(筆の中で混ざる)、Shift+押下は持ち替え(筆の顔料を捨ててその色だけにする)。
+/// 黄 → Shift+青と押した筆の線は青のまま、そこへ黄を足した筆の線は緑寄りになる
 #[test]
-fn swatch_switches_color_and_shift_mixes() {
+fn swatch_mixes_and_shift_switches() {
     let mut harness = app();
+    harness.get_by_label("水").click();
     harness.get_by_label_contains("塗る色 1:").click(); // ハンザイエロー
-    harness.get_by_label_contains("塗る色 2:").click(); // フタロブルー
+    harness
+        .get_by_label_contains("塗る色 2:")
+        .click_modifiers(egui::Modifiers::SHIFT); // フタロブルーに持ち替え
     frames(&mut harness, 2);
     mouse_drag(&mut harness, 0.2, 0.8, 0.3);
-    harness
-        .get_by_label_contains("塗る色 1:")
-        .click_modifiers(egui::Modifiers::SHIFT);
+    harness.get_by_label_contains("塗る色 1:").click(); // 黄を足す
     frames(&mut harness, 2);
     mouse_drag(&mut harness, 0.2, 0.8, 0.7);
     frames(&mut harness, 60);
@@ -212,19 +213,17 @@ fn swatch_switches_color_and_shift_mixes() {
     );
     assert!(
         mixed.0 < switched.0 - 15.0 && mixed.1 > 0.15,
-        "Shift で足した黄が混ざっていない: {ctx}"
+        "足した黄が混ざっていない: {ctx}"
     );
 }
 
 /// スポイトは筆に顔料を取る: 黄+青で塗った緑の所を拾うと、洗った筆が同じ緑で塗れる。
-/// パレットは変わらない(拾った後に押した黄スウォッチの線は黄のまま)
+/// パレットは変わらない(拾った後に Shift で持ち替えた黄スウォッチの線は黄のまま)
 #[test]
 fn eyedropper_copies_pigment_to_brush() {
     let mut harness = app();
     harness.get_by_label_contains("塗る色 1:").click(); // ハンザイエロー
-    harness
-        .get_by_label_contains("塗る色 2:")
-        .click_modifiers(egui::Modifiers::SHIFT); // フタロブルーを足す
+    harness.get_by_label_contains("塗る色 2:").click(); // フタロブルーを足す
     frames(&mut harness, 2);
     mouse_drag(&mut harness, 0.2, 0.8, 0.2);
     frames(&mut harness, 30);
@@ -246,7 +245,9 @@ fn eyedropper_copies_pigment_to_brush() {
     frames(&mut harness, 2);
     mouse_drag(&mut harness, 0.2, 0.8, 0.5);
 
-    harness.get_by_label_contains("塗る色 1:").click();
+    harness
+        .get_by_label_contains("塗る色 1:")
+        .click_modifiers(egui::Modifiers::SHIFT);
     frames(&mut harness, 2);
     mouse_drag(&mut harness, 0.2, 0.8, 0.8);
     frames(&mut harness, 60);

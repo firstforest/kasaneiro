@@ -10,12 +10,13 @@
 //! 読み戻した中身を表示と次の操作の起点に使う。
 //!
 //! 中身を変えるのはツールバーのスウォッチとスポイト:
-//! - 色: 押した瞬間に顔料を捨ててその色を1回分(Shift なら捨てずに足す)、押している間も少しずつ足す(濃くなる)。
+//! - 色: 押した瞬間にその色を1回分足す(筆の中で混ざる。Shift なら顔料を捨ててから取る持ち替え)、押している間も少しずつ足す(濃くなる)。
 //!   水は変えない(水の量は水と拭うで決める)。水が TAKE_MIN_WATER より少なければそこまでは入れる
 //! - 水: 押した瞬間に顔料を半分、押している間も水と入れ替わって抜けていく(薄くなる・洗える)
 //! - 拭う: 押した瞬間に水を半分、押している間も水だけ抜けていく(顔料は残るので濃く、紙を濡らす量が減る)
 //! - 洗う: 水も顔料も 0(空の筆。紙に何も置かず、濡れた所では色水を吸う)。続けて水に浸せば水だけの筆になる
-//! - スポイト: 顔料を捨ててから、拾った点の湿レイヤーの顔料構成の比で合計1回分を取る([`BrushLoad::take_mix`])。水は色と同じ扱い
+//! - スポイト: 顔料を捨ててから、拾った点の湿レイヤーの顔料構成の比で合計1回分を取る([`BrushLoad::take_mix`])。
+//!   水は拾った所の紙の濡れ具合まで増やす([`BrushLoad::fill_water_to`])
 //!
 //! 筆は穂先(紙と受け渡す。小さい)と腹(穂先へ水を送る。大きい)の2室。乾いた紙に描くと穂先から出て、
 //! 腹が補充するので全体が減っていく(腹 `brush_hold` px で半分)。出るときは穂先の濃さのまま出るので濃さは
@@ -214,6 +215,12 @@ impl BrushLoad {
         let total = amount.max(0.0);
         let add = ratio.map(|r| total * r.max(0.0) / sum);
         self.each(|c| c.add_pigment(add));
+    }
+
+    /// 水を level(0〜1)まで増やす。すでに多ければそのまま
+    pub fn fill_water_to(&mut self, level: f32) {
+        let level = level.clamp(0.0, 1.0);
+        self.each(|c| c.water = c.water.max(level));
     }
 
     /// 顔料だけを捨てる(水は残す)。色を持ち替えるときに使う
@@ -421,6 +428,21 @@ mod tests {
         picked.take_mix([1.0, 1.0, 0.0, 0.0], TAKE_DOSE);
         assert_eq!(picked.water, TAKE_MIN_WATER);
         assert_eq!(picked.pigment, [0.5, 0.5, 0.0, 0.0]);
+    }
+
+    /// 水を増やすだけで減らさない(スポイトが拾った所の濡れ具合に使う)
+    #[test]
+    fn fill_water_only_raises() {
+        let mut load = BrushLoad::standard(0);
+        load.wipe(WIPE_KEEP);
+        load.fill_water_to(0.8);
+        assert_eq!(load.water, 0.8);
+        assert_eq!(load.tip().water, 0.8);
+        load.fill_water_to(0.3);
+        assert_eq!(load.water, 0.8);
+        load.fill_water_to(2.0);
+        assert_eq!(load.water, 1.0);
+        assert_eq!(load.pigment, [1.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]

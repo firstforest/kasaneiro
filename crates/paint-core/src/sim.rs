@@ -308,6 +308,15 @@ impl SimParams {
         }
     }
 
+    /// 紙の濡れ具合(0〜1) = 水位 ÷ 満タン水位(brush_water × SAT_RATIO)。splat.wgsl の s_p と同じ式
+    pub fn paper_wetness(&self, water: f32) -> f32 {
+        let w_sat = self.brush_water * SAT_RATIO;
+        if w_sat <= 0.0 {
+            return 0.0;
+        }
+        (water / w_sat).clamp(0.0, 1.0)
+    }
+
     /// 水ブラシの実効半径
     pub fn radius_at(&self, pressure: f32) -> f32 {
         self.radius_at_base(self.brush_radius, pressure)

@@ -63,8 +63,8 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 │  │  ├─ init.rs          GpuCanvas::new(テクスチャ・バッファ・bind group の生成)
 │  │  ├─ callback.rs      CanvasCallback(egui の prepare / paint)と encode_frame(パス実行順の正典)
 │  │  ├─ brush.rs         GpuBrush(塗る筆の中身の GPU バッファ・受け渡しの集計・CPU への非同期読み戻しと完了待ち)
-│  │  ├─ snapshot.rs      snapshot(PNG・「色をつくる」のスポイト用の読み戻し)/ read_wet_pigment(筆へのスポイト用に
-│  │  │                   湿レイヤーの浮遊+沈着を小さな窓で読み戻す)/ render_offscreen(表示の計測用)
+│  │  ├─ snapshot.rs      snapshot(PNG・「色をつくる」のスポイト用の読み戻し)/ read_wet_sample(筆へのスポイト用に
+│  │  │                   湿レイヤーの水位と浮遊+沈着を小さな窓で読み戻す)/ render_offscreen(表示の計測用)
 │  │  ├─ persist.rs       export_state / import_state(作品保存の GPU 読み戻し / 書き戻し)/
 │  │  │                   pingpong_mismatch(ping-pong の2枚の食い違いを数える検査用)
 │  │  ├─ prelude.rs       Rust と WGSL で共有する定数と、それを WGSL の const にする shader_prelude
