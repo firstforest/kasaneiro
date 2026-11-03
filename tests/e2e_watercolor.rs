@@ -62,14 +62,23 @@ fn wet_on_wet_blends_into_green_gradient() {
         }),
         "境界に緑が出ていない(混ざっていない)\n{ctx}"
     );
-    // 境目がくっきり分かれず、色相が少しずつ移る(隣の行との差が小さい)
-    let max_jump = rows
+    // 境目がくっきり分かれず、色が少しずつ移る: 隣の行どうしの色の差が、上端(黄)から
+    // 下端(青)までの色の差の一部にとどまる。境目は淡く彩度が低いので、色相の角度ではなく
+    // RGB の距離で見る(灰色に近い所では色相がわずかな色の揺れで大きく振れる)
+    let dist = |a: [f32; 3], b: [f32; 3]| {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    };
+    let total = dist(rows.first().unwrap().1, rows.last().unwrap().1);
+    let max_step = rows
         .windows(2)
-        .map(|w| (hsv(w[1].1).0 - hsv(w[0].1).0).abs())
+        .map(|w| dist(w[0].1, w[1].1))
         .fold(0.0f32, f32::max);
+    let ratio = max_step / total;
+    eprintln!("隣の行の色の差の最大 / 黄→青の差 = {ratio:.3}");
     assert!(
-        max_jump < 45.0,
-        "色相が段差で切り替わっている(最大 {max_jump:.0}°)\n{ctx}"
+        ratio < 0.35,
+        "色が段差で切り替わっている(隣の行の差が黄→青の差の {:.0}%)\n{ctx}",
+        ratio * 100.0
     );
     // 境界が紙の白で途切れていない
     let gap = rows
