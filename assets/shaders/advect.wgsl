@@ -18,34 +18,61 @@
 // アクティブタイル(M6): タイルの状態(TILE_COLD / TILE_COPY / TILE_ACTIVE。tiledilate.wgsl 参照)
 @group(0) @binding(11) var<storage, read> tile_active: array<u32>;
 
-// バイリニア補間と、補間に使った4タップの最小・最大(MacCormack のリミッタ用)
+// 濡れたタップだけのバイリニア補間(水と浮遊顔料を同じタップ・同じ重みで)と、そのタップの最小・最大
+// (MacCormack のリミッタ用)。乾いたセルは水も浮遊顔料も 0 なので、混ぜると取り込んだ分だけ水と色が
+// 消える(質量が保存されない)。乾いた紙に囲まれた所(塗り跡の切れ込みの先端など)では毎ステップ消え続けて
+// 色が抜け、光る点になるので、乾いたタップは重みから外して濡れたタップで割り直す。
+// 濡れたタップが無ければ ok = false
 struct Bilinear {
-    v: vec4f,
-    lo: vec4f,
-    hi: vec4f,
+    water: vec4f,
+    susp: vec4f,
+    water_lo: vec4f,
+    water_hi: vec4f,
+    susp_lo: vec4f,
+    susp_hi: vec4f,
+    ok: bool,
 }
 
-fn bilinear_mm(t: texture_2d<f32>, p: vec2f) -> Bilinear {
+fn bilinear_wet(p: vec2f) -> Bilinear {
     let q = p - 0.5;
     let base = floor(q);
     let f = q - base;
     let i = vec2i(base);
-    let c00 = load_clamped(t, i);
-    let c10 = load_clamped(t, i + vec2i(1, 0));
-    let c01 = load_clamped(t, i + vec2i(0, 1));
-    let c11 = load_clamped(t, i + vec2i(1, 1));
-    return Bilinear(
-        mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y),
-        min(min(c00, c10), min(c01, c11)),
-        max(max(c00, c10), max(c01, c11)),
-    );
+    let offs = array<vec2i, 4>(vec2i(0, 0), vec2i(1, 0), vec2i(0, 1), vec2i(1, 1));
+    let wts = array<f32, 4>((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+    var b = Bilinear(vec4f(0.0), vec4f(0.0), vec4f(3.4e38), vec4f(-3.4e38), vec4f(3.4e38), vec4f(-3.4e38), false);
+    var wsum = 0.0;
+    for (var k = 0; k < 4; k++) {
+        let j = i + offs[k];
+        let w = load_clamped(src_water, j);
+        if (!is_wet(w)) {
+            continue;
+        }
+        let c = load_clamped(src_susp, j);
+        b.water += wts[k] * w;
+        b.susp += wts[k] * c;
+        wsum += wts[k];
+        b.water_lo = min(b.water_lo, w);
+        b.water_hi = max(b.water_hi, w);
+        b.susp_lo = min(b.susp_lo, c);
+        b.susp_hi = max(b.susp_hi, c);
+    }
+    if (wsum > 1e-6) {
+        b.water /= wsum;
+        b.susp /= wsum;
+        b.ok = true;
+    }
+    return b;
 }
 
 // 格子点 j の前進移流の値 φ̂_j = bilinear(src, p_j − dt·v_j)。乾いたセルは速度 0 なので自セル値
 fn forward_at(j: vec2i) -> array<vec4f, 2> {
-    let v = load_clamped(src_water, j).gb;
-    let back = vec2f(j) + 0.5 - params.dt * v;
-    return array<vec4f, 2>(load_bilinear(src_water, back), load_bilinear(src_susp, back));
+    let own = load_clamped(src_water, j);
+    let b = bilinear_wet(vec2f(j) + 0.5 - params.dt * own.gb);
+    if (!b.ok) {
+        return array<vec4f, 2>(own, load_clamped(src_susp, j));
+    }
+    return array<vec4f, 2>(b.water, b.susp);
 }
 
 @compute @workgroup_size(8, 8)
@@ -72,9 +99,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // 沈着顔料は移流しない(素通し。ping-pong のため必ず書く)
     textureStore(dst_dep, ip, textureLoad(src_dep, ip, 0));
 
-    // 乾いたセルは素通し(wet-area mask)。splat が水・顔料と同時にマスクを立てるため
-    // 乾いたセルの水量・浮遊顔料は常に 0 で、濡れたセルのバックトレースが乾いた領域を
-    // サンプルしても水や色は湧かない(薄まるだけ)
+    // 乾いたセルは素通し(wet-area mask)。濡れたセルのバックトレースは乾いたタップを使わない(bilinear_wet)
     if (!is_wet(cell)) {
         textureStore(dst_water, ip, cell);
         textureStore(dst_susp, ip, textureLoad(src_susp, ip, 0));
@@ -84,10 +109,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // 自セルの速度で遡って(backtrace)水量・速度・浮遊顔料を取り直す(φ̂)
     let pos = vec2f(f32(gid.x) + 0.5, f32(gid.y) + 0.5);
     let back = pos - params.dt * cell.gb;
-    let fw = bilinear_mm(src_water, back);
-    let fs = bilinear_mm(src_susp, back);
-    var s = fw.v;
-    var susp = fs.v;
+    var b = bilinear_wet(back);
+    if (!b.ok) {
+        // 遡った先が乾いた所だけ: 自セルの値のまま
+        let own_s = textureLoad(src_susp, ip, 0);
+        b = Bilinear(cell, own_s, cell, cell, own_s, own_s, true);
+    }
+    var s = b.water;
+    var susp = b.susp;
 
     // MacCormack: φ̂ を逆向きに dt 進めた φ̃ と元の φ の差が往復の誤差なので、その半分を戻す。
     // φ̂ の格子値は x + dt·v を囲む4格子点でその場で前進移流して求める(1パスで完結させるため)。
@@ -104,11 +133,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let tw = mix(mix(a00[0], a10[0], f.x), mix(a01[0], a11[0], f.x), f.y);
         let ts = mix(mix(a00[1], a10[1], f.x), mix(a01[1], a11[1], f.x), f.y);
         let src_s = textureLoad(src_susp, ip, 0);
-        let cw = clamp(fw.v + 0.5 * (cell - tw), fw.lo, fw.hi);
-        let cs = clamp(fs.v + 0.5 * (src_s - ts), fs.lo, fs.hi);
+        let cw = clamp(b.water + 0.5 * (cell - tw), b.water_lo, b.water_hi);
+        let cs = clamp(b.susp + 0.5 * (src_s - ts), b.susp_lo, b.susp_hi);
         let k = clamp(params.advect_sharp, 0.0, 1.0);
-        s = mix(fw.v, cw, k);
-        susp = mix(fs.v, cs, k);
+        s = mix(b.water, cw, k);
+        susp = mix(b.susp, cs, k);
     }
 
     // 水量・顔料は非負クランプ。a(濡れマスク)は移流させず自セルの値を保持(場に固定のため)

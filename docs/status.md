@@ -45,7 +45,7 @@
 | 設定プリセット | `assets/presets/*.json`(git 管理) | SimParams の JSON。`#[serde(default)]` で足したパラメータは既定値で埋まる |
 | パレット(4色一式) | `assets/palettes/*.json`(git 管理) | `pigment::Palette`。同梱 4件(`default` は `default_palette()` と同値=テストで検査) |
 | 色ライブラリ | `assets/pigments/*.json`(git 管理) | `pigment::Pigment` 1個 = 1ファイル、保存名 = 顔料名。同梱 24色 |
-| ストローク記録 | `assets/strokes/*.json`(git 管理) | 生ポインタ入力+記録時パレット(`StoredRecording`)。同梱 [two-color-adjacent.json](../assets/strokes/two-color-adjacent.json) |
+| ストローク記録 | `assets/strokes/*.json`(git 管理) | 生ポインタ入力+記録時パレット(`StoredRecording`)。同梱 [two-color-adjacent.json](../assets/strokes/two-color-adjacent.json)・[washed-brush-over-dense.json](../assets/strokes/washed-brush-over-dense.json)・[dark-pool-notches.json](../assets/strokes/dark-pool-notches.json)(e2e の再現用) |
 | PNG 書き出し | `snapshots/`(git 管理外) | キャンバス全体・無回転で焼く。ファイル名はタイムスタンプ+プリセット名 |
 | リプレイ動画 | `videos/`(git 管理外) | 保存済みストローク記録を裏で再生した MP4(H.264・60fps・キャンバス全体・無回転)。ファイル名はタイムスタンプ+ストローク名。外部の ffmpeg を使う([src/video.rs](../src/video.rs)) |
 | 解析用キャプチャ | `target/capture/<日時>/`(起動した checkout の target。git 管理外) | `--capture` 付きで起動したときだけ。`log.txt`(標準エラーと同じログ。キャプチャ中は自前クレートを debug まで。ストローク開始・終了と筆の中身、ツール・パラメータ(止まってから差分をまとめて)・乾燥操作・ステータス表示の変化を、記録の刻み番号付きで)・`strokes.json`(起動直後からの全ストローク。`StoredRecording`)・`params_start.json` / `params_end.json`・`session.json`(終了までの刻み数・キャンバスの大きさ)・終了時の `ui.png`(画面全体)/ `canvas.png` / `work.kasane`(作品ファイル)。閉じる要求を一度止めて書き出し、UI スクショが届いてから閉じる(60 フレーム待って届かなければそのまま閉じる)。[tests/capture_replay.rs](../tests/capture_replay.rs)(ignored、`mise run replay:capture`)がいちばん新しいキャプチャ(`KASANEIRO_CAPTURE` があればそれ)を headless 再生して `replay.png` を書く |
@@ -93,6 +93,11 @@
 ### 1.6 要目視確認
 
 変更で目視確認が要るものが出たら、ここに日付つきのまとまりで足し、確かめたら消す。
+
+**切れ込みの先端の光る点(2026-11-03)**
+
+- 濡れた溜まりに別の色を重ねたとき、塗り跡に乾いた紙の切れ込みが残った所の先端が、周りより明るく光らないか
+- 移流が水と色を失わなくなったので、にじみ・ぼかしの広がり方や、溜まりの縁の色の残り方が変わって見えないか
 
 **拭う(水の少ない筆)(2026-11-03)**
 

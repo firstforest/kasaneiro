@@ -703,6 +703,64 @@ fn washed_brush_lifts_wet_paint() {
     );
 }
 
+/// 濃い色の溜まりに乾いた紙の切れ込みが残っても、切れ込みの先端が光る点(周りより明るい円)にならない。
+/// 記録 assets/strokes/dark-pool-notches.json = ユーザーが3色を何本も重ねて塗った溜まり(--capture の記録)。
+/// 流れを遡った先に乾いたセルが混じると、水も色もない値を取り込んで色が消えていた(advect.wgsl)。
+/// 光る場所は流れのわずかな違いで移るので、決まった座標ではなく、塗りの内側(紙の地から 5px 以上離れた所)の
+/// すべての画素で、中心(3×3 の平均)と周りの輪(半径 6..10、紙の地を除く)の中央値の明度の差の最大を見る
+#[test]
+fn dark_pool_notches_do_not_glow() {
+    let stored = kasaneiro::replay::load("dark-pool-notches").unwrap();
+    let mut c = canvas();
+    c.set_palette(stored.palette.clone());
+    let played = c.play(stored.recording.clone());
+    // 記録した人が閉じるまでの時間(キャプチャの session.json の frames = 11537)まで進める
+    c.idle(11537u32.saturating_sub(played));
+    let img = c.snapshot().unwrap();
+    let png = save(&img, "dark_pool_notches");
+
+    let n = img.size as i32;
+    let paper = lightness(img.mean_rgb(0, 0, 20, 20));
+    let lum: Vec<f32> = (0..n * n)
+        .map(|i| lightness(img.rgb((i % n) as u32, (i / n) as u32)))
+        .collect();
+    let l = |x: i32, y: i32| lum[(y * n + x) as usize];
+    let is_paper = |x: i32, y: i32| l(x, y) > paper - 0.02;
+    let ring: Vec<(i32, i32)> = (-10..=10)
+        .flat_map(|dy| (-10..=10).map(move |dx| (dx, dy)))
+        .filter(|(dx, dy)| (36..=100).contains(&(dx * dx + dy * dy)))
+        .collect();
+    let mut worst = (0.0f32, 0, 0);
+    for y in 12..n - 12 {
+        for x in 12..n - 12 {
+            if (-5..=5).any(|dy| (-5..=5).any(|dx| is_paper(x + dx, y + dy))) {
+                continue;
+            }
+            let center = (-1..=1)
+                .flat_map(|dy| (-1..=1).map(move |dx| (dx, dy)))
+                .map(|(dx, dy)| l(x + dx, y + dy))
+                .sum::<f32>()
+                / 9.0;
+            let mut around: Vec<f32> = ring
+                .iter()
+                .map(|(dx, dy)| l(x + dx, y + dy))
+                .filter(|v| *v < paper - 0.02)
+                .collect();
+            around.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let g = center - around[around.len() / 2];
+            if g > worst.0 {
+                worst = (g, x, y);
+            }
+        }
+    }
+    let (g, x, y) = worst;
+    assert!(
+        g < 0.03,
+        "塗りの内側に光る点がある: ({x}, {y}) で周りより {g:.3} 明るい\n{}",
+        png.display()
+    );
+}
+
 /// 洗った筆で濃い濡れ色をなぞった筋が、なぞった方向に段々(粒の列)にならない。
 /// 記録 assets/strokes/washed-brush-over-dense.json = 濃い色を塗る → 洗う → 空の筆で3本なぞる(ペン入力で、
 /// 1フレームに来る splat の数がむらになる)。最後の1本の、溜まりを出た先の筋に沿って明度を取り、
