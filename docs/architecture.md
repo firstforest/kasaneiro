@@ -227,7 +227,7 @@ paint:
 | bake.wgsl | 乾かす = 乾燥レイヤーへの焼き込み+湿レイヤー全ゼロ |
 | fastdry.wgsl | 浮遊 → 沈着に落として水と流れをゼロに(焼き込まない) |
 | rewet.wgsl | 全面マスク=1+rewet_water(沈着は既存の脱着で再浮遊) |
-| linesplat.wgsl | ラスタ線画。鉛筆 / ペン / ハイライトを対象テクスチャへ直描き(line_mode で見た目を分岐、line_eraser で減算) |
+| linesplat.wgsl | ラスタ線画。鉛筆 / ペン / ハイライトを対象テクスチャへ直描き(line_mode で見た目を分岐、line_eraser で減算。半径は line_mode と line_eraser でレイヤーごとの描く太さ / 消しゴムの太さを選ぶ = `SimParams::line_radius` と同じ対応) |
 | tilescan.wgsl | アクティブタイル第1段。タイルごとに濡れとブラシ近傍を走査して raw_active を書く |
 | tiledilate.wgsl | アクティブタイル第2段。raw_active を3×3で膨張し、dirty と合わせて active を確定 |
 | display.wgsl | 表示: 湿レイヤーの濃度に縁のアンチエイリアス(`wet_conc_aa`: 4×4 テクセルを読み、補間する4点それぞれに `edge_aa_conc` を掛けてからバイリニア補間)→ 層内発色 → レイヤー合成 → 線画合成 → sRGB。デバッグ表示の分岐もここ。乾燥レイヤーの合成は compute 入口 `dried_cache_main` がキャッシュへ焼く(色の関数を共有するため同じファイル) |
@@ -309,7 +309,7 @@ paint:
 - WGSL は `assets/shaders/` から実行時ロード。notify で監視し、保存で `rebuild_pipelines()`。コンパイルエラー時は描画をスキップしてエラーオーバーレイを出し、直前の正常なパイプラインで続行する
 - **シェーダーの連結は3段**: `shader_prelude`(Rust と共有する const: TILE_SIZE / TILES_PER_SIDE / MAX_LAYERS / LAYER_ORDER_VEC4S / GLOBAL_LATENTS / PIGMENT_LATENTS / LIVE_PALETTE / LATENT_TOTAL)+ common.wgsl + 本体。エラーの行番号は連結分ずれるので `remap_shader_error_lines` で補正して表示する
 - compute パイプラインは `COMPUTE_SHADERS` の表(WGSL ファイル名 → レイアウト種別)から作る。参照は名前引き `Pipelines::compute("splat.wgsl")`、実行順は `encode_frame()` のハードコード
-- `SimParams` は毎フレーム uniform へ書く(スライダー即時反映)。WGSL の uniform 規則(16 バイト整列)に合わせ、現在は 62 フィールド+末尾パディング2 = 256B。足すときの手順は [parameters.md](parameters.md) §11
+- `SimParams` は毎フレーム uniform へ書く(スライダー即時反映)。WGSL の uniform 規則(16 バイト整列)に合わせ、現在は 67 フィールド+末尾パディング1 = 272B。足すときの手順は [parameters.md](parameters.md) §11
 - **配布ビルド**(`cargo build --release --features embed-assets`):
   1. `assets/shaders/` を `include_dir!` で埋め込む(取得元の分岐は `GpuCanvas::shader_source` の1か所。ファイル監視は無効)
   2. 既定 JSON(pigments / palettes / presets / strokes)も埋め込み、初回起動時に `assets::seed_default_assets()` が exe 隣へ書き出す(ディレクトリ単位で「無ければ書く」— ユーザーの編集・削除を復活させない)

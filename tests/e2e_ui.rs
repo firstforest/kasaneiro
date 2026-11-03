@@ -628,3 +628,66 @@ fn pen_undo_redo_restores_same_lines() {
         assert!(d < 0.02, "{:?} で違う: {b:?} → {a:?}", at[i]);
     }
 }
+
+/// 清書ペンの消しゴムは描く太さとは別の太さを持つ: 細いペン線を既定の太い消しゴムで横切ると、
+/// ペン幅より外まで消える。消しゴムを外すと細いペンに戻り、Undo → Redo でも消し跡の幅が変わらない
+#[test]
+fn pen_eraser_keeps_own_radius() {
+    let mut harness = app();
+    harness.get_by_label("清書(ペン)").click();
+    frames(&mut harness, 2);
+    // 太さはスライダーと数値欄の2ノードに同じ名前が付く
+    let eraser_slider =
+        |h: &Harness<'_, PaintApp>| h.query_all_by_label("消しゴムの太さ").count() > 0;
+    assert!(!eraser_slider(&harness));
+    pen_path(&mut harness, &[(0.2, 0.5), (0.8, 0.5)], 1.0);
+
+    harness.get_by_label("消しゴム").click();
+    frames(&mut harness, 2);
+    assert!(
+        eraser_slider(&harness),
+        "消しゴム中に消しゴムの太さのスライダーが出ていない"
+    );
+    pen_path(&mut harness, &[(0.5, 0.3), (0.5, 0.7)], 1.0);
+    harness.get_by_label("消しゴム").click();
+    frames(&mut harness, 2);
+    pen_path(&mut harness, &[(0.2, 0.7), (0.8, 0.7)], 1.0);
+    frames(&mut harness, 2);
+
+    // 512 テクセルのキャンバスで 7 テクセル = ペン(半径 4)の外・消しゴム(半径 10)の内、
+    // 20 テクセル = 両方の外
+    let near = 7.0 / 512.0;
+    let far = 20.0 / 512.0;
+    let at = [
+        (0.5 + near, 0.5),
+        (0.5 - near, 0.5),
+        (0.5 + far, 0.5),
+        (0.4, 0.7 + near),
+        (0.1, 0.1),
+    ];
+    let before = canvas_color(&mut harness, "pen-eraser", &at);
+    // 紙の地色(何も描いていない点)からの暗さ
+    let ink = |c: [f32; 3]| luma(before[4]) - luma(c);
+    assert!(
+        ink(before[0]) < 0.03 && ink(before[1]) < 0.03,
+        "消しゴムがペン幅より外まで消していない: {before:?}"
+    );
+    assert!(
+        ink(before[2]) > 0.3,
+        "消しゴムの外の線まで消えている: {before:?}"
+    );
+    assert!(
+        ink(before[3]) < 0.03,
+        "消しゴムを外したペンが太い: {before:?}"
+    );
+
+    for label in ["元に戻す", "元に戻す", "やり直し", "やり直し"] {
+        harness.get_by_label(label).click();
+        frames(&mut harness, 2);
+    }
+    let after = canvas_color(&mut harness, "pen-eraser-redo", &at);
+    for (i, (b, a)) in before.iter().zip(&after).enumerate() {
+        let d = (0..3).map(|c| (b[c] - a[c]).abs()).fold(0.0, f32::max);
+        assert!(d < 0.02, "{:?} で引き直しが違う: {b:?} → {a:?}", at[i]);
+    }
+}

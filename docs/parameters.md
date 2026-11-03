@@ -191,13 +191,16 @@ GPU へ渡す前に `physics_uniform()` が ρ・μ を 0 以上、ω・γ を 0
 | `line_mode` | 0 | ツールボタン | ラスタ線画の種別: 0=鉛筆(グレー粒状線・筆圧→濃さ)/ 1=ペン(濃色スムーズ線・筆圧→太さ)/ 2=ハイライト(不透明白・筆圧→不透明度、M4.5c)。描画先テクスチャは bind group で選ぶ |
 | `line_eraser` | 0 | チェックボックス | ラスタ消しゴム: 0=描画(蓄積)/ 1=減算 |
 | `pencil_radius` | 8.0 | 1〜64 px | 鉛筆の半径。水ブラシ(`brush_radius`)とは独立。筆圧で締められる |
+| `pencil_eraser_radius` | 16.0 | 1〜64 px | 鉛筆レイヤーの消しゴムの半径。描く太さ(`pencil_radius`)とは別に持つ。消しゴム中は「太さ」スライダーが「消しゴムの太さ」になってこれを動かす(Ctrl+Alt+ドラッグも同じ) |
 | `pencil_strength` | 0.7 | 0〜1 | 鉛筆のインク濃度の基準(筆圧で変調) |
 | `pencil_gran` | 0.5 | 0〜1 | 鉛筆の粒状感: 紙ハイトでインク濃度を変調する度合い(0=一様 / 1=山に強く乗る) |
 | `pen_radius` | 4.0 | 1〜64 px | ペンの半径。水ブラシ(`brush_radius`)とは独立。実効半径 = `pen_radius × mix(1, 筆圧^γ, pressure_radius)`。0.7px を下回る分は太さの代わりに濃さを落とす |
+| `pen_eraser_radius` | 10.0 | 1〜64 px | 清書ペンレイヤーの消しゴムの半径。描く太さ(`pen_radius`)とは別に持つ。消しゴムの形はペンと同じ(筆圧→太さ・縁 1px) |
 | `pen_strength` | 0.75 | 0〜1 | ペン1本の濃さ。別のストロークを重ねた所は `下地 + pen_strength×(1 − 下地)` で濃くなる(2本で 0.94)。1本の中の往復では濃くならない |
 | `pen_smooth` | 0.3 | 0〜1 | 清書ペンの手ぶれ補正。入力点ごとに平滑化した位置が入力へ `1 − 0.9×pen_smooth` の割合で近づく(0 = 平滑化なし。入力点の間の曲線補間は常に掛かる)。離すと終点まで追いつく。CPU 側(`LineSmoother`)だけが使い、シェーダーは読まない |
 | `line_block` | 0.0 | 0〜1 | **清書ペン線の透水率(M4.5b)**。透水率 `perm = 1 − line_block×ペン濃度` を ①拡散の隣接流束(diffuse)②にじみ拡張の蓄積(velocity)③速度場(velocity)に掛ける。上げるほどペンで囲った領域を塗っても水が線を越えない。**ブラシの直接スプラットには掛けない**(線を跨ぐ筆使いなら明示的に越えられる)。0=境界なし |
 | `highlight_radius` | 6.0 | 1〜64 px | ハイライト(不透明白)の半径(M4.5c)。筆圧で締められる |
+| `highlight_eraser_radius` | 12.0 | 1〜64 px | ハイライトレイヤーの消しゴムの半径。描く太さ(`highlight_radius`)とは別に持つ |
 | `highlight_strength` | 0.85 | 0〜1 | ハイライトの不透明度の基準(筆圧で変調、M4.5c) |
 | `show_pencil` | 1 | チェックボックス | 下書き(鉛筆)レイヤーの表示(display 合成時に参照) |
 | `show_pen` | 1 | チェックボックス | 清書(ペン)レイヤーの表示 |
@@ -221,7 +224,7 @@ GPU へ渡す前に `physics_uniform()` が ρ・μ を 0 以上、ω・γ を 0
 2. [src/app/ui/](../src/app/ui/) の該当パネルにスライダー1行
 3. [assets/shaders/common.wgsl](../assets/shaders/common.wgsl) の `struct SimParams` に1行(Rust 側と同レイアウト。名前・順序・型の不一致は [tests/sim_params_layout.rs](../tests/sim_params_layout.rs) が検出する)
 
-**現在のレイアウト**: `SimParams` は 64 フィールド(全て f32 / u32 の 4 バイト)= 256 バイト(16×16)、パディングなし。次に足すときは末尾に `_pad: [f32; 3]` を置く。`Splat` は 32 バイト(`pos`・`vel`・`pressure`・`feed`・`scale`・`_pad`)。筆の中身 `BrushState` は 64 バイト(穂先の `tip_water`・`_pad`×3・`tip_pigment: [f32; 4]`、腹の `belly_water`・`_pad`×3・`belly_pigment: [f32; 4]`)。
+**現在のレイアウト**: `SimParams` は 67 フィールド(全て f32 / u32 の 4 バイト)+ 末尾パディング `_pad: [f32; 1]` = 272 バイト(16×17)。次に足すときは `_pad` を実フィールドに置き換え、その次は末尾に `_pad: [f32; 3]` を置く。`Splat` は 32 バイト(`pos`・`vel`・`pressure`・`feed`・`scale`・`_pad`)。筆の中身 `BrushState` は 64 バイト(穂先の `tip_water`・`_pad`×3・`tip_pigment: [f32; 4]`、腹の `belly_water`・`_pad`×3・`belly_pigment: [f32; 4]`)。
 
 **16 バイト整列の保ち方**: uniform buffer は Rust の構造体を bytemuck で生バイトのまま渡すので、全体サイズを 16 の倍数に保つ(`params_size_aligned` テスト)。次にフィールドを足すとき 16 の倍数から外れるなら、Rust 側の末尾に `#[serde(skip)]` のパディング(例: 1個足すなら `_pad: [f32; 3]`)を置き、以降はそのパディングを1つずつ実フィールドへ置き換えていく。パディングは WGSL 側の struct には書かない([tests/sim_params_layout.rs](../tests/sim_params_layout.rs) は直列化されるフィールドの名前・順序・型を common.wgsl と突き合わせ、直列化されない末尾 16 バイト未満だけをパディングとして許す)。
 

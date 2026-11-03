@@ -85,11 +85,9 @@ pub fn line_smoother(target: LineTarget, params: &SimParams) -> Option<LineSmoot
 /// ライブ描画(app::apply_pointer_events)と同じ手ぶれ補正・間隔(実効半径×0.25)で引き直すので、
 /// max 蓄積の描画は完全一致、減算(消しゴム)も概ね一致する。
 pub fn stroke_splats(stroke: &RasterStroke) -> Vec<Splat> {
-    let base = match stroke.target {
-        LineTarget::Pencil => stroke.params.pencil_radius,
-        LineTarget::Pen => stroke.params.pen_radius,
-        LineTarget::Highlight => stroke.params.highlight_radius,
-    };
+    let base = stroke
+        .params
+        .line_radius(stroke.params.line_mode, stroke.params.line_eraser == 1);
     let spacing = |p| stroke.params.splat_spacing(base, p);
     let mut smoother = line_smoother(stroke.target, &stroke.params);
     let mut state = StrokeState::default();

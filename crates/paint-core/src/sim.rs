@@ -54,9 +54,9 @@ pub const SAT_RATIO: f32 = 4.3;
 /// フィールドを足したら: ①ここに1行 ②src/app/ui/ の該当パネルにスライダー1行 ③common.wgsl の struct に1行
 /// (名前・順序・型の一致は tests/sim_params_layout.rs が検査する)。
 /// メモリレイアウトは WGSL の uniform 規則(16 バイト整列)に合わせること。
-/// 全体サイズは 16 の倍数を保つ(64 フィールド = 256B。次に足すときは末尾に #[serde(skip)] の
-/// _pad: [f32; 3] を置き、以降はそれを1つずつ実フィールドへ置き換えて 16B 境界を保つ。
-/// _pad は WGSL 側には書かない。手順は docs/parameters.md §11)。
+/// 全体サイズは 16 の倍数を保つ(67 フィールド + 末尾の #[serde(skip)] な _pad: [f32; 1] = 272B。
+/// 次に足すときは _pad を実フィールドへ置き換え、その次は末尾に _pad: [f32; 3] を置き直して
+/// 16B 境界を保つ。_pad は WGSL 側には書かない。手順は docs/parameters.md §11)。
 /// serde(default): プリセット(H3)にないフィールドは Default 値で埋める
 /// (パラメータを増やしても古い JSON が読めるように)。
 #[repr(C)]
@@ -248,6 +248,15 @@ pub struct SimParams {
     /// 曲線でつなぐだけ / 1 = 強く均す(線が遅れてついてくる)。ペンを離すと終点まで追いつく。
     /// 生ポインタ点から CPU で計算するので(paint_core::brush::LineSmoother)シェーダーは読まない
     pub pen_smooth: f32,
+    /// 鉛筆レイヤーの消しゴムの半径(テクセル)。描く太さ(pencil_radius)とは別に持つ。筆圧で締められる
+    pub pencil_eraser_radius: f32,
+    /// 清書ペンレイヤーの消しゴムの半径(テクセル)。描く太さ(pen_radius)とは別に持つ
+    pub pen_eraser_radius: f32,
+    /// ハイライトレイヤーの消しゴムの半径(テクセル)。描く太さ(highlight_radius)とは別に持つ
+    pub highlight_eraser_radius: f32,
+    /// uniform を 16 バイト境界に揃える詰め物(WGSL 側には書かない)
+    #[serde(skip)]
+    pub _pad: [f32; 1],
 }
 
 impl SimParams {
@@ -264,6 +273,31 @@ impl SimParams {
     /// 濡れ具合まで濡れきらず、細い線だけ薄くなる)
     pub fn splat_spacing(&self, base: f32, pressure: f32) -> f32 {
         (self.radius_at_base(base, pressure) * SPLAT_SPACING).max(0.25)
+    }
+
+    /// ラスタ線画の基準半径(筆圧前)。`mode` は line_mode(0=鉛筆 / 1=ペン / 2=ハイライト)、
+    /// `eraser` なら同じレイヤーの消しゴムの半径。linesplat.wgsl の半径の選び方と同じ対応
+    pub fn line_radius(&self, mode: u32, eraser: bool) -> f32 {
+        match (mode, eraser) {
+            (1, false) => self.pen_radius,
+            (1, true) => self.pen_eraser_radius,
+            (2, false) => self.highlight_radius,
+            (2, true) => self.highlight_eraser_radius,
+            (_, false) => self.pencil_radius,
+            (_, true) => self.pencil_eraser_radius,
+        }
+    }
+
+    /// line_radius と同じ対応で書き込み先を返す(太さのスライダー・Ctrl+Alt+ドラッグ用)
+    pub fn line_radius_mut(&mut self, mode: u32, eraser: bool) -> &mut f32 {
+        match (mode, eraser) {
+            (1, false) => &mut self.pen_radius,
+            (1, true) => &mut self.pen_eraser_radius,
+            (2, false) => &mut self.highlight_radius,
+            (2, true) => &mut self.highlight_eraser_radius,
+            (_, false) => &mut self.pencil_radius,
+            (_, true) => &mut self.pencil_eraser_radius,
+        }
     }
 
     /// 水ブラシの実効半径
@@ -372,6 +406,10 @@ impl Default for SimParams {
             wick_ref: 0.05,
             edge_aa: 1.0,
             pen_smooth: 0.3,
+            pencil_eraser_radius: 16.0,
+            pen_eraser_radius: 10.0,
+            highlight_eraser_radius: 12.0,
+            _pad: [0.0; 1],
         }
     }
 }

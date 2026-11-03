@@ -376,34 +376,39 @@ impl PaintApp {
         }
     }
 
-    /// 線画レイヤー共通のヘッダ(M4.5a): 説明・消しゴムトグル。ツール状態を
+    /// 線画レイヤー共通のヘッダ(M4.5a): 説明・消しゴムトグル・太さ。ツール状態を
     /// params.line_mode / line_eraser へ同期し linesplat.wgsl の分岐に渡す
-    /// (描画先テクスチャの選択は CanvasCallback 経由)
+    /// (描画先テクスチャの選択は CanvasCallback 経由)。太さは描くときと消しゴムで別に持つので、
+    /// スライダーはいま使っている方(SimParams::line_radius_mut)を動かす
     fn raster_tool_header(&mut self, ui: &mut egui::Ui, kind: RasterTool) {
         ui.label(egui::RichText::new(kind.hint()).weak());
         let mut eraser = matches!(self.tool, Tool::Raster { eraser: true, .. });
         ui.checkbox(&mut eraser, "消しゴム")
             .on_hover_text(
-                "このレイヤーの線を削る(splat を減算に反転)。\nE キーを押している間だけ一時的に消しゴムにもできます(ペンタブレットのキーに E を割り当て)",
+                "このレイヤーの線を削る(splat を減算に反転)。消しゴムの太さは描く太さとは別に覚えておく。\nE キーを押している間だけ一時的に消しゴムにもできます(ペンタブレットのキーに E を割り当て)",
             );
         self.tool = Tool::Raster { kind, eraser };
-        self.params.line_mode = match kind {
-            RasterTool::Pencil => 0,
-            RasterTool::Pen => 1,
-            RasterTool::Highlight => 2,
-        };
+        self.params.line_mode = kind.line_mode();
         self.params.line_eraser = eraser as u32;
+        let label = if eraser {
+            "消しゴムの太さ"
+        } else {
+            "太さ"
+        };
+        ui.add(
+            egui::Slider::new(
+                self.params.line_radius_mut(kind.line_mode(), eraser),
+                1.0..=64.0,
+            )
+            .text(label)
+            .suffix(" px"),
+        );
     }
 
     /// 下書き鉛筆レイヤーのツール(M4.5a)。太さ・濃さは水ブラシの brush_radius とは独立
     pub(in crate::app) fn pencil_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("下書き鉛筆");
         self.raster_tool_header(ui, RasterTool::Pencil);
-        ui.add(
-            egui::Slider::new(&mut self.params.pencil_radius, 1.0..=64.0)
-                .text("太さ")
-                .suffix(" px"),
-        );
         ui.add(egui::Slider::new(&mut self.params.pencil_strength, 0.0..=1.0).text("濃さ"));
         ui.add(egui::Slider::new(&mut self.params.pencil_gran, 0.0..=1.0).text("粒状感"));
         self.raster_tool_footer(ui);
@@ -413,11 +418,6 @@ impl PaintApp {
     pub(in crate::app) fn pen_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("清書ペン");
         self.raster_tool_header(ui, RasterTool::Pen);
-        ui.add(
-            egui::Slider::new(&mut self.params.pen_radius, 1.0..=64.0)
-                .text("太さ")
-                .suffix(" px"),
-        );
         ui.add(egui::Slider::new(&mut self.params.pen_strength, 0.0..=1.0).text("濃さ"))
             .on_hover_text("1本の線の濃さ。別のストロークを重ねた所はさらに濃くなる");
         ui.add(egui::Slider::new(&mut self.params.pen_smooth, 0.0..=1.0).text("手ぶれ補正"))
@@ -438,11 +438,6 @@ impl PaintApp {
     pub(in crate::app) fn highlight_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("ハイライト");
         self.raster_tool_header(ui, RasterTool::Highlight);
-        ui.add(
-            egui::Slider::new(&mut self.params.highlight_radius, 1.0..=64.0)
-                .text("太さ")
-                .suffix(" px"),
-        );
         ui.add(egui::Slider::new(&mut self.params.highlight_strength, 0.0..=1.0).text("不透明度"));
         self.raster_tool_footer(ui);
     }

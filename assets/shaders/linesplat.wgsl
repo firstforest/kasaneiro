@@ -34,12 +34,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var ink = textureLoad(line_tex, ip).r;
     let under = textureLoad(pen_base, ip, 0).r;
 
-    // 鉛筆/ペン/ハイライトで独立した半径を使う(brush_radius = 水ブラシとは切り離す)
-    var base_radius = params.pencil_radius;
+    // 鉛筆/ペン/ハイライトで独立した半径を使い(brush_radius = 水ブラシとは切り離す)、
+    // 消しゴムはレイヤーごとの消しゴムの半径を使う(SimParams::line_radius と同じ対応)
+    let eraser = params.line_eraser == 1u;
+    var base_radius = select(params.pencil_radius, params.pencil_eraser_radius, eraser);
     if (params.line_mode == 1u) {
-        base_radius = params.pen_radius;
+        base_radius = select(params.pen_radius, params.pen_eraser_radius, eraser);
     } else if (params.line_mode == 2u) {
-        base_radius = params.highlight_radius;
+        base_radius = select(params.highlight_radius, params.highlight_eraser_radius, eraser);
     }
 
     for (var i = 0u; i < splat_buf.count; i++) {

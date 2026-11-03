@@ -102,6 +102,17 @@ pub enum RasterTool {
     Highlight,
 }
 
+impl RasterTool {
+    /// linesplat.wgsl の視覚分岐に渡す `SimParams::line_mode`(0=鉛筆 / 1=ペン / 2=ハイライト)
+    pub fn line_mode(self) -> u32 {
+        match self {
+            RasterTool::Pencil => 0,
+            RasterTool::Pen => 1,
+            RasterTool::Highlight => 2,
+        }
+    }
+}
+
 /// UI 表示用メタ情報。WetTool / RasterTool 両方に実装し、ツールバー描画は
 /// ツール群を回すだけの共通コードにする(TOOLS 定数表を enum の impl に一元化する)。
 pub trait ToolInfo {

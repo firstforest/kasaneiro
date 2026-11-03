@@ -1022,43 +1022,22 @@ impl PaintApp {
         self.brush_frame.drag(&mut splats[start..], &self.params);
     }
 
-    /// 現在のツールが使うブラシ半径の基準値(筆圧前)。ラスタ線画は鉛筆/ペンの
-    /// 独立半径、流体ツールは brush_radius。ストローク補間の間隔算出に使う
+    /// 現在のツールが使うブラシ半径の基準値(筆圧前)。ラスタ線画は鉛筆/ペン/ハイライトごとに
+    /// 描く太さと消しゴムの太さを別に持ち(SimParams::line_radius)、流体ツールは brush_radius。
+    /// ストローク補間の間隔算出とカーソル表示に使う
     fn active_base_radius(&self) -> f32 {
         match self.tool {
-            Tool::Raster {
-                kind: RasterTool::Pencil,
-                ..
-            } => self.params.pencil_radius,
-            Tool::Raster {
-                kind: RasterTool::Pen,
-                ..
-            } => self.params.pen_radius,
-            Tool::Raster {
-                kind: RasterTool::Highlight,
-                ..
-            } => self.params.highlight_radius,
+            Tool::Raster { kind, eraser } => self.params.line_radius(kind.line_mode(), eraser),
             _ => self.params.brush_radius,
         }
     }
 
     /// F18: Ctrl+Alt+ドラッグでのブラシ半径調整。現在のツールの半径(テクセル)へ delta を
-    /// 加算し、各スライダーと同じ 1〜64 にクランプする。ツールごとに独立半径を持つため
-    /// active_base_radius と同じ対応で書き込み先を選ぶ
+    /// 加算し、各スライダーと同じ 1〜64 にクランプする。active_base_radius と同じ対応で
+    /// 書き込み先を選ぶ(線画の消しゴム中は消しゴムの太さが変わる)
     fn adjust_active_radius(&mut self, delta: f32) {
         let r = match self.tool {
-            Tool::Raster {
-                kind: RasterTool::Pencil,
-                ..
-            } => &mut self.params.pencil_radius,
-            Tool::Raster {
-                kind: RasterTool::Pen,
-                ..
-            } => &mut self.params.pen_radius,
-            Tool::Raster {
-                kind: RasterTool::Highlight,
-                ..
-            } => &mut self.params.highlight_radius,
+            Tool::Raster { kind, eraser } => self.params.line_radius_mut(kind.line_mode(), eraser),
             _ => &mut self.params.brush_radius,
         };
         *r = (*r + delta).clamp(1.0, 64.0);

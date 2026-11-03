@@ -89,6 +89,9 @@ struct SimParams {
     wick_ref: f32,          // にじみ拡張が wet_expand そのままになる沈着量(4ch の和)
     edge_aa: f32,           // 色の縁のアンチエイリアスの強さ(0=階段のまま。edge_aa_conc)
     pen_smooth: f32,        // 清書ペンの手ぶれ補正(CPU 側で使う。シェーダーは読まない)
+    pencil_eraser_radius: f32,    // 鉛筆レイヤーの消しゴムの半径(描く太さとは別)
+    pen_eraser_radius: f32,       // 清書ペンレイヤーの消しゴムの半径
+    highlight_eraser_radius: f32, // ハイライトレイヤーの消しゴムの半径
 };
 
 // アクティブタイル(M6): シミュレーションを「濡れているタイル+ブラシ近傍」だけに絞る土台。
