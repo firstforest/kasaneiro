@@ -286,6 +286,9 @@ pub struct GpuCanvas {
     /// 線画(M4.5a/c): [鉛筆, ペン, ハイライト] の r32float テクスチャ(read_write。ping-pong しない)。
     /// clear() / clear_line() でゼロに戻すため実体を保持する
     line_textures: [wgpu::Texture; 3],
+    /// 清書ペンの下地: ストロークを描き始めたときのペン層の複製。linesplat.wgsl は描いている1本を
+    /// これに重ねるので、1本の中は均一な濃さのまま、別のストロークと重なった所だけ濃くなる
+    pen_base: wgpu::Texture,
     /// linesplat.wgsl 用の描画先別 bind group([鉛筆, ペン, ハイライト]。LineTarget::index の順)
     raster_bind_groups: [wgpu::BindGroup; 3],
     raster_layout: wgpu::PipelineLayout,
@@ -460,6 +463,31 @@ impl GpuCanvas {
         self.zero_textures(device, queue, &[&self.line_textures[target.index()]]);
     }
 
+    /// 清書ペンのストロークを描き始める前に、今のペン層を下地へ複製する
+    pub fn snapshot_pen_base(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        fn at(texture: &wgpu::Texture) -> wgpu::TexelCopyTextureInfo<'_> {
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            }
+        }
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("snapshot_pen_base"),
+        });
+        encoder.copy_texture_to_texture(
+            at(&self.line_textures[LineTarget::Pen.index()]),
+            at(&self.pen_base),
+            wgpu::Extent3d {
+                width: self.size,
+                height: self.size,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+    }
+
     /// 1ストロークを対象の線画テクスチャへ引き直す(M4.5d の Undo/Redo 再ラスタライズ)。
     /// 保存済みの実効パラメータ(params)で linesplat を回すので、現在のスライダー値に依らず
     /// 過去の線の形が保たれる。splat 数が MAX_SPLATS を超える長い線は分割して dispatch する。
@@ -474,6 +502,9 @@ impl GpuCanvas {
     ) -> Result<(), String> {
         let pipelines = self.pipelines.as_ref().ok_or("シェーダーが未ビルドです")?;
         queue.write_buffer(&self.params_buffer, 0, bytemuck::bytes_of(params));
+        if target == LineTarget::Pen {
+            self.snapshot_pen_base(device, queue);
+        }
         let workgroups = self.size.div_ceil(8);
         for chunk in splats.chunks(MAX_SPLATS) {
             // 線画専用の即時実行なので tilescan 向けの fluid_count は 0

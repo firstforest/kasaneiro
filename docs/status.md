@@ -16,7 +16,7 @@
 | | 削り(1) | リフト。濡らして沈着顔料を浮遊層へ戻し、浮いた色ごと水を吸い取る(`lift_blot`)ので、その場から色が抜けて白に近づく(ω が高い顔料は残る)。色を周りへ馴染ませるのは水だけの筆 |
 | | 消す(2) | 水・速度・浮遊・沈着・濡れマスクをゼロへ(紙の白まで戻す) |
 | | 吸い取り(3) | 乾いた筆。表面の自由水と浮遊顔料を同率で取り除く(沈着は残る) |
-| 線画 | 下書き鉛筆 / 清書ペン / ハイライト | 流体を通らないラスタ線画(各 r32float)。清書ペンの線は水の境界(透水率 `line_block`)。各ツールに消しゴムモード |
+| 線画 | 下書き鉛筆 / 清書ペン / ハイライト | 流体を通らないラスタ線画(各 r32float)。各ツールに消しゴムモード。清書ペンは、入力点を手ぶれ補正(遅れて追う平滑化、`pen_smooth`)してから曲線でつないで描く。1本の中は均一な濃さで、別のストロークと重なった所だけ濃くなる。1px を下回る細さの線は欠けずに薄く出る。線は水の境界になる(透水率 `line_block`) |
 | 補助 | スポイト | クリックした所の湿レイヤーの顔料構成(浮遊+沈着、7×7 テクセルの平均)を筆に取る。筆を洗ってからその比で合計1回分(色スウォッチと同じ濃さ)を取って塗るツールになり、パレットは変えない。乾いた層・紙だけの所では何も取らず案内を出す。I キーを押している間は一時的にスポイト(水彩レイヤーのみ) |
 | | 一時消しゴム | E キーを押している間だけ、いまのレイヤーの消しゴム(水彩=消す / 線画=そのレイヤーの消しゴム) |
 | | ブラシサイズ | カーソル位置に実寸の輪郭リング。Ctrl+Alt+左ドラッグで現ツールの半径を変更 |
@@ -93,6 +93,13 @@
 ### 1.6 要目視確認
 
 変更で目視確認が要るものが出たら、ここに日付つきのまとまりで足し、確かめたら消す。
+
+**清書ペンの描き味(2026-11-03)**
+
+- 細かい線が狙った太さで描けるか(筆圧は太さに1回だけ掛かる。筆圧 0.3 で基準の 0.3 倍。以前は約 0.2 倍)。弱い筆圧の線が点線に欠けず、薄く続くか
+- 手ぶれ補正の既定 0.3 で、線の遅れが気にならず、震えが均されるか。速く描いた曲線が角ばらないか。離したとき終点まで追いつく線が不自然に伸びないか
+- 「濃さ」の既定 0.75(以前 0.9)で 1 本の線が薄すぎないか。重ねた所の濃くなり方(0.75 → 0.94)がちょうどよいか
+- 既存の作品・プリセットは保存時の「濃さ」(0.9 など)を持っているので、開くと 1 本で濃く、重ねてもほとんど変わらない
 
 **切れ込みの先端の光る点(2026-11-03)**
 
@@ -185,7 +192,7 @@
 | M2 乾燥とレイヤー | ✅ 完了 | 乾燥レイヤーは rgba32float texture array(最大8枚、顔料濃度のまま)。下の層は下地(`GpuCanvas::merge_into_base`)へ統合して枠を空けられる。「乾かす」= [bake.wgsl](../assets/shaders/bake.wgsl) で `(浮遊+沈着) × dry_shift × 粒状感ゲート × (1 + dry_edge×縁バンド)` を新スライスへ焼き、湿レイヤーをゼロに。Fast Dry([fastdry.wgsl](../assets/shaders/fastdry.wgsl))・Wet the Layer([rewet.wgsl](../assets/shaders/rewet.wgsl))で焼かずに止める/濡らし直す。焼き込みは一方通行 |
 | M3 削り・顔料個性・KM 合成 | ✅ 完了 | 削り = リフト(`lift_strength` × (1−ω) × 紙凸ゲートで浮かせ、`lift_blot` で吸い取る)と消す(完全消去)の2ツール。顔料個性は physics uniform(binding 9)で吸着・脱着・拡散を per-channel に変調。合成は KM: 各層を白地/黒地に置いた発色から `R=R_b`、`T²=(R_w−R_b)(1−R_b)` を導いて下から光学合成(CPU 参照実装は [crates/km/src/lib.rs](../crates/km/src/lib.rs)) |
 | M4 仕上げ | ✅ 完了 | 吸い取り(tool=3。`absorb_rate`)。先濡らし・ぼかしは水だけの筆で塗る(`paint_pickup` の溶かし戻し) |
-| M4.5 線画とハイライト | ✅ 完了 | 鉛筆・ペン・ハイライトの r32float 3枚に [linesplat.wgsl](../assets/shaders/linesplat.wgsl) が read_write storage で直接蓄積(流体パスとは別の compute パス)。清書ペンの濃度から透水率 `1 − line_block×濃度` を velocity / diffuse に掛ける。display が色の上に鉛筆 → ペン → ハイライトを合成。多段 Undo/Redo は生ポインタ点+描画時の SimParams からの決定論的再ラスタライズ([src/app/linehist.rs](../src/app/linehist.rs)) |
+| M4.5 線画とハイライト | ✅ 完了 | 鉛筆・ペン・ハイライトの r32float 3枚に [linesplat.wgsl](../assets/shaders/linesplat.wgsl) が read_write storage で直接蓄積(流体パスとは別の compute パス)。清書ペンは手ぶれ補正+曲線補間([paint_core::brush::LineSmoother](../crates/paint-core/src/brush.rs))を通し、描き始めに複製した下地にストローク単位で重ねる。清書ペンの濃度から透水率 `1 − line_block×濃度` を velocity / diffuse に掛ける。display が色の上に鉛筆 → ペン → ハイライトを合成。多段 Undo/Redo は生ポインタ点+描画時の SimParams からの決定論的再ラスタライズ([src/app/linehist.rs](../src/app/linehist.rs)) |
 | M5 パレット | ✅ 完了 | `pigment::Palette`(4スロット)をランタイム編集し、`GpuCanvas::set_palette` が physics と現行 latent 枠を `write_buffer`。パレットと色単体のライブラリ([src/palette_store.rs](../src/palette_store.rs) / [src/pigment_store.rs](../src/pigment_store.rs))、スポイト、「色をつくる」モーダル、乾いた層の記録パレットからの取り込み |
 | M6 スケールする土台 | ✅ 完了 | 水彩の1段 Undo(ストローク開始時に湿レイヤー3枚を `wet_backup` へ GPU コピー)と線画の多段 Undo を `undo_stack` で統合。パン・ズーム・回転は display 専用の `ViewUniform`(binding 11)、ポインタ→テクセル変換 `screen_to_texel` も同じ写像。アクティブタイルは [tilescan.wgsl](../assets/shaders/tilescan.wgsl) → [tiledilate.wgsl](../assets/shaders/tiledilate.wgsl) が有効フラグを作り、各シミュパスが非アクティブなタイルを素通しする |
 | M7 作品保存 | ✅ 完了 | 湿レイヤー・乾燥レイヤー・線画・レイヤーごとパレット・現行パレット・SimParams を `works/*.kasane` 1ファイルへ(§1.3)。GPU ⇄ f32 は [src/gpu/persist.rs](../src/gpu/persist.rs) の `export_state` / `import_state`(読み戻しは1回の submit と1回の完了待ち)。ping-pong の parity は保存せず読込時に `current=0`。Undo 履歴は保存せず読込で破棄 |

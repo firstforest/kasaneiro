@@ -10,10 +10,10 @@
 mod linehist;
 mod ui;
 
+use crate::capture::{self, Capture, Closing};
 use crate::gpu::DriedLayer;
 use crate::gpu::GpuCanvas;
 use crate::gpu::LineTarget;
-use crate::capture::{self, Capture, Closing};
 use crate::gpu::hot_reload::{ScreenshotWatcher, ShaderWatcher, screenshots_dir, shader_dir};
 use crate::input::{MouseSource, PenSource, PointerEvent, PointerPhase};
 use crate::palette_store;
@@ -23,8 +23,8 @@ use crate::replay::{self, Player, Recording};
 use crate::work;
 use eframe::egui;
 use eframe::egui_wgpu;
-use linehist::{LineHistory, stroke_splats};
-use paint_core::brush::StrokeState;
+use linehist::{LineHistory, line_smoother, stroke_splats};
+use paint_core::brush::{LineSmoother, StrokeState};
 use paint_core::clock::SimClock;
 use paint_core::load::{BrushClock, BrushFrame, BrushLoad};
 use paint_core::sim::{DEFAULT_CANVAS_SIZE, SimParams, Splat};
@@ -139,6 +139,8 @@ pub struct PaintApp {
     /// 離したとき戻す元ツール(水彩=Wet(Erase) / 線画=Raster{eraser:true} / 乾燥=無反応)
     erase_hold: Option<Tool>,
     stroke: StrokeState,
+    /// 描いている線画ストロークの手ぶれ補正(清書ペンのときだけ。linehist::line_smoother)
+    line_smoother: Option<LineSmoother>,
     /// 塗る筆の中身(水と4色の顔料)。正典は GPU の筆バッファで、ここはフレーム頭に読み戻した値
     /// (描いている間は数フレーム遅れる)。ツールバーの色・水・洗うは edit_brush で
     /// 最新の値を待ってから変え、GPU へその場で書き戻す
@@ -318,6 +320,7 @@ impl PaintApp {
             eyedropper_hold: false,
             erase_hold: None,
             stroke: StrokeState::default(),
+            line_smoother: None,
             brush_load: brush_refill,
             brush_frame: BrushFrame::default(),
             replay_saved_brush: None,
@@ -903,8 +906,15 @@ impl PaintApp {
                         }
                     }
                     // M4.5d: ラスタ線画は履歴へストロークを開始(実効パラメータをスナップショット)
+                    self.line_smoother = line_target.and_then(|t| line_smoother(t, &self.params));
                     if let Some(target) = line_target {
                         self.line_history.begin(target, self.params);
+                        if target == LineTarget::Pen {
+                            self.run_canvas_action(|c, d, q| {
+                                c.snapshot_pen_base(d, q);
+                                Ok(())
+                            });
+                        }
                     } else {
                         // M6: 水彩ストローク開始 → 湿レイヤーを退避(1段 undo の読み元)。
                         // このフレームの splat + シミュより前=ストローク直前の状態を捉える
@@ -915,6 +925,21 @@ impl PaintApp {
                 PointerPhase::Up => {
                     if self.painting {
                         self.painting = false;
+                        // 手ぶれ補正で遅れているペン先を終点まで描き切る
+                        if let Some(mut smoother) = self.line_smoother.take() {
+                            let mut points = Vec::new();
+                            smoother.finish(&mut points);
+                            let base = self.active_base_radius();
+                            let params = &self.params;
+                            for (pos, pressure) in points {
+                                self.stroke.add_motion(
+                                    pos,
+                                    pressure,
+                                    |p| params.splat_spacing(base, p),
+                                    splats,
+                                );
+                            }
+                        }
                         self.stroke.end();
                         self.feed_pos = None;
                         if recordable {
@@ -951,12 +976,17 @@ impl PaintApp {
             let base = self.active_base_radius();
             let params = &self.params;
             let start = splats.len();
-            self.stroke.add_motion(
-                [px.x, px.y],
-                ev.pressure,
-                |p| params.splat_spacing(base, p),
-                splats,
-            );
+            let spacing = |p| params.splat_spacing(base, p);
+            if let Some(smoother) = &mut self.line_smoother {
+                let mut points = Vec::new();
+                smoother.push([px.x, px.y], ev.pressure, &mut points);
+                for (pos, pressure) in points {
+                    self.stroke.add_motion(pos, pressure, spacing, splats);
+                }
+            } else {
+                self.stroke
+                    .add_motion([px.x, px.y], ev.pressure, spacing, splats);
+            }
             if self.tool == Tool::Wet(WetTool::Paint) {
                 self.brush_frame.drag(&mut splats[start..], &self.params);
             }
@@ -1215,7 +1245,11 @@ impl PaintApp {
         let Some(c) = &mut self.capture else {
             return;
         };
-        c.observe(&format!("{:?}", self.tool), &self.params, self.status_msg.as_ref());
+        c.observe(
+            &format!("{:?}", self.tool),
+            &self.params,
+            self.status_msg.as_ref(),
+        );
         match c.closing {
             Closing::Running => {
                 if ctx.input(|i| i.viewport().close_requested()) {

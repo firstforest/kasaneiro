@@ -418,7 +418,12 @@ impl PaintApp {
                 .text("太さ")
                 .suffix(" px"),
         );
-        ui.add(egui::Slider::new(&mut self.params.pen_strength, 0.0..=1.0).text("濃さ"));
+        ui.add(egui::Slider::new(&mut self.params.pen_strength, 0.0..=1.0).text("濃さ"))
+            .on_hover_text("1本の線の濃さ。別のストロークを重ねた所はさらに濃くなる");
+        ui.add(egui::Slider::new(&mut self.params.pen_smooth, 0.0..=1.0).text("手ぶれ補正"))
+            .on_hover_text(
+                "ペン先の震えを均す強さ。上げるほど線がなめらかになるが、ペン先から少し遅れてついてくる(離すと終点まで追いつく)。0 でも入力点の間は曲線でつなぐ",
+            );
         ui.add(
             egui::Slider::new(&mut self.params.line_block, 0.0..=1.0)
                 .text("ペン線の透水率(水の境界)"),

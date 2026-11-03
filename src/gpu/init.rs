@@ -240,6 +240,9 @@ impl GpuCanvas {
         let line_views: [wgpu::TextureView; 3] = std::array::from_fn(|i| {
             line_textures[i].create_view(&wgpu::TextureViewDescriptor::default())
         });
+        // 清書ペンのストローク開始時の複製。描いている1本はこれを下地に重ねる(linesplat.wgsl)
+        let pen_base = make_line_texture("line_pen_base");
+        let pen_base_view = pen_base.create_view(&wgpu::TextureViewDescriptor::default());
 
         // PNG スナップショット(H6): 画面と同じ見た目になるよう sRGB か否かを表示先に合わせる
         let snapshot_format = if target_format.is_srgb() {
@@ -559,7 +562,7 @@ impl GpuCanvas {
             ],
         });
 
-        // ラスタ線画(M4.5a): 対象の線画テクスチャ(read_write)+ params + splats + 紙ハイト。
+        // ラスタ線画(M4.5a): 対象の線画テクスチャ(read_write)+ params + splats + 紙ハイト + ペンの下地。
         // 描画先(鉛筆 / ペン)は bind group を差し替えて選ぶ(パイプラインは1本)
         let raster_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("raster_bgl"),
@@ -585,6 +588,7 @@ impl GpuCanvas {
                     wgpu::BufferBindingType::Storage { read_only: true },
                 ),
                 sampled_entry(3, wgpu::ShaderStages::COMPUTE),
+                sampled_entry(4, wgpu::ShaderStages::COMPUTE),
             ],
         });
 
@@ -808,6 +812,10 @@ impl GpuCanvas {
                         binding: 3,
                         resource: wgpu::BindingResource::TextureView(&paper_view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&pen_base_view),
+                    },
                 ],
             })
         };
@@ -941,6 +949,7 @@ impl GpuCanvas {
             bake_bgl,
             bake_layout,
             line_textures,
+            pen_base,
             raster_bind_groups,
             raster_layout,
             tilescan_bind_groups,

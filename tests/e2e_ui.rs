@@ -517,3 +517,114 @@ fn capture_writes_session_on_close() {
         "筆の中身が記録されていない"
     );
 }
+
+/// ペン(筆圧付き Touch)でキャンバス上の点列(相対位置)を順に結んで引く。区間ごとに 10 フレームで進む
+fn pen_path(harness: &mut Harness<'_, PaintApp>, path: &[(f32, f32)], force: f32) {
+    let rect = canvas_rect(harness);
+    let touch = |(u, v): (f32, f32), phase| egui::Event::Touch {
+        device_id: egui::TouchDeviceId(1),
+        id: egui::TouchId(1),
+        phase,
+        pos: rect.lerp_inside(egui::vec2(u, v)),
+        force: Some(force),
+    };
+    harness.event(touch(path[0], egui::TouchPhase::Start));
+    frame(harness);
+    for pair in path.windows(2) {
+        for i in 1..=10 {
+            let t = i as f32 / 10.0;
+            let (a, b) = (pair[0], pair[1]);
+            let p = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+            harness.event(touch(p, egui::TouchPhase::Move));
+            frame(harness);
+        }
+    }
+    harness.event(touch(*path.last().unwrap(), egui::TouchPhase::End));
+    frame(harness);
+}
+
+fn luma(c: [f32; 3]) -> f32 {
+    (c[0] + c[1] + c[2]) / 3.0
+}
+
+/// 清書ペン: 別のストロークを重ねた所は濃くなり、1本の中で往復した所は濃くならない
+#[test]
+fn pen_overlapping_strokes_darken() {
+    let mut harness = app();
+    harness.get_by_label("清書(ペン)").click();
+    frames(&mut harness, 2);
+    pen_path(&mut harness, &[(0.2, 0.5), (0.8, 0.5)], 1.0);
+    pen_path(&mut harness, &[(0.5, 0.3), (0.5, 0.7)], 1.0);
+    pen_path(&mut harness, &[(0.2, 0.25), (0.8, 0.25), (0.2, 0.25)], 1.0);
+    frames(&mut harness, 2);
+    let c = canvas_color(
+        &mut harness,
+        "pen-overlap",
+        &[(0.3, 0.5), (0.5, 0.5), (0.4, 0.25), (0.05, 0.05)],
+    );
+    let (single, cross, back_and_forth, paper) = (luma(c[0]), luma(c[1]), luma(c[2]), luma(c[3]));
+    assert!(
+        single < paper - 0.3,
+        "線が描けていない: {single} vs 紙 {paper}"
+    );
+    assert!(
+        cross < single - 0.05,
+        "重ねても濃くならない: {cross} vs {single}"
+    );
+    assert!(
+        (back_and_forth - single).abs() < 0.05,
+        "1本の往復で濃さが変わった: {back_and_forth} vs {single}"
+    );
+}
+
+/// 清書ペン: 弱い筆圧の細い線が点線に欠けず、薄く連続して描ける
+#[test]
+fn pen_light_pressure_line_is_continuous() {
+    let mut harness = app();
+    harness.get_by_label("清書(ペン)").click();
+    frames(&mut harness, 2);
+    pen_path(&mut harness, &[(0.2, 0.5), (0.8, 0.5)], 0.15);
+    frames(&mut harness, 2);
+    let at: Vec<(f32, f32)> = (0..20).map(|i| (0.3 + 0.02 * i as f32, 0.5)).collect();
+    let mut probe = at.clone();
+    probe.push((0.05, 0.05));
+    let c = canvas_color(&mut harness, "pen-light", &probe);
+    let paper = luma(*c.last().unwrap());
+    let along: Vec<f32> = c[..at.len()].iter().map(|&x| luma(x)).collect();
+    let (min, max) = along
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    assert!(max < paper - 0.03, "途切れた所がある: {along:?} 紙 {paper}");
+    assert!(max - min < 0.1, "濃さがまだらに揺れる: {along:?}");
+}
+
+/// 清書ペン: 元に戻す → やり直しで、重なりの濃さも手ぶれ補正した線の形も描いたときと同じに戻る
+#[test]
+fn pen_undo_redo_restores_same_lines() {
+    let mut harness = app();
+    harness.get_by_label("清書(ペン)").click();
+    frames(&mut harness, 2);
+    pen_path(&mut harness, &[(0.2, 0.5), (0.8, 0.5)], 1.0);
+    pen_path(
+        &mut harness,
+        &[(0.5, 0.3), (0.52, 0.45), (0.48, 0.55), (0.5, 0.7)],
+        0.6,
+    );
+    frames(&mut harness, 2);
+    let at: Vec<(f32, f32)> = (0..41)
+        .flat_map(|i| {
+            let t = 0.3 + 0.01 * i as f32;
+            [(0.5, t), (0.49, t), (0.51, t), (t + 0.2, 0.5)]
+        })
+        .collect();
+    let before = canvas_color(&mut harness, "pen-undo-before", &at);
+    harness.get_by_label("元に戻す").click();
+    frames(&mut harness, 2);
+    harness.get_by_label("やり直し").click();
+    frames(&mut harness, 2);
+    let after = canvas_color(&mut harness, "pen-undo-after", &at);
+    for (i, (b, a)) in before.iter().zip(&after).enumerate() {
+        let d = (0..3).map(|c| (b[c] - a[c]).abs()).fold(0.0, f32::max);
+        assert!(d < 0.02, "{:?} で違う: {b:?} → {a:?}", at[i]);
+    }
+}

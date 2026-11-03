@@ -124,6 +124,7 @@ kasaneiro/                (workspace ルート = kasaneiro crate(lib + bin)。[p
 | 乾燥レイヤーの合成キャッシュ | rgba16float × 1 | 可視な乾燥レイヤーを合成した結果(compose_mode=0 は透過率の積、1 は紙+乾燥層の KM 反射率(リニア))。§5 |
 | 下地 | rgba16float texture array(2スライス) | 下の乾燥レイヤーを焼き固めた合成結果(0 = 乗算の透過率の積 / 1 = KM 反射率)。`has_base` の間だけ合成の出発点になる。§6 |
 | 線画 | r32float × 3(鉛筆・ペン・ハイライト) | r = インク濃度 / 不透明度 0..1。ping-pong せず read_write で自己更新。§7 |
+| 清書ペンの下地 | r32float × 1(`pen_base`) | ペンのストロークを描き始めたときのペン層の複製。保存しない。§7 |
 | 湿レイヤー退避 | rgba32float × 3(水・浮遊・沈着、COPY のみ) | 水彩ストローク開始時に `current` の3枚を GPU 間コピーで退避し、水彩の undo で書き戻す。最新1本ぶん |
 
 - **ping-pong は水・浮遊・沈着の3テクスチャまとめて単一の `current`**。各 compute パスは3枚の src を読み、3枚の dst を書いて(変更しない分は素通し)反転する。書くのは計算するタイルと2枚が食い違いうるタイルだけ(§8)。線画テクスチャは `current` に依存しない
@@ -149,7 +150,7 @@ compute は種別ごとに5レイアウト(`ComputeLayout`)+ dried_cache:
 
 - **共通**(splat と流体パス。[common.wgsl](../assets/shaders/common.wgsl)): `0/1` 水 src/dst、`2/3` 浮遊 src/dst、`4/5` 沈着 src/dst、`6` SimParams、`7` splat storage、`8` 紙(r = 紙ハイト、g, b = 混ざりムラの場)、`9` 顔料個性、`10` 清書ペンの線画(透水率。読むのは velocity / diffuse だけ)、`11` アクティブタイルの状態(splat / velocity / relax / flowout / advect / diffuse / transfer が読む。fastdry / rewet は宣言せず全面計算)、`12` 筆の中身、`13` 吸い込みの集計(splat / brush だけが宣言する)
 - **bake**: 共通の `0..6, 8` + `9` = 乾燥レイヤーの書き込みスライス(splat なし)
-- **raster**(linesplat.wgsl): `0` 対象の線画テクスチャ(read_write r32float)、`1` SimParams、`2` splat storage、`3` 紙ハイト。描画先は bind group の差し替えで選ぶ(パイプラインは1本)
+- **raster**(linesplat.wgsl): `0` 対象の線画テクスチャ(read_write r32float)、`1` SimParams、`2` splat storage、`3` 紙ハイト、`4` 清書ペンの下地(`pen_base`)。描画先は bind group の差し替えで選ぶ(パイプラインは1本。下地はどの描画先の bind group にも入り、ペンだけが読む)
 - **tilescan**: `0` 水・`2` 浮遊顔料(read。parity 別 bind group)、`3` SimParams、`4` splat storage、`5` raw_active(write)
 - **tiledilate**: `0` raw_active(read)、`1` active(write)、`2` SimParams(common.wgsl が参照するため束ねるだけ)、`3` tile_dirty(read_write)
 - **dried_cache**(display.wgsl の `dried_cache_main`): `3` SimParams、`4` 顔料 latent、`6` 乾燥レイヤー array、`7` LayerUniform、`14` 合成キャッシュ(write-only storage、rgba16float)、`15` 下地(2d array)
@@ -252,7 +253,9 @@ paint:
 下書き鉛筆・清書ペン・白ハイライトのラスタツール(`Tool::Raster`)。
 
 - **描画経路**: 選択中ツールが `Tool::Raster` のとき `PaintApp::line_target()` が `Some(LineTarget)` を返し、`CanvasCallback` がブラシ入力を `linesplat.wgsl` へ回す。`line_mode` が見た目を分岐(鉛筆 = 柔エッジ・紙目粒状・筆圧→濃さ / ペン = 硬エッジ・筆圧→太さ / ハイライト = 硬めエッジの不透明白・筆圧→不透明度)
-- **蓄積**: 目標濃度への `max`(1フレーム内で密にサンプルしても一定の濃度へ収束)
+- **入力点 → splat**: 清書ペンだけ、生ポインタ点を `LineSmoother`([crates/paint-core/src/brush.rs](../crates/paint-core/src/brush.rs))に通す。指数移動平均で均し(`pen_smooth`)、0.5px 以上離れた点を centripetal Catmull-Rom で 1px ごとに刻む。次の点が来てから前の区間を確定し、離したとき平滑化した位置を終点まで追わせる。出た点は他の線種と同じく `StrokeState::add_motion` で等間隔にする。ライブ描画と引き直し(`linehist::stroke_splats`)は同じ `linehist::line_smoother` で作る
+- **蓄積**: 目標濃度への `max`(1フレーム内で密にサンプルしても一定の濃度へ収束)。清書ペンは目標を `下地 + 量×(1 − 下地)` にする。下地はストローク開始時(ライブは Down、引き直しは `rasterize_line` の頭)に `snapshot_pen_base` でペン層を `pen_base` へ複製したもの
+- **清書ペンの形**: 半径 = `pen_radius × mix(1, 筆圧, pressure_radius)`(筆圧は1回だけ)。覆いは縁を中心にした 1px の遷移帯。半径が `PEN_MIN_RADIUS`(0.7px)を下回る線は半径をそこで止めて、細さの比だけ濃さを落とす
 - **合成**: display.wgsl で色を合成した後、`apply_lines()` が鉛筆(グレー)→ ペン(濃色)→ ハイライト(白)の順にアルファ合成。`show_pencil` / `show_pen` / `show_highlight` で非表示にできる
 - **透水率**: 清書ペン濃度から `perm = 1 − line_block×ペン濃度` を出し、velocity(速度場・にじみ拡張)と diffuse(隣接流束)に掛ける。`line_block=0` で境界なし
 - **多段 Undo/Redo**([src/app/linehist.rs](../src/app/linehist.rs)): ストローク単位で生ポインタ点+実効 SimParams を `LineHistory` に持つ。Undo = 対象テクスチャを `clear_line` してから残りを `rasterize_line` で引き直す / Redo = 取り消し分を再適用(Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y)。長い線は MAX_SPLATS 単位に分けて dispatch

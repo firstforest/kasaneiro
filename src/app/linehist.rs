@@ -10,7 +10,7 @@
 //! その target のテクスチャだけをクリア→再ラスタライズする(他の線種は無傷)。
 
 use crate::gpu::LineTarget;
-use paint_core::brush::StrokeState;
+use paint_core::brush::{LineSmoother, StrokeState};
 use paint_core::sim::{SimParams, Splat};
 
 /// ラスタ線画の1ストローク。再ラスタライズのため生ポインタ点+実効パラメータを持つ。
@@ -75,8 +75,14 @@ impl LineHistory {
     }
 }
 
+/// 線画ストロークの手ぶれ補正。清書ペンだけに掛ける(下書き鉛筆・ハイライトは入力点をそのまま使う)。
+/// ライブ描画と引き直しの両方がこれで作るので、同じ生ポインタ点から同じ線になる
+pub fn line_smoother(target: LineTarget, params: &SimParams) -> Option<LineSmoother> {
+    (target == LineTarget::Pen).then(|| LineSmoother::new(params.pen_smooth))
+}
+
 /// ストロークの生ポインタ点を保存済みパラメータで補間し、linesplat へ渡す splat 列にする。
-/// ライブ描画(app::apply_pointer_events)と同じ間隔(実効半径×0.25)で引き直すので、
+/// ライブ描画(app::apply_pointer_events)と同じ手ぶれ補正・間隔(実効半径×0.25)で引き直すので、
 /// max 蓄積の描画は完全一致、減算(消しゴム)も概ね一致する。
 pub fn stroke_splats(stroke: &RasterStroke) -> Vec<Splat> {
     let base = match stroke.target {
@@ -84,17 +90,27 @@ pub fn stroke_splats(stroke: &RasterStroke) -> Vec<Splat> {
         LineTarget::Pen => stroke.params.pen_radius,
         LineTarget::Highlight => stroke.params.highlight_radius,
     };
+    let spacing = |p| stroke.params.splat_spacing(base, p);
+    let mut smoother = line_smoother(stroke.target, &stroke.params);
     let mut state = StrokeState::default();
     state.begin();
     let mut out = Vec::new();
+    let mut points = Vec::new();
     for &(pos, pressure) in &stroke.points {
         // ライブ描画と同じ補間。GPU へ流すときは rasterize_line が MAX_SPLATS 単位に分割する
-        state.add_motion(
-            pos,
-            pressure,
-            |p| stroke.params.splat_spacing(base, p),
-            &mut out,
-        );
+        match &mut smoother {
+            Some(smoother) => smoother.push(pos, pressure, &mut points),
+            None => points.push((pos, pressure)),
+        }
+        for (pos, pressure) in points.drain(..) {
+            state.add_motion(pos, pressure, spacing, &mut out);
+        }
+    }
+    if let Some(smoother) = &mut smoother {
+        smoother.finish(&mut points);
+        for (pos, pressure) in points.drain(..) {
+            state.add_motion(pos, pressure, spacing, &mut out);
+        }
     }
     out
 }

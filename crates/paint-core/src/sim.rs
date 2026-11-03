@@ -54,8 +54,8 @@ pub const SAT_RATIO: f32 = 4.3;
 /// フィールドを足したら: ①ここに1行 ②src/app/ui/ の該当パネルにスライダー1行 ③common.wgsl の struct に1行
 /// (名前・順序・型の一致は tests/sim_params_layout.rs が検査する)。
 /// メモリレイアウトは WGSL の uniform 規則(16 バイト整列)に合わせること。
-/// 全体サイズは 16 の倍数を保つ(63 フィールド+末尾の _pad: [f32; 1] = 256B。次に足すときは
-/// _pad を1つずつ実フィールドへ置き換え、使い切ったら末尾に新しい _pad を置いて 16B 境界を保つ。
+/// 全体サイズは 16 の倍数を保つ(64 フィールド = 256B。次に足すときは末尾に #[serde(skip)] の
+/// _pad: [f32; 3] を置き、以降はそれを1つずつ実フィールドへ置き換えて 16B 境界を保つ。
 /// _pad は WGSL 側には書かない。手順は docs/parameters.md §11)。
 /// serde(default): プリセット(H3)にないフィールドは Default 値で埋める
 /// (パラメータを増やしても古い JSON が読めるように)。
@@ -244,8 +244,10 @@ pub struct SimParams {
     /// 乾いた層は焼き込みで掛ける(display.wgsl / bake.wgsl、式は common.wgsl の edge_aa_conc)。
     /// シミュレーションの水と顔料には触れない
     pub edge_aa: f32,
-    #[serde(skip)]
-    pub _pad: [f32; 1],
+    /// 清書ペンの手ぶれ補正(0〜1): ペン先の位置を遅れて追う平滑化の強さ。0 = 入力点をそのまま
+    /// 曲線でつなぐだけ / 1 = 強く均す(線が遅れてついてくる)。ペンを離すと終点まで追いつく。
+    /// 生ポインタ点から CPU で計算するので(paint_core::brush::LineSmoother)シェーダーは読まない
+    pub pen_smooth: f32,
 }
 
 impl SimParams {
@@ -341,8 +343,8 @@ impl Default for SimParams {
             pencil_radius: 8.0, // 鉛筆は柔らかめの中細
             pencil_strength: 0.7,
             pencil_gran: 0.5,
-            pen_radius: 4.0,   // ペンは細く硬い線
-            pen_strength: 0.9, // ペンは濃い
+            pen_radius: 4.0,    // ペンは細く硬い線
+            pen_strength: 0.75, // 1本で濃く、別のストロークを重ねた所はさらに濃くなる
             show_pencil: 1,
             show_pen: 1,
             line_block: 0.0, // M4.5b: 既定は境界なし(明示的に上げると水が越えにくくなる)
@@ -369,7 +371,7 @@ impl Default for SimParams {
             // 薄塗り(被覆率 5% 程度)でも十分に染みる量
             wick_ref: 0.05,
             edge_aa: 1.0,
-            _pad: [0.0; 1],
+            pen_smooth: 0.3,
         }
     }
 }
