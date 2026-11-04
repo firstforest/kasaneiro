@@ -43,10 +43,17 @@ impl PaintApp {
                     }
                 });
             }
-            _ => {
+            layer => {
+                let emptied = layer == ActiveLayer::Wet && self.wet_cleared;
                 if ui
-                    .add_enabled(!self.painting, egui::Button::new("このレイヤーをクリア"))
+                    .add_enabled(
+                        !self.painting && !emptied,
+                        egui::Button::new("このレイヤーをクリア"),
+                    )
                     .on_hover_text("このレイヤーの中身を全部消す。元に戻す (Ctrl+Z) で戻せる")
+                    .on_disabled_hover_text(
+                        "クリア済みです。もう一度押すと、元に戻すで消した絵が戻らなくなるため押せません",
+                    )
                     .clicked()
                 {
                     self.clear_active_layer();
@@ -94,6 +101,7 @@ impl PaintApp {
                 }
             {
                 self.invalidate_wet_undo();
+                self.wet_cleared = false;
             }
         });
     }

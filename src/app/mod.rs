@@ -195,6 +195,10 @@ pub struct PaintApp {
     /// M6: 統一 Undo 履歴。線画(多段)と湿レイヤー(1段)の操作順を時系列で持ち、
     /// Ctrl+Z を末尾の種別で振り分ける。湿レイヤーの退避実体は GpuCanvas::wet_backup
     undo_stack: Vec<UndoKind>,
+    /// 「このレイヤーをクリア」で水彩を空にしてから、水彩に何も載っていない間 true。
+    /// 続けてクリアすると空の状態で1段の退避を上書きし、元に戻すで消した絵が戻らなくなるので、
+    /// この間は水彩のクリアを押せなくする。水彩の筆跡・全体を濡らす・水彩の undo・作品読込・再生で下ろす
+    wet_cleared: bool,
     /// M5: ランタイムパレット(4スロットの色・ρ/ω/γ)。編集したら apply_palette() で GPU へ。
     /// 乾かすと現行パレットの色がそのレイヤー専用スロットへ記録される(M5c、遡って変色しない)
     palette: pigment::Palette,
@@ -437,6 +441,7 @@ impl PaintApp {
             file_modal: None,
             line_history: LineHistory::default(),
             undo_stack: Vec::new(),
+            wet_cleared: false,
             // 前回終了時のパレットで開始(上で復元済み。GPU 側も set_palette で同期済み)
             palette,
             palette_ui: PaletteUi {
@@ -515,6 +520,7 @@ impl PaintApp {
         // 消えた乾燥レイヤーを選択していたら水彩へ戻す
         self.line_history.clear();
         self.undo_stack.clear();
+        self.wet_cleared = false;
         self.stroke.end();
         self.painting = false;
         self.reset_view();
@@ -711,6 +717,7 @@ impl PaintApp {
         self.line_history.clear();
         // 統一 Undo 履歴も破棄(退避テクスチャは次の水彩ストロークで上書きされるので消さなくてよい)
         self.undo_stack.clear();
+        self.wet_cleared = false;
     }
 
     /// 選択中のレイヤーを空にする。線画は線画履歴に、水彩は1段 undo に積むので Ctrl+Z で戻せる。
@@ -724,6 +731,9 @@ impl PaintApp {
             ActiveLayer::Pen => (LineTarget::Pen, "清書(ペン)"),
             ActiveLayer::Highlight => (LineTarget::Highlight, "ハイライト(白)"),
             ActiveLayer::Wet => {
+                if self.wet_cleared {
+                    return;
+                }
                 self.backup_wet_layer();
                 if self.run_canvas_action(|c, d, q| {
                     c.clear_wet(d, q);
@@ -733,6 +743,7 @@ impl PaintApp {
                     self.invalidate_wet_undo();
                     self.undo_stack.push(UndoKind::Wet);
                     self.line_history.redo.clear();
+                    self.wet_cleared = true;
                     self.status_msg = Some("水彩(乾く前)をクリアしました".to_owned());
                 }
                 return;
@@ -791,6 +802,7 @@ impl PaintApp {
             c.restore_wet(d, q);
             Ok(())
         });
+        self.wet_cleared = false;
         if let Some(pos) = self.undo_stack.iter().rposition(|k| *k == UndoKind::Wet) {
             self.undo_stack.remove(pos);
         }
@@ -1149,6 +1161,7 @@ impl PaintApp {
                             self.invalidate_wet_undo();
                             self.undo_stack.push(UndoKind::Wet);
                             self.line_history.redo.clear();
+                            self.wet_cleared = false;
                         }
                     }
                     continue;
@@ -1637,6 +1650,7 @@ impl PaintApp {
         self.palette_ui.store.name.clear();
         self.line_history.clear();
         self.undo_stack.clear();
+        self.wet_cleared = false;
         self.stroke.end();
         self.painting = false;
         // 作品名欄は読み込んだ作品にする(続きを描いてそのまま上書き保存できる)
@@ -1751,12 +1765,16 @@ impl eframe::App for PaintApp {
                 // F11: 開発モードトグルは左パネルの下端(左下)へ固定する。
                 // 下端固定は他より先に確保する(残りが上側のスクロール領域になる)
                 egui::Panel::bottom("dev_toggle").show(ui, |ui| self.dev_mode_toggle(ui));
+                // F3: 操作結果(保存先・スポイト・エラー)はスクロール外、開発モードトグルのすぐ上に
+                // 常時表示する。スクロール域より先に下端を確保しないと、スクロール域が残りの高さを
+                // 取り切ってトグルの帯に重なる
+                if self.status_msg.is_some() {
+                    egui::Panel::bottom("status_bar").show(ui, |ui| self.status_bar(ui));
+                }
                 // 元に戻す/やり直しはスクロールの外に置き、常に見える位置に固定する
                 self.undo_controls(ui);
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| self.tool_panel(ui));
-                // F3: 操作結果(保存先・スポイト・エラー)はスクロール外の下端で常時表示する
-                self.status_bar(ui);
             });
 
         // 右パネル: 描いている最中に手を伸ばす色まわり(乾燥・パレット)と、表示・レイヤー

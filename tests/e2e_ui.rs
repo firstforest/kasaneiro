@@ -536,7 +536,7 @@ fn dry_keeps_painted_color() {
     );
 }
 
-/// 水彩(乾く前)の「このレイヤーをクリア」で紙の白に戻り、元に戻すで色が戻る
+/// 水彩(乾く前)の「このレイヤーをクリア」で紙の白に戻り、続けて押しても元に戻すで色が戻る
 #[test]
 fn wet_layer_clear_and_undo() {
     let mut harness = app();
@@ -550,6 +550,9 @@ fn wet_layer_clear_and_undo() {
         "そもそも描けていない: {painted:?}"
     );
 
+    // 続けて2回押しても、2回目は空の状態で退避を上書きしない
+    harness.get_by_label("このレイヤーをクリア").click();
+    frames(&mut harness, 3);
     harness.get_by_label("このレイヤーをクリア").click();
     frames(&mut harness, 3);
     let cleared = canvas_color(&mut harness, "wet-clear-after", &[(0.5, 0.5)])[0];

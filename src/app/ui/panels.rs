@@ -12,8 +12,9 @@ impl PaintApp {
     /// 常時可視の位置で呼ぶので、開発モードの記録再生パネルに埋めず、どの操作でも同じ場所に出る
     pub(in crate::app) fn status_bar(&mut self, ui: &mut egui::Ui) {
         if let Some(msg) = &self.status_msg {
-            ui.separator();
-            ui.label(msg.clone());
+            ui.add_space(2.0);
+            ui.add(egui::Label::new(msg.clone()).wrap());
+            ui.add_space(2.0);
         }
     }
 
